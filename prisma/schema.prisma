@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url = env("DATABASE_URL")
 }
 
 enum UserRole {
@@ -22,6 +23,32 @@ enum VehicleStatus {
   ACTIVE
   PAUSED
   DELETED
+}
+
+enum VehicleType {
+  SEDAN
+  SUV
+  HATCHBACK
+  CONVERTIBLE
+  TRUCK
+  VAN
+  COUPE
+  PICKUP
+  MOTORCYCLE
+  OTHER
+}
+
+enum VehicleGearbox {
+  AUTOMATIC
+  MANUAL
+}
+
+enum VehicleFuelType {
+  GASOLINE
+  DIESEL
+  ELECTRIC
+  HYBRID
+  OTHER
 }
 
 enum BookingStatus {
@@ -96,6 +123,20 @@ model Vehicle {
 
   title       String
   description String
+
+  make        String
+  model       String
+  year        Int
+  trunkLiters Int
+  steats       Int
+  length      Float
+  width       Float
+  height      Float
+  type        VehicleType 
+  gearbox     VehicleGearbox
+  fuelType    VehicleFuelType
+  fuelConsumption Float
+
   pricePerDay Float
 
   latitude    Float
