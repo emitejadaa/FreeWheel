@@ -33,7 +33,9 @@ export class AuthController {
 
   @Post('verify-email')
   verifyEmail(@Body() verifyEmailDto: VerifyEmailDto) {
-    return this.authService.verifyEmail(verifyEmailDto.token);
+    return this.authService.verifyEmail(
+      verifyEmailDto.code ?? verifyEmailDto.token ?? '',
+    );
   }
 
   @Post('resend-email-verification')

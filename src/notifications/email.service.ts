@@ -3,7 +3,7 @@ import * as sgMail from '@sendgrid/mail';
 
 type AccountVerificationEmailInput = {
   to: string;
-  token: string;
+  code: string;
   expiresAt: Date;
 };
 
@@ -30,24 +30,19 @@ export class EmailService {
   async sendAccountVerificationEmail(
     input: AccountVerificationEmailInput,
   ): Promise<void> {
-    const verificationUrlBase =
-      process.env.EMAIL_VERIFICATION_URL_BASE ?? 'http://localhost:3000/auth/verify-email';
-    const verificationUrl = `${verificationUrlBase}?token=${input.token}`;
     const subject = 'Verificá tu cuenta de FreeWheel';
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2>Verificación de email</h2>
-        <p>Usá este enlace para verificar tu cuenta:</p>
-        <p><a href="${verificationUrl}">${verificationUrl}</a></p>
-        <p>También podés enviar este token al endpoint de verificación:</p>
-        <pre style="background:#f4f4f4;padding:12px;border-radius:8px;">${input.token}</pre>
+        <p>Ingresá este código para verificar tu cuenta:</p>
+        <pre style="background:#f4f4f4;padding:12px;border-radius:8px;font-size:24px;font-weight:bold;letter-spacing:4px;">${input.code}</pre>
         <p>Expira el ${input.expiresAt.toISOString()}.</p>
       </div>
     `;
 
     if (!process.env.SENDGRID_API_KEY) {
       console.info(
-        `[EMAIL:DEV] Verification email for ${input.to}. Token: ${input.token}`,
+        `[EMAIL:DEV] Verification email for ${input.to}. Code: ${input.code}`,
       );
       return;
     }

@@ -4,7 +4,7 @@ import {
   HttpStatus,
   Injectable,
 } from '@nestjs/common';
-import { createHash, randomBytes, randomInt } from 'crypto';
+import { createHash, randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../notifications/email.service';
 import { SmsService } from '../notifications/sms.service';
@@ -38,8 +38,8 @@ export class VerificationService {
       );
     }
 
-    const rawToken = randomBytes(32).toString('hex');
-    const tokenHash = this.hashValue(rawToken);
+    const rawCode = this.generateOtp();
+    const tokenHash = this.hashValue(rawCode);
     const expiresAt = this.addMinutes(
       new Date(),
       this.getNumberEnv('EMAIL_VERIFICATION_TOKEN_TTL_MINUTES', 60),
@@ -67,13 +67,13 @@ export class VerificationService {
 
     await this.emailService.sendAccountVerificationEmail({
       to: email,
-      token: rawToken,
+      code: rawCode,
       expiresAt,
     });
   }
 
-  async consumeEmailVerificationToken(token: string) {
-    const tokenHash = this.hashValue(token);
+  async consumeEmailVerificationToken(code: string) {
+    const tokenHash = this.hashValue(code);
     const record = await this.prisma.emailVerificationToken.findUnique({
       where: { tokenHash },
       include: { user: true },
@@ -85,7 +85,7 @@ export class VerificationService {
       record.invalidatedAt ||
       record.expiresAt < new Date()
     ) {
-      throw new BadRequestException('Token de verificación inválido o expirado.');
+      throw new BadRequestException('Código de verificación inválido o expirado.');
     }
 
     const now = new Date();
