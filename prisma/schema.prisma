@@ -13,10 +13,16 @@ enum UserRole {
   ADMIN
 }
 
-enum KycStatus {
-  PENDING
-  APPROVED
+enum IdentityVerificationStatus {
+  UNVERIFIED
+  PENDING_REVIEW
+  VERIFIED
   REJECTED
+}
+
+enum IdentityDocumentSide {
+  FRONT
+  BACK
 }
 
 enum VehicleStatus {
@@ -85,203 +91,215 @@ enum MessageType {
 }
 
 model User {
-  id            String   @id @default(uuid())
-  email         String   @unique
-  verifiedEmail Boolean  @default(true)
-  
-  mobile        String?  @unique
-  verifiedMobile Boolean @default(false)
-  mobileVerificationCode String?
-  mobileVerificationCodeExpiresAt DateTime?
-  
-  password      String
-  role          UserRole @default(USER)
-
-  isVerified    Boolean   @default(false)
-  kycStatus     KycStatus @default(PENDING)
-
-  firstName     String
-  lastName      String
-  birthDate     DateTime
-
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  vehicles      Vehicle[]
-  bookings      Booking[] @relation("UserBookings")
-  ownedBookings Booking[] @relation("OwnerBookings")
-
-  reviewsGiven  Review[] @relation("ReviewsGiven")
-  reviewsRecvd  Review[] @relation("ReviewsReceived")
-
-  chats         ChatParticipant[]
-
-  messages      Message[] 
-
-  disputes      Dispute[]
+  id                                  String                     @id @default(uuid())
+  email                               String                     @unique
+  passwordHash                        String
+  emailVerified                       Boolean                    @default(false)
+  emailVerifiedAt                     DateTime?
+  phoneNumber                         String?                    @unique
+  phoneVerified                       Boolean                    @default(false)
+  phoneVerifiedAt                     DateTime?
+  role                                UserRole                   @default(USER)
+  identityVerificationStatus          IdentityVerificationStatus @default(UNVERIFIED)
+  identityVerificationRequestedAt     DateTime?
+  identityVerifiedAt                  DateTime?
+  identityVerificationRejectedAt      DateTime?
+  identityVerificationReviewedAt      DateTime?
+  identityVerificationRejectionReason String?
+  firstName                           String
+  lastName                            String
+  birthDate                           DateTime
+  createdAt                           DateTime                   @default(now())
+  updatedAt                           DateTime                   @updatedAt
+  vehicles                            Vehicle[]
+  bookings                            Booking[]                  @relation("UserBookings")
+  ownedBookings                       Booking[]                  @relation("OwnerBookings")
+  reviewsGiven                        Review[]                   @relation("ReviewsGiven")
+  reviewsRecvd                        Review[]                   @relation("ReviewsReceived")
+  chats                               ChatParticipant[]
+  messages                            Message[]
+  disputes                            Dispute[]
+  emailVerificationTokens             EmailVerificationToken[]
+  phoneVerificationCodes              PhoneVerificationCode[]
+  refreshTokens                       RefreshToken[]
+  identityDocuments                   UserDocument[]
 
   @@index([email])
+  @@index([identityVerificationStatus])
 }
 
-model PendingEmailVerification {
+model EmailVerificationToken {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String   @unique
+  expiresAt    DateTime
+  sentAt       DateTime @default(now())
+  usedAt       DateTime?
+  invalidatedAt DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model PhoneVerificationCode {
   id            String   @id @default(uuid())
-  email         String   @unique
-  password      String
-  firstName     String
-  lastName      String
-  birthDate     DateTime
-  verificationCode String
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber   String
+  codeHash      String
+  expiresAt     DateTime
+  sentAt        DateTime @default(now())
+  usedAt        DateTime?
+  invalidatedAt DateTime?
+  attempts      Int      @default(0)
+  lastAttemptAt DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, phoneNumber, expiresAt])
+}
+
+model RefreshToken {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash     String   @unique
   expiresAt     DateTime
   createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  replacedById  String?
+
+  @@index([userId, expiresAt])
+}
+
+model UserDocument {
+  id               String               @id @default(uuid())
+  userId           String
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  side             IdentityDocumentSide @default(FRONT)
+  storageKey       String               @unique
+  mimeType         String
+  originalFilename String?
+  fileSize         Int
+  uploadedAt       DateTime             @default(now())
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@unique([userId, side])
+  @@index([userId])
 }
 
 model Vehicle {
-  id          String   @id @default(uuid())
-  ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id])
-
-  title       String
-  description String
-
-  make        String
-  model       String
-  year        Int
-  trunkLiters Int
-  steats       Int
-  length      Float
-  width       Float
-  height      Float
-  type        VehicleType 
-  gearbox     VehicleGearbox
-  fuelType    VehicleFuelType
+  id              String         @id @default(uuid())
+  ownerId         String
+  owner           User           @relation(fields: [ownerId], references: [id])
+  title           String
+  description     String
+  make            String
+  model           String
+  year            Int
+  trunkLiters     Int
+  steats          Int
+  length          Float
+  width           Float
+  height          Float
+  type            VehicleType
+  gearbox         VehicleGearbox
+  fuelType        VehicleFuelType
   fuelConsumption Float
-
-  pricePerDay Float
-
-  latitude    Float
-  longitude   Float
-
-  status      VehicleStatus @default(ACTIVE)
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  bookings    Booking[]
-  chats       Chat[]
+  pricePerDay     Float
+  latitude        Float
+  longitude       Float
+  status          VehicleStatus  @default(ACTIVE)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  bookings        Booking[]
+  chats           Chat[]
 }
 
 model Booking {
-  id          String   @id @default(uuid())
-
-  userId      String
-  user        User     @relation("UserBookings", fields: [userId], references: [id])
-
-  ownerId     String
-  owner       User     @relation("OwnerBookings", fields: [ownerId], references: [id])
-
-  vehicleId   String
-  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
-
-  status      BookingStatus @default(PENDING)
-
-  startDate   DateTime
-  endDate     DateTime
-
-  totalPrice  Float
-  deposit     Float
-
+  id         String        @id @default(uuid())
+  userId     String
+  user       User          @relation("UserBookings", fields: [userId], references: [id])
+  ownerId    String
+  owner      User          @relation("OwnerBookings", fields: [ownerId], references: [id])
+  vehicleId  String
+  vehicle    Vehicle       @relation(fields: [vehicleId], references: [id])
+  status     BookingStatus @default(PENDING)
+  startDate  DateTime
+  endDate    DateTime
+  totalPrice Float
+  deposit    Float
   qrStartCode String?
-  qrEndCode   String?
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  payments    Payment[]
-  disputes    Dispute[]
-  chats       Chat[]
+  qrEndCode  String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  payments   Payment[]
+  disputes   Dispute[]
+  chats      Chat[]
 }
 
 model Payment {
-  id         String        @id @default(uuid())
-  bookingId  String
-  booking    Booking       @relation(fields: [bookingId], references: [id])
-
-  amount     Float
-  status     PaymentStatus @default(PENDING)
-  type       PaymentType
-
-  createdAt  DateTime @default(now())
+  id        String        @id @default(uuid())
+  bookingId String
+  booking   Booking       @relation(fields: [bookingId], references: [id])
+  amount    Float
+  status    PaymentStatus @default(PENDING)
+  type      PaymentType
+  createdAt DateTime      @default(now())
 }
 
 model Chat {
-  id         String   @id @default(uuid())
-
-  bookingId  String?
-  booking    Booking? @relation(fields: [bookingId], references: [id])
-
-  vehicleId  String?
-  vehicle    Vehicle? @relation(fields: [vehicleId], references: [id])
-
-  createdAt  DateTime @default(now())
-
-  messages   Message[]
+  id           String            @id @default(uuid())
+  bookingId    String?
+  booking      Booking?          @relation(fields: [bookingId], references: [id])
+  vehicleId    String?
+  vehicle      Vehicle?          @relation(fields: [vehicleId], references: [id])
+  createdAt    DateTime          @default(now())
+  messages     Message[]
   participants ChatParticipant[]
 }
 
 model ChatParticipant {
-  id      String @id @default(uuid())
-
-  userId  String
-  user    User   @relation(fields: [userId], references: [id])
-
-  chatId  String
-  chat    Chat   @relation(fields: [chatId], references: [id])
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  chatId String
+  chat   Chat   @relation(fields: [chatId], references: [id])
 }
 
 model Message {
   id        String      @id @default(uuid())
-
   chatId    String
   chat      Chat        @relation(fields: [chatId], references: [id])
-
   senderId  String
   sender    User        @relation(fields: [senderId], references: [id])
-
   content   String
   type      MessageType @default(USER)
-
-  createdAt DateTime @default(now())
+  createdAt DateTime    @default(now())
 }
 
 model Dispute {
-  id         String        @id @default(uuid())
-
-  bookingId  String
-  booking    Booking       @relation(fields: [bookingId], references: [id])
-
-  userId     String
-  user       User          @relation(fields: [userId], references: [id])
-
-  reason     String
-  status     DisputeStatus @default(OPEN)
-
-  createdAt  DateTime @default(now())
+  id        String        @id @default(uuid())
+  bookingId String
+  booking   Booking       @relation(fields: [bookingId], references: [id])
+  userId    String
+  user      User          @relation(fields: [userId], references: [id])
+  reason    String
+  status    DisputeStatus @default(OPEN)
+  createdAt DateTime      @default(now())
 }
 
 model Review {
-  id          String   @id @default(uuid())
-
-  fromUserId  String
-  fromUser    User     @relation("ReviewsGiven", fields: [fromUserId], references: [id])
-
-  toUserId    String
-  toUser      User     @relation("ReviewsReceived", fields: [toUserId], references: [id])
-
-  rating      Int
-  comment     String?
-
-  createdAt   DateTime @default(now())
+  id         String   @id @default(uuid())
+  fromUserId String
+  fromUser   User     @relation("ReviewsGiven", fields: [fromUserId], references: [id])
+  toUserId   String
+  toUser     User     @relation("ReviewsReceived", fields: [toUserId], references: [id])
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
 
   @@unique([fromUserId, toUserId])
 }

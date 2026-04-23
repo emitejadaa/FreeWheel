@@ -1,217 +1,170 @@
-import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { VerificationService } from './verification.service';
 import { TokenService } from './token.service';
-import * as bcrypt from 'bcrypt'; 
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { LogoutDto } from './dto/logout.dto';
+import { User } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private prisma: PrismaService,
-    private verificationService: VerificationService,
-    private tokenService: TokenService,
+    private readonly prisma: PrismaService,
+    private readonly verificationService: VerificationService,
+    private readonly tokenService: TokenService,
   ) {}
 
-  // Generar código de verificación de 6 dígitos
-  private generateVerificationCode(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-  }
-
-  // Calcular expiration time (15 minutos)
-  private getVerificationCodeExpiresAt(): Date {
-    const now = new Date();
-    now.setMinutes(now.getMinutes() + 15);
-    return now;
-  }
-
-  async register(email: string, password: string, firstName: string, lastName: string, birthDate: string) {
+  async register(registerDto: RegisterDto) {
+    const email = this.normalizeEmail(registerDto.email);
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
+      select: { id: true },
     });
 
     if (existingUser) {
-      throw new BadRequestException('Email ya registrado');
+      throw new BadRequestException('El email ya está registrado.');
     }
 
-    const existingPending = await this.prisma.pendingEmailVerification.findUnique({
-      where: { email },
-    });
-
-    if (existingPending) {
-      throw new BadRequestException('Email en proceso de verificación. Por favor, verifica tu email o intenta de nuevo más tarde');
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const verificationCode = this.generateVerificationCode();
-    const expiresAt = this.getVerificationCodeExpiresAt();
-
-    await this.prisma.pendingEmailVerification.create({
-      data: {
-        email,
-        password: hashedPassword,
-        firstName,
-        lastName,
-        birthDate: new Date(birthDate),
-        verificationCode,
-        expiresAt,
-      },
-    });
-
-    await this.verificationService.sendEmailVerification(email, verificationCode);
-
-    return {
-      message: 'Cuenta pendiente de verificación. Revisa tu email para completar el registro.',
-      email,
-    };
-  }
-
-  async verifyEmail(email: string, verificationCode: string) {
-    const pendingUser = await this.prisma.pendingEmailVerification.findUnique({
-      where: { email },
-    });
-
-    if (!pendingUser) {
-      throw new BadRequestException('No hay registro pendiente de verificación para este email');
-    }
-
-    if (pendingUser.verificationCode !== verificationCode) {
-      throw new BadRequestException('Código de verificación incorrecto');
-    }
-
-    if (pendingUser.expiresAt < new Date()) {
-      await this.prisma.pendingEmailVerification.delete({
-        where: { email },
-      });
-      throw new BadRequestException('Código de verificación expirado. Por favor, registrate de nuevo');
-    }
-
+    const passwordHash = await this.hashPassword(registerDto.password);
     const user = await this.prisma.user.create({
       data: {
-        email: pendingUser.email,
-        password: pendingUser.password,
-        firstName: pendingUser.firstName,
-        lastName: pendingUser.lastName,
-        birthDate: pendingUser.birthDate,
-        verifiedEmail: true,
+        email,
+        passwordHash,
+        firstName: registerDto.firstName.trim(),
+        lastName: registerDto.lastName.trim(),
+        birthDate: new Date(registerDto.birthDate),
       },
     });
 
-    await this.prisma.pendingEmailVerification.delete({
-      where: { email },
-    });
+    await this.verificationService.issueEmailVerification(user.id, user.email);
 
     return {
-      message: 'Email verificado. Tu cuenta ha sido creada exitosamente.',
-      userId: user.id,
-      email: user.email,
+      message:
+        'Cuenta creada correctamente. Revisa tu email para verificar la cuenta.',
+      data: {
+        user: this.buildProfileSummary(user),
+      },
     };
   }
 
-  async login(email: string, password: string) {
+  async verifyEmail(token: string) {
+    const user = await this.verificationService.consumeEmailVerificationToken(
+      token,
+    );
+
+    return {
+      message: 'Email verificado correctamente.',
+      data: {
+        user: this.buildProfileSummary(user),
+      },
+    };
+  }
+
+  async resendEmailVerification(email: string) {
+    await this.verificationService.resendEmailVerification(
+      this.normalizeEmail(email),
+    );
+
+    return {
+      message:
+        'Si el email corresponde a una cuenta pendiente, enviamos una nueva verificación.',
+    };
+  }
+
+  async login(loginDto: LoginDto) {
+    const email = this.normalizeEmail(loginDto.email);
     const user = await this.prisma.user.findUnique({
       where: { email },
     });
 
     if (!user) {
-      throw new UnauthorizedException('Credenciales inválidas');
+      throw new UnauthorizedException('Credenciales inválidas.');
     }
 
-    const valid = await bcrypt.compare(password, user.password);
+    const validPassword = await bcrypt.compare(
+      loginDto.password,
+      user.passwordHash,
+    );
 
-    if (!valid) {
-      throw new UnauthorizedException('Credenciales inválidas');
+    if (!validPassword) {
+      throw new UnauthorizedException('Credenciales inválidas.');
     }
 
-    const accessToken = this.tokenService.generateAccessToken(user.id, user.email);
-    const refreshToken = this.tokenService.generateRefreshToken(user.id);
+    const session = await this.issueSession(user);
+
+    return {
+      message: 'Login exitoso.',
+      data: session,
+    };
+  }
+
+  async refreshTokens(refreshTokenDto: RefreshTokenDto) {
+    const user = await this.tokenService.rotateRefreshToken(
+      refreshTokenDto.refreshToken,
+    );
+
+    const session = await this.issueSession(user, refreshTokenDto.refreshToken);
+    return {
+      message: 'Tokens renovados correctamente.',
+      data: session,
+    };
+  }
+
+  async logout(logoutDto: LogoutDto) {
+    await this.tokenService.revokeRefreshToken(logoutDto.refreshToken);
+
+    return {
+      message: 'Sesión cerrada correctamente.',
+    };
+  }
+
+  private async issueSession(user: User, previousRefreshToken?: string) {
+    const accessToken = this.tokenService.generateAccessToken(user);
+    const refreshToken = await this.tokenService.createRefreshToken(
+      user.id,
+      previousRefreshToken,
+    );
 
     return {
       accessToken,
       refreshToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        mobile: user.mobile,
-        verifiedMobile: user.verifiedMobile,
-      },
+      user: this.buildProfileSummary(user),
     };
   }
 
-  async addMobile(userId: string, mobile: string) {
-    // Verificar que el móvil no esté ya registrado
-    const existingMobile = await this.prisma.user.findUnique({
-      where: { mobile },
-    });
-
-    if (existingMobile) {
-      throw new BadRequestException('Número de móvil ya registrado');
-    }
-
-    const verificationCode = this.generateVerificationCode();
-    const expiresAt = this.getVerificationCodeExpiresAt();
-
-    // Actualizar usuario con móvil y código de verificación
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        mobile,
-        verifiedMobile: false,
-        mobileVerificationCode: verificationCode,
-        mobileVerificationCodeExpiresAt: expiresAt,
-      },
-    });
-
-    // Enviar código de verificación por SMS
-    await this.verificationService.sendMobileVerification(mobile, verificationCode);
-
-    return {
-      message: 'Número de móvil registrado. Revisa tu SMS para verificar el número.',
-      userId: user.id,
-      mobile: user.mobile,
-    };
+  private async hashPassword(password: string) {
+    const saltRounds = Number(process.env.PASSWORD_SALT_ROUNDS ?? '12');
+    return bcrypt.hash(password, saltRounds);
   }
 
-  async verifyMobile(userId: string, verificationCode: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+  private normalizeEmail(email: string) {
+    return email.trim().toLowerCase();
+  }
 
-    if (!user) {
-      throw new BadRequestException('Usuario no encontrado');
-    }
-
-    if (!user.mobile) {
-      throw new BadRequestException('No hay número de móvil registrado');
-    }
-
-    if (user.verifiedMobile) {
-      throw new BadRequestException('Móvil ya verificado');
-    }
-
-    if (user.mobileVerificationCode !== verificationCode) {
-      throw new BadRequestException('Código de verificación incorrecto');
-    }
-
-    if (user.mobileVerificationCodeExpiresAt && user.mobileVerificationCodeExpiresAt < new Date()) {
-      throw new BadRequestException('Código de verificación expirado');
-    }
-
-    // Actualizar usuario para marcar móvil como verificado
-    const updatedUser = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        verifiedMobile: true,
-        mobileVerificationCode: null,
-        mobileVerificationCodeExpiresAt: null,
-      },
-    });
-
+  private buildProfileSummary(user: Pick<
+    User,
+    | 'id'
+    | 'email'
+    | 'emailVerified'
+    | 'phoneNumber'
+    | 'phoneVerified'
+    | 'identityVerificationStatus'
+  >) {
     return {
-      message: 'Móvil verificado exitosamente',
-      userId: updatedUser.id,
-      mobile: updatedUser.mobile,
+      id: user.id,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      phoneNumber: user.phoneNumber,
+      phoneVerified: user.phoneVerified,
+      identityVerificationStatus: user.identityVerificationStatus,
+      isFullyVerified: user.identityVerificationStatus === 'VERIFIED',
     };
   }
 }

@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { SendgridService } from './sendgrid.service';
-import { TwilioService } from './twilio.service';
+import { EmailService } from './email.service';
+import { SmsService } from './sms.service';
 
 @Module({
-  providers: [SendgridService, TwilioService],
-  exports: [SendgridService, TwilioService],
+  providers: [EmailService, SmsService],
+  exports: [EmailService, SmsService],
 })
 export class NotificationsModule {}
