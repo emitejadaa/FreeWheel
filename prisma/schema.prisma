@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // url      = env("DATABASE_URL")
 }
 
 enum UserRole {
@@ -38,6 +38,13 @@ enum FuelType {
   OTHER
 }
 
+enum DrivetrainType {
+  REAR
+  FRONT
+  FOUR_BY_FOUR
+  AWD
+}
+
 model User {
   id        String     @id @default(uuid())
   email     String     @unique
@@ -58,19 +65,31 @@ model User {
 }
 
 model Vehicle {
-  id           String            @id @default(uuid())
-  ownerId      String
-  owner        User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  brand        String
-  model        String
-  year         Int
-  plate        String?
-  color        String?
-  seats        Int?
-  transmission TransmissionType?
-  fuelType     FuelType?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id                               String            @id @default(uuid())
+  ownerId                          String
+  owner                            User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  brand                            String
+  model                            String
+  year                             Int
+  plate                            String?
+  color                            String?
+  seats                            Int?
+  transmission                     TransmissionType?
+  fuelType                         FuelType?
+  drivetrain                       DrivetrainType?
+  bluetooth                        Boolean?
+  rearCamera                       Boolean?
+  parkingSensors                   Boolean?
+  fuelConsumptionLitersPer100Km   Float?
+  doors                            Int?
+  trunkCapacityLiters              Int?
+  widthMm                          Int?
+  lengthMm                         Int?
+  heightMm                         Int?
+  weightKg                         Int?
+  observations                     String?
+  createdAt                        DateTime          @default(now())
+  updatedAt                        DateTime          @updatedAt
 
   listings Listing[]
 
@@ -79,20 +98,23 @@ model Vehicle {
 }
 
 model Listing {
-  id           String        @id @default(uuid())
-  vehicleId    String
-  ownerId      String
-  vehicle      Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  owner        User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  title        String
-  description  String
-  pricePerDay  Float
-  locationText String
-  latitude     Float?
-  longitude    Float?
-  status       ListingStatus @default(DRAFT)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                String        @id @default(uuid())
+  vehicleId         String
+  ownerId           String
+  vehicle           Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner             User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  title             String
+  description       String
+  pricePerDay       Float
+  locationText      String
+  latitude          Float?
+  longitude         Float?
+  deliveryLatitude  Float?
+  deliveryLongitude Float?
+  deliveryRadiusKm  Float?
+  status            ListingStatus @default(DRAFT)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   @@index([ownerId])
   @@index([vehicleId])

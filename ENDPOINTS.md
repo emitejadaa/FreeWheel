@@ -158,7 +158,19 @@ Body:
   "color": "Gris",
   "seats": 5,
   "transmission": "AUTOMATIC",
-  "fuelType": "GASOLINE"
+  "fuelType": "GASOLINE",
+  "drivetrain": "FRONT",
+  "bluetooth": true,
+  "rearCamera": true,
+  "parkingSensors": true,
+  "fuelConsumptionLitersPer100Km": 7.5,
+  "doors": 4,
+  "trunkCapacityLiters": 470,
+  "widthMm": 1780,
+  "lengthMm": 4630,
+  "heightMm": 1435,
+  "weightKg": 1320,
+  "observations": "Service al dia, cubiertas nuevas."
 }
 ```
 
@@ -175,6 +187,24 @@ Campos opcionales:
 - `seats`
 - `transmission`: `MANUAL` o `AUTOMATIC`
 - `fuelType`: `GASOLINE`, `DIESEL`, `HYBRID`, `ELECTRIC`, `OTHER`
+- `drivetrain`: `REAR`, `FRONT`, `FOUR_BY_FOUR`, `AWD`
+- `bluetooth`
+- `rearCamera`
+- `parkingSensors`
+- `fuelConsumptionLitersPer100Km`
+- `doors`
+- `trunkCapacityLiters`
+- `widthMm`
+- `lengthMm`
+- `heightMm`
+- `weightKg`
+- `observations`
+
+Notas:
+
+- `drivetrain` representa traccion: `REAR` = trasera, `FRONT` = delantera, `FOUR_BY_FOUR` = 4x4, `AWD` = all-wheel drive.
+- Las dimensiones se guardan en milimetros y el peso en kilogramos.
+- El consumo se guarda como litros cada 100 km.
 
 ### Listar mis vehiculos
 
@@ -264,6 +294,9 @@ Body:
   "locationText": "Palermo, CABA",
   "latitude": -34.5808,
   "longitude": -58.4261,
+  "deliveryLatitude": -34.5808,
+  "deliveryLongitude": -58.4261,
+  "deliveryRadiusKm": 10,
   "status": "ACTIVE"
 }
 ```
@@ -273,13 +306,16 @@ Campos requeridos:
 - `vehicleId`
 - `title`
 - `description`
-- `pricePerDay`
+- `pricePerDay`: precio por dia en ARS
 - `locationText`
 
 Campos opcionales:
 
 - `latitude`
 - `longitude`
+- `deliveryLatitude`
+- `deliveryLongitude`
+- `deliveryRadiusKm`: margen de distancia en kilometros desde el punto de entrega
 - `status`: `DRAFT`, `ACTIVE`, `PAUSED`, `DELETED`
 
 Si no se envia `status`, Prisma usa `DRAFT` por defecto.

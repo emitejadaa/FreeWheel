@@ -1,7 +1,9 @@
-import { FuelType, TransmissionType } from '@prisma/client';
+import { DrivetrainType, FuelType, TransmissionType } from '@prisma/client';
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsPositive,
   IsString,
@@ -41,4 +43,59 @@ export class CreateVehicleDto {
   @IsOptional()
   @IsEnum(FuelType)
   fuelType?: FuelType;
+
+  @IsOptional()
+  @IsEnum(DrivetrainType)
+  drivetrain?: DrivetrainType;
+
+  @IsOptional()
+  @IsBoolean()
+  bluetooth?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  rearCamera?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  parkingSensors?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  fuelConsumptionLitersPer100Km?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  doors?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  trunkCapacityLiters?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  widthMm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  lengthMm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  heightMm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  weightKg?: number;
+
+  @IsOptional()
+  @IsString()
+  observations?: string;
 }
