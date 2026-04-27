@@ -1,28 +1,31 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
-import { VerificationService } from './verification.service';
-import { TokenService } from './token.service';
-import { CodeResendService } from './code-resend.service';
-import { JwtStrategy } from './jwt.strategy';
-import { JwtAuthGuard } from './jwt.guard';
-import { PrismaModule } from '../prisma/prisma.module';
-import { NotificationsModule } from '../notifications/notifications.module';
+import { AuthService } from './auth.service';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
-    PrismaModule,
-    NotificationsModule,
+    UsersModule,
     PassportModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'freewheel-secret-key-change-in-production',
-      signOptions: { expiresIn: '24h' },
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret:
+          configService.get<string>('JWT_SECRET') ??
+          'freewheel-secret-key-change-in-production',
+        signOptions: {
+          expiresIn: 60 * 60 * 24,
+        },
+      }),
     }),
   ],
-  providers: [AuthService, VerificationService, TokenService, JwtStrategy, JwtAuthGuard, CodeResendService],
   controllers: [AuthController],
-  exports: [AuthService, VerificationService, TokenService, JwtAuthGuard],
+  providers: [AuthService, JwtStrategy],
+  exports: [AuthService],
 })
 export class AuthModule {}

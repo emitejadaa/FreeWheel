@@ -26,3 +26,21 @@ lerna-debug.log*
 /generated/prisma
 
 claude.md
+
+# Codex local configuration
+.codex/
+
+# Claude Flow runtime data
+.claude-flow/data/
+.claude-flow/logs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+ruvector.db
+AGENTS.md
+.prettierrc
+.claude-flow
+.agents

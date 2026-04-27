@@ -13,7 +13,4 @@ export class RegisterDto {
 
   @IsString()
   lastName!: string;
-
-  @IsString()
-  birthDate!: string; 
 }
