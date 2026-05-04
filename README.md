@@ -43,6 +43,7 @@ LOCAL_API_URL="http://localhost:3000"
 RENDER_API_URL=""
 TARGET_URL=""
 FRONTEND_URL=""
+CORS_ORIGINS=""
 API_BASE_URL=""
 TEST_EMAIL=""
 TEST_PASSWORD=""
@@ -156,9 +157,12 @@ npm run render:start
 DATABASE_URL="postgresql://..."
 JWT_SECRET="..."
 JWT_EXPIRES_IN="24h"
+FRONTEND_URL="https://tu-front.vercel.app"
 ```
 
 Si `POST /auth/register` o `POST /auth/login` devuelven `500`, revisar primero env vars y migraciones remotas.
+
+`FRONTEND_URL` habilita CORS para el frontend desplegado. Para permitir varios origenes, usar `CORS_ORIGINS` con valores separados por coma, por ejemplo `https://front-a.vercel.app,https://front-b.vercel.app`.
 
 ## Probar Flujo Frontend-Backend Funcional
 
