@@ -126,6 +126,10 @@ async function runCorsPreflightCheck(baseUrl: string, frontendUrl: string): Prom
     const responseTimeMs = Math.round(performance.now() - startedAt);
     const allowOrigin = response.headers.get('access-control-allow-origin');
     const ok = response.status === 204 && allowOrigin === normalizeBaseUrl(frontendUrl);
+    const missingCorsOriginMessage =
+      response.status === 404 && !allowOrigin
+        ? ' Render likely has no FRONTEND_URL/CORS_ORIGINS matching this frontend origin.'
+        : '';
 
     return {
       method: 'OPTIONS',
@@ -142,7 +146,7 @@ async function runCorsPreflightCheck(baseUrl: string, frontendUrl: string): Prom
         ? undefined
         : `Expected access-control-allow-origin: ${normalizeBaseUrl(frontendUrl)}, received: ${
             allowOrigin ?? 'missing'
-          }`,
+          }.${missingCorsOriginMessage}`,
     };
   } catch (error) {
     return {

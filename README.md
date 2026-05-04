@@ -125,6 +125,9 @@ Definir la URL remota:
 
 ```bash
 RENDER_API_URL="https://tu-servicio.onrender.com"
+RENDER_SERVICE_ID="srv_..."
+RENDER_API_KEY="rnd_..."
+RENDER_WORKSPACE_ID=""
 ```
 
 Luego ejecutar:
@@ -164,6 +167,21 @@ Si `POST /auth/register` o `POST /auth/login` devuelven `500`, revisar primero e
 
 `FRONTEND_URL` habilita CORS para el frontend desplegado. Para permitir varios origenes, usar `CORS_ORIGINS` con valores separados por coma, por ejemplo `https://front-a.vercel.app,https://front-b.vercel.app`.
 
+Para controlar deploys desde la CLI oficial de Render, configurar localmente `RENDER_API_KEY` y `RENDER_SERVICE_ID` en `.env` o en la shell. `RENDER_WORKSPACE_ID` es opcional si la CLI ya tiene workspace activo, pero puede ser necesario para `render:validate`. No commitear valores reales.
+
+```bash
+npm run render:validate
+npm run render:deploy
+npm run render:deploys
+npm run render:logs
+```
+
+`npm run render:deploy` espera a que el deploy termine y falla con codigo distinto de cero si Render reporta error. Para disparar el deploy y no esperar:
+
+```bash
+npm run render:deploy:no-wait
+```
+
 ## Probar Flujo Frontend-Backend Funcional
 
 Para validar una URL local o deployada usando solo funcionalidades implementadas:
@@ -202,6 +220,7 @@ Las guias estan en `docs/skills/`:
 - `test-local-endpoints`: smoke test local de endpoints publicos.
 - `test-render-endpoints`: smoke test remoto usando `RENDER_API_URL`.
 - `deploy-verification`: verificacion remota con reintentos limitados.
+- `render-hosting-control`: control de deploys, logs y estado de Render con la CLI oficial.
 - `frontend-backend-functional-test`: testing funcional local/deploy de flujos frontend-backend existentes.
 - `smart-commit`: helper para revisar diff y crear commits convencionales.
 - `project-preflight`: checks generales antes/despues de cambios importantes.

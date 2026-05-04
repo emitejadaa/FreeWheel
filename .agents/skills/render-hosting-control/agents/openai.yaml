@@ -1,0 +1,4 @@
+interface:
+  display_name: "Render Hosting Control"
+  short_description: "Deploy and debug Render hosting"
+  default_prompt: "Use $render-hosting-control to redeploy FreeWheel on Render, inspect deploy status and logs, then run endpoint checks."

@@ -48,3 +48,5 @@ ruvector.db
 .agents/skills/*
 !.agents/skills/frontend-backend-functional-test/
 !.agents/skills/frontend-backend-functional-test/**
+!.agents/skills/render-hosting-control/
+!.agents/skills/render-hosting-control/**

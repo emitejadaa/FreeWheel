@@ -35,6 +35,7 @@ Skills are invoked using `$skill-name` syntax. Each skill has:
 Project-specific skills:
 
 - `frontend-backend-functional-test`: validates local or hosted frontend/backend URLs using `npm run test:functional` and only implemented functionality.
+- `render-hosting-control`: uses the Render CLI to validate `render.yaml`, trigger deploys, list deploys, fetch logs, and run FreeWheel remote checks.
 
 ## Documentation
 
