@@ -1,7 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { createCorsOptions, parseCorsOrigins } from './cors.config';
+import { parseCorsOrigins } from './cors.config';
 import cors from 'cors';
 
 
