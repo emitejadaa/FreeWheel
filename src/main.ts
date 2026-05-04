@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { createCorsOptions, parseCorsOrigins } from './cors.config';
+import cors from 'cors';
+
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -12,11 +14,11 @@ async function bootstrap() {
   }
 
   // app.enableCors(createCorsOptions(corsOrigins));
-  app.enableCors({
-    origin: 'https://freewheel-5a.vercel.app/', // URL de tu frontend
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    credentials: true, // Permitir cookies
-  });
+app.use(cors({
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
   app.useGlobalPipes(
     new ValidationPipe({
