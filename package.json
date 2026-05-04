@@ -18,6 +18,17 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:endpoints:local": "ts-node scripts/endpoint-checker/check-local.ts",
+    "test:endpoints:render": "ts-node scripts/endpoint-checker/check-render.ts",
+    "test:functional": "ts-node scripts/test-functional.ts",
+    "test:functional:deployed": "ts-node scripts/test-functional.ts",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "render:start": "npm run db:migrate:deploy && npm run start:prod",
+    "verify:render": "ts-node scripts/endpoint-checker/verify-render.ts",
+    "check:env": "ts-node scripts/env-check.ts",
+    "check:prisma": "ts-node scripts/prisma-check.ts",
+    "preflight": "ts-node scripts/preflight.ts",
+    "commit:smart": "ts-node scripts/smart-commit.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

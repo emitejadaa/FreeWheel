@@ -1,98 +1,260 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# FreeWheel
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+FreeWheel es un backend para un marketplace de alquiler de autos entre usuarios. El flujo actual cubre registro/login, perfil propio, vehiculos propios, listings asociados a vehiculos y consulta publica de listings activos.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+El proyecto prioriza seguridad, mantenibilidad, ownership claro y pruebas automatizadas antes de ampliar funcionalidades sensibles como verificacion de identidad, mensajeria, reservas o pagos.
 
-## Description
+## Stack
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- NestJS 11
+- TypeScript
+- Prisma 6
+- PostgreSQL, con Neon como opcion esperada para base remota
+- JWT con `@nestjs/jwt` y `passport-jwt`
+- bcrypt
+- class-validator y class-transformer
+- Jest
+- npm con `package-lock.json`
 
-## Project setup
+## Requisitos
 
-```bash
-$ npm install
+- Node.js compatible con NestJS 11. CI usa Node 22.
+- npm
+- PostgreSQL accesible mediante `DATABASE_URL`
+
+## Variables de Entorno
+
+Crear un `.env` local tomando como base `.env.example`. No commitear secretos.
+
+Variables requeridas:
+
+```env
+DATABASE_URL="postgresql://user:password@host:5432/freewheel?sslmode=require"
+JWT_SECRET="replace-with-a-secure-secret"
 ```
 
-## Compile and run the project
+Variables opcionales documentadas:
 
-```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+```env
+DIRECT_URL=""
+JWT_EXPIRES_IN="24h"
+PORT=3000
+LOCAL_API_URL="http://localhost:3000"
+RENDER_API_URL=""
+TARGET_URL=""
+FRONTEND_URL=""
+API_BASE_URL=""
+TEST_EMAIL=""
+TEST_PASSWORD=""
+FUNCTIONAL_TEST_TIMEOUT_MS=10000
+SENDGRID_API_KEY=""
+TWILIO_ACCOUNT_SID=""
+TWILIO_AUTH_TOKEN=""
 ```
 
-## Run tests
+`SENDGRID_*` y `TWILIO_*` son placeholders para sprints futuros. No hay integracion activa si el codigo no la implementa.
+
+## Instalacion
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm install
 ```
 
-## Deployment
+El `postinstall` ejecuta `prisma generate`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Desarrollo Local
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Base local por defecto:
 
-## Resources
+```txt
+http://localhost:3000
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+## Prisma
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Validar Prisma y regenerar cliente:
 
-## Support
+```bash
+npm run check:prisma
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Crear migracion local despues de revisar cambios de schema:
 
-## Stay in touch
+```bash
+npx prisma migrate dev
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+No usar `db push` ni migraciones destructivas contra produccion sin confirmacion explicita.
 
-## License
+## Tests y Checks
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```bash
+npm run build
+npm test
+npm run check:env
+npm run check:prisma
+npm run preflight
+```
+
+`npm run preflight` ejecuta Prisma, build, tests y luego intenta el checker local. El checker local requiere que el servidor este corriendo.
+
+## Probar Endpoints Locales
+
+Con el backend levantado:
+
+```bash
+npm run test:endpoints:local
+```
+
+Configurable con:
+
+```bash
+LOCAL_API_URL="http://localhost:3000"
+```
+
+El script descubre rutas de controllers y prueba endpoints publicos criticos sin autenticacion: `GET /` y `GET /listings`. No inventa tokens, usuarios ni IDs para rutas privadas o dependientes de datos.
+
+## Probar Render
+
+Definir la URL remota:
+
+```bash
+RENDER_API_URL="https://tu-servicio.onrender.com"
+```
+
+Luego ejecutar:
+
+```bash
+npm run test:endpoints:render
+```
+
+No hay URL hardcodeada. Si `RENDER_API_URL` falta, el script falla y explica que debe configurarse.
+
+## Deploy en Render
+
+La configuracion versionada esta en `render.yaml`.
+
+Build command:
+
+```bash
+npm ci && npm run build
+```
+
+Start command:
+
+```bash
+npm run render:start
+```
+
+`render:start` ejecuta `prisma migrate deploy` antes de levantar Nest. Render debe tener configuradas como minimo:
+
+```env
+DATABASE_URL="postgresql://..."
+JWT_SECRET="..."
+JWT_EXPIRES_IN="24h"
+```
+
+Si `POST /auth/register` o `POST /auth/login` devuelven `500`, revisar primero env vars y migraciones remotas.
+
+## Probar Flujo Frontend-Backend Funcional
+
+Para validar una URL local o deployada usando solo funcionalidades implementadas:
+
+```bash
+TARGET_URL="http://localhost:3000" npm run test:functional
+TARGET_URL="https://tu-api.onrender.com" npm run test:functional
+FRONTEND_URL="https://tu-front.vercel.app" API_BASE_URL="https://tu-api.onrender.com" npm run test:functional
+```
+
+Opcionalmente se pueden usar credenciales de prueba existentes:
+
+```bash
+TEST_EMAIL="e2e-user@example.com" TEST_PASSWORD="TestPassword123!" API_BASE_URL="https://tu-api.onrender.com" npm run test:functional
+```
+
+El reporte muestra funcionalidades detectadas, pruebas ejecutadas, `PASS`, `FAIL`, `SKIP`, errores HTTP, validacion, autenticacion, conexion y CORS. Si register/login existen y no se pasan credenciales, crea un usuario falso unico con datos `e2e-test-*`. No prueba pagos, email/SMS, admin, mensajeria, reservas ni funcionalidades futuras si no existen en codigo.
+
+## Verificar Despues de Push o Deploy
+
+```bash
+npm run verify:render
+```
+
+Este comando reintenta de forma limitada contra `RENDER_API_URL`. No confirma por si mismo que Render haya terminado el deploy; solo verifica la URL disponible. Variables opcionales:
+
+```env
+RENDER_VERIFY_ATTEMPTS=5
+RENDER_VERIFY_DELAY_MS=15000
+```
+
+## Skills y Tools del Proyecto
+
+Las guias estan en `docs/skills/`:
+
+- `test-local-endpoints`: smoke test local de endpoints publicos.
+- `test-render-endpoints`: smoke test remoto usando `RENDER_API_URL`.
+- `deploy-verification`: verificacion remota con reintentos limitados.
+- `frontend-backend-functional-test`: testing funcional local/deploy de flujos frontend-backend existentes.
+- `smart-commit`: helper para revisar diff y crear commits convencionales.
+- `project-preflight`: checks generales antes/despues de cambios importantes.
+- `env-checker`: validacion de `.env.example` y variables requeridas.
+- `prisma-safety-check`: validacion Prisma sin migraciones destructivas.
+
+## Commits
+
+Usar Conventional Commits:
+
+```txt
+feat(auth): add email verification endpoint
+fix(prisma): correct listing relation
+test(api): add local endpoint healthcheck
+docs(agents): document endpoint testing workflow
+chore(render): add deploy verification script
+```
+
+Helper:
+
+```bash
+npm run commit:smart
+git add <related-files>
+npm run commit:smart -- --commit "docs(agents): update workflow"
+```
+
+El helper revisa cambios, bloquea archivos sensibles obvios, corre build/tests y commitea solo archivos ya stageados.
+
+## CI
+
+Existe un workflow en `.github/workflows/ci.yml` que corre:
+
+- `npm ci`
+- `npm run check:prisma`
+- `npm run build`
+- `npm test -- --runInBand`
+- `npm run check:env`
+- `npm run test:endpoints:render` solo si existe el secret `RENDER_API_URL`
+
+Para activar el check remoto, configurar `RENDER_API_URL` como secret del repo.
+
+## Endpoints
+
+El contrato actual esta documentado en `ENDPOINTS.md`. Si un endpoint no esta documentado, revisar primero los controllers en `src/**/**.controller.ts` antes de asumir que existe.
+
+## Estado Actual
+
+Implementado:
+
+- Auth con register/login y JWT.
+- Perfil propio.
+- CRUD de vehiculos propios con ownership.
+- CRUD de listings con soft delete y consulta publica de activos.
+- Scripts de validacion local, Render, env, Prisma, preflight y commit helper.
+
+Proximos pasos recomendados:
+
+- Agregar healthcheck explicito si Render necesita una ruta dedicada.
+- Mantener `ENDPOINTS.md` actualizado con cada cambio de contrato.
+- Antes de identidad, pagos o mensajeria, definir decisiones de producto y proveedores.

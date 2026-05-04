@@ -40,7 +40,11 @@ claude.md
 .env.*.local
 
 ruvector.db
-AGENTS.md
 .prettierrc
 .claude-flow
-.agents
+.agents/*
+!.agents/README.md
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/frontend-backend-functional-test/
+!.agents/skills/frontend-backend-functional-test/**
