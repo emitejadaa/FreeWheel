@@ -98,7 +98,69 @@ export async function runEndpointChecks(
     }
   }
 
+  const frontendUrl = process.env.FRONTEND_URL;
+  if (frontendUrl && normalizeBaseUrl(frontendUrl) !== normalizeBaseUrl(baseUrl)) {
+    results.push(await runCorsPreflightCheck(baseUrl, frontendUrl));
+  }
+
   return results;
+}
+
+async function runCorsPreflightCheck(baseUrl: string, frontendUrl: string): Promise<CheckResult> {
+  const path = '/auth/login';
+  const url = resolveUrl(baseUrl, path);
+  const startedAt = performance.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: 'OPTIONS',
+      signal: controller.signal,
+      headers: {
+        Origin: normalizeBaseUrl(frontendUrl),
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type, authorization',
+      },
+    });
+    const responseTimeMs = Math.round(performance.now() - startedAt);
+    const allowOrigin = response.headers.get('access-control-allow-origin');
+    const ok = response.status === 204 && allowOrigin === normalizeBaseUrl(frontendUrl);
+
+    return {
+      method: 'OPTIONS',
+      path,
+      expectedStatus: 204,
+      critical: true,
+      description: `CORS preflight from ${normalizeBaseUrl(frontendUrl)}`,
+      url,
+      receivedStatus: response.status,
+      responseTimeMs,
+      ok,
+      skipped: false,
+      error: ok
+        ? undefined
+        : `Expected access-control-allow-origin: ${normalizeBaseUrl(frontendUrl)}, received: ${
+            allowOrigin ?? 'missing'
+          }`,
+    };
+  } catch (error) {
+    return {
+      method: 'OPTIONS',
+      path,
+      expectedStatus: 204,
+      critical: true,
+      description: `CORS preflight from ${normalizeBaseUrl(frontendUrl)}`,
+      url,
+      receivedStatus: null,
+      responseTimeMs: Math.round(performance.now() - startedAt),
+      ok: false,
+      skipped: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function hasCriticalFailures(results: CheckResult[]): boolean {
