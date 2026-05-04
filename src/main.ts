@@ -11,7 +11,12 @@ async function bootstrap() {
     console.warn('No CORS origins configured. Set FRONTEND_URL or CORS_ORIGINS for browser clients.');
   }
 
-  app.enableCors(createCorsOptions(corsOrigins));
+  // app.enableCors(createCorsOptions(corsOrigins));
+  app.enableCors({
+    origin: 'https://freewheel-5a.vercel.app/', // URL de tu frontend
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true, // Permitir cookies
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -23,3 +28,4 @@ async function bootstrap() {
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
+
