@@ -3,10 +3,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ListingStatus } from '@prisma/client';
+import { Listing, ListingStatus, Vehicle } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateListingDto } from './dto/create-listing.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
+
+type ListingWithVehicle = Listing & { vehicle: Vehicle };
+type PublicListing = Omit<Listing, 'ownerId'> & {
+  vehicle: Omit<Vehicle, 'ownerId' | 'plate'>;
+};
 
 @Injectable()
 export class ListingsService {
@@ -36,12 +41,14 @@ export class ListingsService {
     });
   }
 
-  findActive() {
-    return this.prisma.listing.findMany({
+  async findActive(): Promise<PublicListing[]> {
+    const listings = await this.prisma.listing.findMany({
       where: { status: ListingStatus.ACTIVE },
       include: { vehicle: true },
       orderBy: { createdAt: 'desc' },
     });
+
+    return listings.map((listing) => this.toPublicListing(listing));
   }
 
   findMine(ownerId: string) {
@@ -62,7 +69,7 @@ export class ListingsService {
       throw new NotFoundException('Listing not found');
     }
 
-    return listing;
+    return this.toPublicListing(listing);
   }
 
   async update(ownerId: string, id: string, data: UpdateListingDto) {
@@ -119,5 +126,19 @@ export class ListingsService {
     }
 
     return listing;
+  }
+
+  private toPublicListing(listing: ListingWithVehicle): PublicListing {
+    const { ownerId: _ownerId, vehicle, ...publicListing } = listing;
+    const {
+      ownerId: _vehicleOwnerId,
+      plate: _plate,
+      ...publicVehicle
+    } = vehicle;
+
+    return {
+      ...publicListing,
+      vehicle: publicVehicle,
+    };
   }
 }

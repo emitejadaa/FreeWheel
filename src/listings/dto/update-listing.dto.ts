@@ -6,29 +6,39 @@ import {
   IsPositive,
   IsString,
   Max,
+  MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 export class UpdateListingDto {
   @IsOptional()
   @IsString()
+  @MinLength(1)
   vehicleId?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(5)
+  @MaxLength(120)
   title?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(10)
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
   @IsNumber()
   @IsPositive()
+  @Max(10000000)
   pricePerDay?: number;
 
   @IsOptional()
   @IsString()
+  @MinLength(2)
+  @MaxLength(160)
   locationText?: string;
 
   @IsOptional()
@@ -58,6 +68,7 @@ export class UpdateListingDto {
   @IsOptional()
   @IsNumber()
   @IsPositive()
+  @Max(100)
   deliveryRadiusKm?: number;
 
   @IsOptional()

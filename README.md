@@ -213,9 +213,7 @@ RENDER_VERIFY_ATTEMPTS=5
 RENDER_VERIFY_DELAY_MS=15000
 ```
 
-## Skills y Tools del Proyecto
-
-Las guias estan en `docs/skills/`:
+## Scripts de Verificacion
 
 - `test-local-endpoints`: smoke test local de endpoints publicos.
 - `test-render-endpoints`: smoke test remoto usando `RENDER_API_URL`.
@@ -249,22 +247,26 @@ npm run commit:smart -- --commit "docs(agents): update workflow"
 
 El helper revisa cambios, bloquea archivos sensibles obvios, corre build/tests y commitea solo archivos ya stageados.
 
-## CI
-
-Existe un workflow en `.github/workflows/ci.yml` que corre:
-
-- `npm ci`
-- `npm run check:prisma`
-- `npm run build`
-- `npm test -- --runInBand`
-- `npm run check:env`
-- `npm run test:endpoints:render` solo si existe el secret `RENDER_API_URL`
-
-Para activar el check remoto, configurar `RENDER_API_URL` como secret del repo.
-
 ## Endpoints
 
-El contrato actual esta documentado en `ENDPOINTS.md`. Si un endpoint no esta documentado, revisar primero los controllers en `src/**/**.controller.ts` antes de asumir que existe.
+Los endpoints actuales se derivan de los controllers en `src/**/**.controller.ts`. Rutas implementadas:
+
+- `GET /`
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /users/me`
+- `PATCH /users/me`
+- `POST /vehicles`
+- `GET /vehicles/me`
+- `GET /vehicles/:id`
+- `PATCH /vehicles/:id`
+- `DELETE /vehicles/:id`
+- `POST /listings`
+- `GET /listings`
+- `GET /listings/me`
+- `GET /listings/:id`
+- `PATCH /listings/:id`
+- `DELETE /listings/:id`
 
 ## Estado Actual
 
@@ -272,12 +274,16 @@ Implementado:
 
 - Auth con register/login y JWT.
 - Perfil propio.
+- Campos base de identidad: displayName, phone, profilePhotoUrl, user status y verification status.
 - CRUD de vehiculos propios con ownership.
 - CRUD de listings con soft delete y consulta publica de activos.
+- Serializacion publica de vehiculos/listings sin ownerId ni patente.
 - Scripts de validacion local, Render, env, Prisma, preflight y commit helper.
 
 Proximos pasos recomendados:
 
 - Agregar healthcheck explicito si Render necesita una ruta dedicada.
-- Mantener `ENDPOINTS.md` actualizado con cada cambio de contrato.
-- Antes de identidad, pagos o mensajeria, definir decisiones de producto y proveedores.
+- Definir flujo de verificacion real antes de integrar proveedores externos.
+- Mejorar filtros, paginacion y ordenamiento del catalogo publico.
+- Mantener este README actualizado con cada cambio de contrato publico.
+- Antes de pagos o mensajeria avanzada, definir decisiones de producto y proveedores.

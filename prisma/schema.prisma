@@ -14,8 +14,18 @@ enum UserRole {
 
 enum UserStatus {
   ACTIVE
+  PENDING_VERIFICATION
   SUSPENDED
   DELETED
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  EMAIL_VERIFIED
+  PHONE_VERIFIED
+  ID_SUBMITTED
+  VERIFIED
+  REJECTED
 }
 
 enum ListingStatus {
@@ -46,50 +56,71 @@ enum DrivetrainType {
 }
 
 model User {
-  id        String     @id @default(uuid())
-  email     String     @unique
-  password  String
-  firstName String
-  lastName  String
-  phone     String?
-  role      UserRole   @default(USER)
-  status    UserStatus @default(ACTIVE)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id                 String             @id @default(uuid())
+  email              String             @unique
+  password           String
+  firstName          String
+  lastName           String
+  displayName        String?
+  phone              String?
+  profilePhotoUrl    String?
+  role               UserRole           @default(USER)
+  status             UserStatus         @default(ACTIVE)
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
-  vehicles Vehicle[]
-  listings Listing[]
+  vehicles      Vehicle[]
+  listings      Listing[]
+  verifications UserVerification[]
 
   @@index([email])
+  @@index([status])
+  @@index([verificationStatus])
+}
+
+model UserVerification {
+  id          String             @id @default(uuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status      VerificationStatus @default(ID_SUBMITTED)
+  documentUrl String?
+  selfieUrl   String?
+  notes       String?
+  reviewedAt  DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([userId])
   @@index([status])
 }
 
 model Vehicle {
-  id                               String            @id @default(uuid())
-  ownerId                          String
-  owner                            User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  brand                            String
-  model                            String
-  year                             Int
-  plate                            String?
-  color                            String?
-  seats                            Int?
-  transmission                     TransmissionType?
-  fuelType                         FuelType?
-  drivetrain                       DrivetrainType?
-  bluetooth                        Boolean?
-  rearCamera                       Boolean?
-  parkingSensors                   Boolean?
-  fuelConsumptionLitersPer100Km   Float?
-  doors                            Int?
-  trunkCapacityLiters              Int?
-  widthMm                          Int?
-  lengthMm                         Int?
-  heightMm                         Int?
-  weightKg                         Int?
-  observations                     String?
-  createdAt                        DateTime          @default(now())
-  updatedAt                        DateTime          @updatedAt
+  id                            String            @id @default(uuid())
+  ownerId                       String
+  owner                         User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  brand                         String
+  model                         String
+  year                          Int
+  plate                         String?
+  color                         String?
+  seats                         Int?
+  transmission                  TransmissionType?
+  fuelType                      FuelType?
+  drivetrain                    DrivetrainType?
+  bluetooth                     Boolean?
+  rearCamera                    Boolean?
+  parkingSensors                Boolean?
+  fuelConsumptionLitersPer100Km Float?
+  doors                         Int?
+  trunkCapacityLiters           Int?
+  widthMm                       Int?
+  lengthMm                      Int?
+  heightMm                      Int?
+  weightKg                      Int?
+  observations                  String?
+  createdAt                     DateTime          @default(now())
+  updatedAt                     DateTime          @updatedAt
 
   listings Listing[]
 

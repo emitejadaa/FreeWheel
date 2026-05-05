@@ -8,16 +8,22 @@ import {
   IsPositive,
   IsString,
   Max,
+  MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 export class UpdateVehicleDto {
   @IsOptional()
   @IsString()
+  @MinLength(1)
+  @MaxLength(80)
   brand?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
+  @MaxLength(80)
   model?: string;
 
   @IsOptional()
@@ -28,15 +34,18 @@ export class UpdateVehicleDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   plate?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(40)
   color?: string;
 
   @IsOptional()
   @IsInt()
   @IsPositive()
+  @Max(12)
   seats?: number;
 
   @IsOptional()
@@ -71,6 +80,7 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsInt()
   @IsPositive()
+  @Max(8)
   doors?: number;
 
   @IsOptional()
@@ -100,5 +110,6 @@ export class UpdateVehicleDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   observations?: string;
 }

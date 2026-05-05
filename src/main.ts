@@ -1,24 +1,19 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { parseCorsOrigins } from './cors.config';
-import cors from 'cors';
-
+import { createCorsOptions, parseCorsOrigins } from './cors.config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const corsOrigins = parseCorsOrigins();
 
   if (process.env.NODE_ENV === 'production' && corsOrigins.length === 0) {
-    console.warn('No CORS origins configured. Set FRONTEND_URL or CORS_ORIGINS for browser clients.');
+    console.warn(
+      'No CORS origins configured. Set FRONTEND_URL or CORS_ORIGINS for browser clients.',
+    );
   }
 
-  // app.enableCors(createCorsOptions(corsOrigins));
-app.use(cors({
-  origin: '*', 
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  app.enableCors(createCorsOptions(corsOrigins));
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -30,4 +25,3 @@ app.use(cors({
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
-
