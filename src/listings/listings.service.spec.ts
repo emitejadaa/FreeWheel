@@ -8,6 +8,7 @@ describe('ListingsService', () => {
   let service: ListingsService;
   let prisma: {
     listing: {
+      count: jest.Mock;
       create: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
@@ -67,6 +68,7 @@ describe('ListingsService', () => {
   beforeEach(async () => {
     prisma = {
       listing: {
+        count: jest.fn(),
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
@@ -82,7 +84,14 @@ describe('ListingsService', () => {
         ListingsService,
         {
           provide: PrismaService,
-          useValue: prisma,
+          useValue: {
+            ...prisma,
+            $transaction: jest
+              .fn()
+              .mockImplementation((promises: Promise<unknown>[]) =>
+                Promise.all(promises),
+              ),
+          },
         },
       ],
     }).compile();
@@ -91,13 +100,15 @@ describe('ListingsService', () => {
   });
 
   it('hides ownerId and vehicle plate in public listing lists', async () => {
+    prisma.listing.count.mockResolvedValue(1);
     prisma.listing.findMany.mockResolvedValue([listing]);
 
     const result = await service.findActive();
 
-    expect(result[0]).not.toHaveProperty('ownerId');
-    expect(result[0].vehicle).not.toHaveProperty('ownerId');
-    expect(result[0].vehicle).not.toHaveProperty('plate');
+    expect(result.data[0]).not.toHaveProperty('ownerId');
+    expect(result.data[0].vehicle).not.toHaveProperty('ownerId');
+    expect(result.data[0].vehicle).not.toHaveProperty('plate');
+    expect(result.total).toBe(1);
   });
 
   it('requires vehicle ownership when creating listings', async () => {

@@ -267,6 +267,36 @@ Los endpoints actuales se derivan de los controllers en `src/**/**.controller.ts
 - `GET /listings/:id`
 - `PATCH /listings/:id`
 - `DELETE /listings/:id`
+- `POST /verification/email/request`
+- `POST /verification/email/confirm`
+- `POST /verification/phone/request`
+- `POST /verification/phone/confirm`
+- `GET /verification/me/status`
+- `POST /verification/identity/submit`
+- `GET /verification/identity/me`
+- `POST /bookings`
+- `GET /bookings/me`
+- `GET /bookings/:id`
+- `PATCH /bookings/:id/accept`
+- `PATCH /bookings/:id/reject`
+- `PATCH /bookings/:id/cancel`
+- `PATCH /bookings/:id/ready-for-pickup`
+- `GET /bookings/:id/tokens`
+- `POST /bookings/:id/confirm-pickup`
+- `POST /bookings/:id/confirm-return`
+- `POST /media/assets`
+- `GET /media/assets/me`
+- `GET /admin/users`
+- `GET /admin/users/:id`
+- `PATCH /admin/users/:id/status`
+- `PATCH /admin/users/:id/role`
+- `GET /admin/verifications`
+- `GET /admin/verifications/:id`
+- `PATCH /admin/verifications/:id/review`
+- `GET /admin/listings`
+- `PATCH /admin/listings/:id/status`
+- `GET /admin/bookings`
+- `GET /admin/bookings/:id`
 
 ## Estado Actual
 
@@ -275,15 +305,22 @@ Implementado:
 - Auth con register/login y JWT.
 - Perfil propio.
 - Campos base de identidad: displayName, phone, profilePhotoUrl, user status y verification status.
+- Verificacion interna de email/phone con codigos hasheados, sin SendGrid/Twilio.
+- Verificacion de identidad por metadata/URLs, sin upload real.
+- Roles guard y endpoints admin protegidos por `ADMIN`.
 - CRUD de vehiculos propios con ownership.
 - CRUD de listings con soft delete y consulta publica de activos.
+- Filtros, paginacion y sorting en catalogo publico de listings.
+- Bookings sin dinero real con estados, snapshots de precio y tokens QR para pickup/return.
+- Placeholders de pagos y media sin proveedores externos.
 - Serializacion publica de vehiculos/listings sin ownerId ni patente.
 - Scripts de validacion local, Render, env, Prisma, preflight y commit helper.
 
 Proximos pasos recomendados:
 
 - Agregar healthcheck explicito si Render necesita una ruta dedicada.
-- Definir flujo de verificacion real antes de integrar proveedores externos.
-- Mejorar filtros, paginacion y ordenamiento del catalogo publico.
+- Conectar proveedores reales de email/SMS solo cuando se decida SendGrid/Twilio u otro.
+- Conectar storage real solo cuando se decida Cloudinary/S3/Supabase/etc.
+- Conectar pagos reales solo cuando se decida proveedor y reglas de negocio.
 - Mantener este README actualizado con cada cambio de contrato publico.
-- Antes de pagos o mensajeria avanzada, definir decisiones de producto y proveedores.
+- Implementar conversaciones REST si se prioriza comunicacion previa a reservas.

@@ -6,12 +6,14 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { CurrentUserPayload } from '../common/types/current-user.type';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateListingDto } from './dto/create-listing.dto';
+import { ListListingsQueryDto } from './dto/list-listings-query.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
 import { ListingsService } from './listings.service';
 
@@ -29,8 +31,8 @@ export class ListingsController {
   }
 
   @Get()
-  findActive() {
-    return this.listingsService.findActive();
+  findActive(@Query() query: ListListingsQueryDto) {
+    return this.listingsService.findActive(query);
   }
 
   @Get('me')

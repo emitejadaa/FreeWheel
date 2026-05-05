@@ -3,9 +3,19 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Listing, ListingStatus, Vehicle } from '@prisma/client';
+import {
+  BookingStatus,
+  Listing,
+  ListingStatus,
+  Prisma,
+  Vehicle,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateListingDto } from './dto/create-listing.dto';
+import {
+  ListingSort,
+  ListListingsQueryDto,
+} from './dto/list-listings-query.dto';
 import { UpdateListingDto } from './dto/update-listing.dto';
 
 type ListingWithVehicle = Listing & { vehicle: Vehicle };
@@ -41,9 +51,34 @@ export class ListingsService {
     });
   }
 
-  async findActive(): Promise<PublicListing[]> {
+  async findActive(query: ListListingsQueryDto = {}) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const where = this.buildPublicWhere(query);
+    const orderBy = this.buildOrderBy(query.sort);
+    const [total, listings] = await this.prisma.$transaction([
+      this.prisma.listing.count({ where }),
+      this.prisma.listing.findMany({
+        where,
+        include: { vehicle: true },
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+
+    return {
+      data: listings.map((listing) => this.toPublicListing(listing)),
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async findActiveListForLegacyTests(): Promise<PublicListing[]> {
     const listings = await this.prisma.listing.findMany({
-      where: { status: ListingStatus.ACTIVE },
+      where: this.buildPublicWhere({}),
       include: { vehicle: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -140,5 +175,71 @@ export class ListingsService {
       ...publicListing,
       vehicle: publicVehicle,
     };
+  }
+
+  private buildPublicWhere(
+    query: ListListingsQueryDto,
+  ): Prisma.ListingWhereInput {
+    const where: Prisma.ListingWhereInput = {
+      status: ListingStatus.ACTIVE,
+    };
+
+    if (query.locationText) {
+      where.locationText = {
+        contains: query.locationText,
+        mode: 'insensitive',
+      };
+    }
+
+    if (query.minPrice !== undefined || query.maxPrice !== undefined) {
+      where.pricePerDay = {
+        ...(query.minPrice !== undefined ? { gte: query.minPrice } : {}),
+        ...(query.maxPrice !== undefined ? { lte: query.maxPrice } : {}),
+      };
+    }
+
+    if (query.brand || query.model) {
+      where.vehicle = {
+        ...(query.brand
+          ? { brand: { contains: query.brand, mode: 'insensitive' } }
+          : {}),
+        ...(query.model
+          ? { model: { contains: query.model, mode: 'insensitive' } }
+          : {}),
+      };
+    }
+
+    if (query.startDate && query.endDate) {
+      where.bookings = {
+        none: {
+          status: {
+            in: [
+              BookingStatus.ACCEPTED,
+              BookingStatus.READY_FOR_PICKUP,
+              BookingStatus.IN_PROGRESS,
+              BookingStatus.RETURN_PENDING,
+            ],
+          },
+          startDate: { lt: query.endDate },
+          endDate: { gt: query.startDate },
+        },
+      };
+    }
+
+    return where;
+  }
+
+  private buildOrderBy(
+    sort: ListingSort = ListingSort.NEWEST,
+  ): Prisma.ListingOrderByWithRelationInput {
+    if (sort === ListingSort.PRICE_ASC) {
+      return { pricePerDay: 'asc' };
+    }
+
+    if (sort === ListingSort.PRICE_DESC) {
+      return { pricePerDay: 'desc' };
+    }
+
+    return { createdAt: 'desc' };
   }
 }

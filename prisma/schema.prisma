@@ -55,6 +55,55 @@ enum DrivetrainType {
   AWD
 }
 
+enum VerificationCodeTargetType {
+  EMAIL
+  PHONE
+}
+
+enum BookingStatus {
+  REQUESTED
+  ACCEPTED
+  REJECTED
+  CANCELLED_BY_RENTER
+  CANCELLED_BY_OWNER
+  READY_FOR_PICKUP
+  IN_PROGRESS
+  RETURN_PENDING
+  COMPLETED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
+enum PaymentRecordStatus {
+  MOCK
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+  CANCELLED
+}
+
+enum MediaAssetKind {
+  PROFILE_PHOTO
+  VEHICLE_PHOTO
+  DOCUMENT
+  SELFIE
+  LISTING_PHOTO
+}
+
+enum MediaAssetStatus {
+  PENDING
+  ACTIVE
+  DELETED
+}
+
 model User {
   id                 String             @id @default(uuid())
   email              String             @unique
@@ -67,12 +116,21 @@ model User {
   role               UserRole           @default(USER)
   status             UserStatus         @default(ACTIVE)
   verificationStatus VerificationStatus @default(UNVERIFIED)
+  emailVerifiedAt    DateTime?
+  phoneVerifiedAt    DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  vehicles      Vehicle[]
-  listings      Listing[]
-  verifications UserVerification[]
+  vehicles          Vehicle[]
+  listings          Listing[]
+  verifications     UserVerification[]
+  verificationCodes VerificationCode[]
+  bookingsAsOwner   Booking[]          @relation("BookingOwner")
+  bookingsAsRenter  Booking[]          @relation("BookingRenter")
+  paymentRecords    PaymentRecord[]
+  mediaAssets       MediaAsset[]
+  auditLogsAsActor  AuditLog[]         @relation("AuditActor")
+  auditLogsAsTarget AuditLog[]         @relation("AuditTargetUser")
 
   @@index([email])
   @@index([status])
@@ -93,6 +151,24 @@ model UserVerification {
 
   @@index([userId])
   @@index([status])
+}
+
+model VerificationCode {
+  id          String                     @id @default(uuid())
+  userId      String
+  user        User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  targetType  VerificationCodeTargetType
+  targetValue String
+  codeHash    String
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int                        @default(0)
+  maxAttempts Int                        @default(5)
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+
+  @@index([userId, targetType, consumedAt])
+  @@index([expiresAt])
 }
 
 model Vehicle {
@@ -123,6 +199,7 @@ model Vehicle {
   updatedAt                     DateTime          @updatedAt
 
   listings Listing[]
+  bookings Booking[]
 
   @@index([ownerId])
   @@index([brand, model])
@@ -147,7 +224,116 @@ model Listing {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
+  bookings Booking[]
+
   @@index([ownerId])
   @@index([vehicleId])
   @@index([status, createdAt])
+}
+
+model Booking {
+  id                  String        @id @default(uuid())
+  listingId           String
+  vehicleId           String
+  ownerId             String
+  renterId            String
+  listing             Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  vehicle             Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner               User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  renter              User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
+  startDate           DateTime
+  endDate             DateTime
+  status              BookingStatus @default(REQUESTED)
+  pricePerDaySnapshot Float
+  totalPriceSnapshot  Float
+  currency            String        @default("ARS")
+  pickupTokenHash     String?
+  returnTokenHash     String?
+  pickupTokenPreview  String?
+  returnTokenPreview  String?
+  pickupConfirmedAt   DateTime?
+  returnConfirmedAt   DateTime?
+  cancelledAt         DateTime?
+  cancellationReason  String?
+  paymentStatus       PaymentStatus @default(NOT_REQUIRED)
+  paymentProvider     String?
+  providerPaymentId   String?
+  platformFeeSnapshot Float?
+  depositSnapshot     Float?
+  paidAt              DateTime?
+  refundedAt          DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  paymentRecords PaymentRecord[]
+
+  @@index([listingId])
+  @@index([vehicleId])
+  @@index([ownerId])
+  @@index([renterId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+model PaymentRecord {
+  id         String              @id @default(uuid())
+  bookingId  String?
+  userId     String?
+  booking    Booking?            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  user       User?               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status     PaymentRecordStatus @default(MOCK)
+  provider   String?
+  providerId String?
+  amount     Float?
+  currency   String              @default("ARS")
+  metadata   Json?
+  paidAt     DateTime?
+  refundedAt DateTime?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  @@index([bookingId])
+  @@index([userId])
+  @@index([status])
+}
+
+model MediaAsset {
+  id              String           @id @default(uuid())
+  ownerId         String
+  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  entityType      String?
+  entityId        String?
+  kind            MediaAssetKind
+  url             String
+  storageProvider String?
+  storageKey      String?
+  mimeType        String?
+  sizeBytes       Int?
+  status          MediaAssetStatus @default(ACTIVE)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([ownerId])
+  @@index([entityType, entityId])
+  @@index([kind])
+  @@index([status])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorId      String?
+  targetUserId String?
+  actor        User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  targetUser   User?    @relation("AuditTargetUser", fields: [targetUserId], references: [id], onDelete: Restrict)
+  action       String
+  entityType   String
+  entityId     String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([actorId])
+  @@index([targetUserId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
 }
