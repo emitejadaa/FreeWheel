@@ -60,6 +60,11 @@ enum VerificationCodeTargetType {
   PHONE
 }
 
+enum VerificationCodePurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 enum BookingStatus {
   REQUESTED
   ACCEPTED
@@ -117,6 +122,8 @@ model User {
   status             UserStatus         @default(ACTIVE)
   verificationStatus VerificationStatus @default(UNVERIFIED)
   emailVerifiedAt    DateTime?
+  googleId           String?   @unique
+  acceptedTermsAt    DateTime?
   phoneVerifiedAt    DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
@@ -159,6 +166,7 @@ model VerificationCode {
   user        User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
   targetType  VerificationCodeTargetType
   targetValue String
+  purpose     VerificationCodePurpose @default(EMAIL_VERIFICATION)
   codeHash    String
   expiresAt   DateTime
   consumedAt  DateTime?

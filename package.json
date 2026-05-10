@@ -38,6 +38,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "passport-google-oauth20": "^2.0.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
@@ -56,6 +57,7 @@
     "rxjs": "^7.8.1"
   },
   "devDependencies": {
+    "@types/passport-google-oauth20": "^2.0.16",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
     "@nestjs/cli": "^11.0.0",
