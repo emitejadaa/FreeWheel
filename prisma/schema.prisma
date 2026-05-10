@@ -122,6 +122,7 @@ model User {
   status             UserStatus         @default(ACTIVE)
   verificationStatus VerificationStatus @default(UNVERIFIED)
   emailVerifiedAt    DateTime?
+  acceptedTermsAt    DateTime?
   googleId           String?   @unique
   acceptedTermsAt    DateTime?
   phoneVerifiedAt    DateTime?
