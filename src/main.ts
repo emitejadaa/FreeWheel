@@ -1,9 +1,11 @@
 import { NestFactory } from '@nestjs/core';
+import { createServer } from './app.factory';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = createServer();
+  // const app = await NestFactory.create(AppModule);
 
   app.enableCors({
     origin: true,
