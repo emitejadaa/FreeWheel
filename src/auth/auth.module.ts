@@ -10,6 +10,11 @@ import { UsersModule } from '../users/users.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { EmailModule } from '../email/email.module';
 
+const googleStrategyProviders =
+  process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+    ? [GoogleStrategy]
+    : [];
+
 @Module({
   imports: [
     UsersModule,
@@ -28,7 +33,7 @@ import { EmailModule } from '../email/email.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy],
+  providers: [AuthService, JwtStrategy, ...googleStrategyProviders],
   exports: [AuthService],
 })
 export class AuthModule {}
