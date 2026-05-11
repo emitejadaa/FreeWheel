@@ -124,7 +124,6 @@ model User {
   emailVerifiedAt    DateTime?
   acceptedTermsAt    DateTime?
   googleId           String?   @unique
-  acceptedTermsAt    DateTime?
   phoneVerifiedAt    DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
