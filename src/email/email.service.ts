@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class EmailService {
@@ -7,34 +8,30 @@ export class EmailService {
 
   constructor(private readonly configService: ConfigService) {}
 
-  private async send(to: string, subject: string, html: string) {
-    const apiKey = this.configService.get<string>('SENDGRID_API_KEY');
-    const from =
-      this.configService.get<string>('EMAIL_FROM') ?? 'noreply@freewheel.app';
+  private createTransporter() {
+    const user = this.configService.get<string>('GMAIL_USER');
+    const pass = this.configService.get<string>('GMAIL_APP_PASSWORD');
 
-    if (!apiKey) {
-      this.logger.warn(
-        `Email no enviado (sin SENDGRID_API_KEY). Para: ${to}, Asunto: ${subject}`,
-      );
-      return;
+    if (!user || !pass) {
+      this.logger.warn('Email no configurado (faltan GMAIL_USER o GMAIL_APP_PASSWORD)');
+      return null;
     }
 
-    const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: from, name: 'Freewheel' },
-        subject,
-        content: [{ type: 'text/html', value: html }],
-      }),
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user, pass },
     });
+  }
 
-    if (!res.ok) {
-      this.logger.error(`SendGrid error: ${res.status} ${await res.text()}`);
+  private async send(to: string, subject: string, html: string) {
+    const transporter = this.createTransporter();
+    if (!transporter) return;
+
+    const from = this.configService.get<string>('GMAIL_USER');
+    try {
+      await transporter.sendMail({ from: `Freewheel <${from}>`, to, subject, html });
+    } catch (err) {
+      this.logger.error(`Error enviando email: ${err.message}`);
     }
   }
 
@@ -46,22 +43,14 @@ export class EmailService {
         <div style="font-size:40px;font-weight:bold;letter-spacing:10px;color:#1a4d2e;padding:20px 0">
           ${code}
         </div>
-        <p style="color:#6b7280;font-size:13px">
-          Expira en 15 minutos. No lo compartas con nadie.
-        </p>
+        <p style="color:#6b7280;font-size:13px">Expira en 15 minutos. No lo compartas con nadie.</p>
       </div>`;
     await this.send(email, 'Tu código de verificación — Freewheel', html);
   }
 
-  async sendPasswordReset(
-    email: string,
-    firstName: string,
-    token: string,
-    userId: string,
-  ) {
+  async sendPasswordReset(email: string, firstName: string, token: string, userId: string) {
     const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL') ??
-      'https://freewheel-5a.vercel.app';
+      this.configService.get<string>('FRONTEND_URL') ?? 'https://freewheel-5a.vercel.app';
     const resetUrl = `${frontendUrl}/reset-password?token=${token}&uid=${userId}`;
 
     const html = `
