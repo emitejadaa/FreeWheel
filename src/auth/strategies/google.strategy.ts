@@ -1,19 +1,17 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { PassportStrategy } from '@nestjs/passport';
-import { Strategy, VerifyCallback } from 'passport-google-oauth20';
+import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { PassportStrategy } from "@nestjs/passport";
+import { Strategy, VerifyCallback } from "passport-google-oauth20";
+import { getPublicApiBaseUrl } from "../../config/public-urls";
 
 @Injectable()
-export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
+export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   constructor(configService: ConfigService) {
     super({
-      clientID: configService.get<string>('GOOGLE_CLIENT_ID') ?? '',
-      clientSecret: configService.get<string>('GOOGLE_CLIENT_SECRET') ?? '',
-      callbackURL: `${
-        configService.get<string>('API_BASE_URL') ??
-        'https://freewheel-2pty.onrender.com'
-      }/auth/google/callback`,
-      scope: ['email', 'profile'],
+      clientID: configService.get<string>("GOOGLE_CLIENT_ID") ?? "",
+      clientSecret: configService.get<string>("GOOGLE_CLIENT_SECRET") ?? "",
+      callbackURL: `${getPublicApiBaseUrl(configService)}/auth/google/callback`,
+      scope: ["email", "profile"],
     });
   }
 
@@ -27,8 +25,8 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     done(null, {
       googleId: id,
       email: emails[0].value,
-      firstName: name.givenName ?? '',
-      lastName: name.familyName ?? '',
+      firstName: name.givenName ?? "",
+      lastName: name.familyName ?? "",
       profilePhotoUrl: photos?.[0]?.value ?? null,
     });
   }

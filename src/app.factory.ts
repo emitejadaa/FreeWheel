@@ -1,11 +1,12 @@
-import { ValidationPipe } from '@nestjs/common';
-import type { INestApplication } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter } from '@nestjs/platform-express';
-import express from 'express';
-import type { Express, Request, Response, NextFunction } from 'express';
+import { ValidationPipe } from "@nestjs/common";
+import type { INestApplication } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import { ExpressAdapter } from "@nestjs/platform-express";
+import express from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 
-import { AppModule } from './app.module';
+import { AppModule } from "./app.module";
+import { createCorsOptions, parseCorsOrigins } from "./cors.config";
 
 let cachedServer: Express | null = null;
 let cachedApp: Promise<INestApplication> | null = null;
@@ -16,12 +17,7 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
     new ExpressAdapter(expressApp),
   );
 
-  app.enableCors({
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  });
+  app.enableCors(createCorsOptions(parseCorsOrigins()));
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -41,14 +37,16 @@ export function createServer(): Express {
     cachedServer = express();
     cachedApp = bootstrapNest(cachedServer);
 
-    cachedServer.use(async (_req: Request, _res: Response, next: NextFunction) => {
-      try {
-        await cachedApp;
-        next();
-      } catch (error) {
-        next(error);
-      }
-    });
+    cachedServer.use(
+      async (_req: Request, _res: Response, next: NextFunction) => {
+        try {
+          await cachedApp;
+          next();
+        } catch (error) {
+          next(error);
+        }
+      },
+    );
   }
 
   return cachedServer;

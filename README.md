@@ -1,71 +1,95 @@
-# FreeWheel
+# FreeWheel Backend
 
-FreeWheel es un backend para un marketplace de alquiler de autos entre usuarios. El flujo actual cubre registro/login, perfil propio, vehiculos propios, listings asociados a vehiculos y consulta publica de listings activos.
+Backend NestJS para un marketplace de alquiler de autos entre usuarios. La progresion actual cubre autenticacion, perfil, vehiculos, listings, verificaciones internas, reservas, administracion basica, media metadata y placeholders controlados para pagos.
 
-El proyecto prioriza seguridad, mantenibilidad, ownership claro y pruebas automatizadas antes de ampliar funcionalidades sensibles como verificacion de identidad, mensajeria, reservas o pagos.
+El backend esta preparado para ejecutarse localmente como Nest/Express y desplegarse en Vercel como funcion serverless usando `api/index.ts`.
 
 ## Stack
 
-- NestJS 11
+- NestJS 11 con Express
 - TypeScript
 - Prisma 6
-- PostgreSQL, con Neon como opcion esperada para base remota
+- PostgreSQL, recomendado con Neon para remoto
 - JWT con `@nestjs/jwt` y `passport-jwt`
+- Google OAuth opcional con `passport-google-oauth20`
+- Email opcional con Gmail SMTP via `nodemailer`
 - bcrypt
 - class-validator y class-transformer
 - Jest
-- npm con `package-lock.json`
+- Vercel Serverless Functions
 
-## Requisitos
+## Estructura
 
-- Node.js compatible con NestJS 11. CI usa Node 22.
-- npm
-- PostgreSQL accesible mediante `DATABASE_URL`
+```txt
+api/index.ts                     Entrada serverless de Vercel
+src/main.ts                      Entrada local/prod tradicional
+src/app.factory.ts               Fabrica compartida de Express + Nest
+src/app.module.ts                Modulos principales
+src/cors.config.ts               CORS por FRONTEND_URL/CORS_ORIGINS
+src/config/public-urls.ts        URLs publicas compartidas
+src/auth                         Registro, login, JWT, Google OAuth, password reset
+src/users                        Perfil propio y serializacion segura de usuario
+src/vehicles                     CRUD de vehiculos con ownership
+src/listings                     CRUD/catalogo publico de publicaciones
+src/verification                 Codigos email/phone e identidad metadata
+src/bookings                     Reservas y tokens de pickup/return
+src/admin                        Operaciones protegidas por rol ADMIN
+src/media                        Registro de assets externos por metadata
+src/payments                     Modulo placeholder sin proveedor real
+src/email                        Envio opcional de emails transaccionales
+src/prisma                       PrismaService compartido
+src/common                       Guards, decorators, servicios comunes
+prisma/schema.prisma             Modelos y enums Prisma
+prisma/migrations                Historial de migraciones
+scripts                         Validaciones, checks y herramientas locales
+test                             E2E base
+```
 
-## Variables de Entorno
+## Variables De Entorno
 
-Crear un `.env` local tomando como base `.env.example`. No commitear secretos.
+Crear un `.env` local desde `.env.example`. No commitear secretos reales.
 
-Variables requeridas:
+Requeridas:
 
 ```env
 DATABASE_URL="postgresql://user:password@host:5432/freewheel?sslmode=require"
 JWT_SECRET="replace-with-a-secure-secret"
 ```
 
-Variables opcionales documentadas:
+Opcionales:
 
 ```env
-DIRECT_URL=""
 JWT_EXPIRES_IN="24h"
 PORT=3000
 LOCAL_API_URL="http://localhost:3000"
-RENDER_API_URL=""
+API_BASE_URL="https://tu-backend.vercel.app"
+FRONTEND_URL="https://tu-front.vercel.app"
+CORS_ORIGINS="https://preview-a.vercel.app,https://preview-b.vercel.app"
 TARGET_URL=""
-FRONTEND_URL=""
-CORS_ORIGINS=""
-API_BASE_URL=""
 TEST_EMAIL=""
 TEST_PASSWORD=""
 FUNCTIONAL_TEST_TIMEOUT_MS=10000
-SENDGRID_API_KEY=""
-TWILIO_ACCOUNT_SID=""
-TWILIO_AUTH_TOKEN=""
+DEPLOY_VERIFY_ATTEMPTS=5
+DEPLOY_VERIFY_DELAY_MS=15000
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+GMAIL_USER=""
+GMAIL_APP_PASSWORD=""
 ```
 
-`SENDGRID_*` y `TWILIO_*` son placeholders para sprints futuros. No hay integracion activa si el codigo no la implementa.
+Notas:
 
-## Instalacion
+- `API_BASE_URL` es la URL publica del backend. En Vercel tambien puede resolverse desde `VERCEL_URL`.
+- `FRONTEND_URL` se usa para CORS, redireccion Google y links de recuperacion de password.
+- `CORS_ORIGINS` permite multiples origenes separados por coma.
+- `JWT_EXPIRES_IN` controla la expiracion de tokens emitidos por `JwtModule`.
+- `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` habilitan la estrategia Google solo si ambos existen.
+- `GMAIL_USER` y `GMAIL_APP_PASSWORD` habilitan envio real de email. Si faltan, el servicio loguea warning y no envia.
+
+## Instalacion Y Desarrollo
 
 ```bash
 npm install
-```
-
-El `postinstall` ejecuta `prisma generate`.
-
-## Desarrollo Local
-
-```bash
 npm run start:dev
 ```
 
@@ -75,196 +99,105 @@ Base local por defecto:
 http://localhost:3000
 ```
 
-## Prisma
+El `postinstall` ejecuta `prisma generate`.
 
-Validar Prisma y regenerar cliente:
+## Vercel Serverless
 
-```bash
-npm run check:prisma
+La configuracion activa esta en `vercel.json`.
+
+```json
+{
+  "version": 2,
+  "builds": [{ "src": "api/index.ts", "use": "@vercel/node" }],
+  "routes": [{ "src": "/(.*)", "dest": "api/index.ts" }]
+}
 ```
 
-Crear migracion local despues de revisar cambios de schema:
+`api/index.ts` exporta el server Express creado por `src/app.factory.ts`. Esa fabrica cachea la app Nest para reducir trabajo entre invocaciones serverless.
 
-```bash
-npx prisma migrate dev
-```
-
-No usar `db push` ni migraciones destructivas contra produccion sin confirmacion explicita.
-
-## Tests y Checks
-
-```bash
-npm run build
-npm test
-npm run check:env
-npm run check:prisma
-npm run preflight
-```
-
-`npm run preflight` ejecuta Prisma, build, tests y luego intenta el checker local. El checker local requiere que el servidor este corriendo.
-
-## Probar Endpoints Locales
-
-Con el backend levantado:
-
-```bash
-npm run test:endpoints:local
-```
-
-Configurable con:
-
-```bash
-LOCAL_API_URL="http://localhost:3000"
-```
-
-El script descubre rutas de controllers y prueba endpoints publicos criticos sin autenticacion: `GET /` y `GET /listings`. No inventa tokens, usuarios ni IDs para rutas privadas o dependientes de datos.
-
-## Probar Render
-
-Definir la URL remota:
-
-```bash
-RENDER_API_URL="https://tu-servicio.onrender.com"
-RENDER_SERVICE_ID="srv_..."
-RENDER_API_KEY="rnd_..."
-RENDER_WORKSPACE_ID=""
-```
-
-Luego ejecutar:
-
-```bash
-npm run test:endpoints:render
-```
-
-No hay URL hardcodeada. Si `RENDER_API_URL` falta, el script falla y explica que debe configurarse.
-
-## Deploy en Render
-
-La configuracion versionada esta en `render.yaml`.
-
-Build command:
-
-```bash
-npm ci && npm run build
-```
-
-Start command:
-
-```bash
-npm run render:start
-```
-
-`render:start` ejecuta `prisma migrate deploy` antes de levantar Nest. Render debe tener configuradas como minimo:
+Configurar en Vercel como minimo:
 
 ```env
 DATABASE_URL="postgresql://..."
 JWT_SECRET="..."
 JWT_EXPIRES_IN="24h"
 FRONTEND_URL="https://tu-front.vercel.app"
+API_BASE_URL="https://tu-backend.vercel.app"
 ```
 
-Si `POST /auth/register` o `POST /auth/login` devuelven `500`, revisar primero env vars y migraciones remotas.
-
-`FRONTEND_URL` habilita CORS para el frontend desplegado. Para permitir varios origenes, usar `CORS_ORIGINS` con valores separados por coma, por ejemplo `https://front-a.vercel.app,https://front-b.vercel.app`.
-
-Para controlar deploys desde la CLI oficial de Render, configurar localmente `RENDER_API_KEY` y `RENDER_SERVICE_ID` en `.env` o en la shell. `RENDER_WORKSPACE_ID` es opcional si la CLI ya tiene workspace activo, pero puede ser necesario para `render:validate`. No commitear valores reales.
+Las migraciones Prisma no se ejecutan automaticamente dentro del handler serverless. Aplicarlas con:
 
 ```bash
-npm run render:validate
-npm run render:deploy
-npm run render:deploys
-npm run render:logs
+npm run db:migrate:deploy
 ```
 
-`npm run render:deploy` espera a que el deploy termine y falla con codigo distinto de cero si Render reporta error. Para disparar el deploy y no esperar:
+## Prisma
+
+Modelos principales:
+
+- `User`: cuenta, credenciales, rol, estado, verificacion, Google ID y relaciones.
+- `Vehicle`: vehiculos propios con atributos tecnicos.
+- `Listing`: publicaciones asociadas a vehiculos y owner.
+- `Booking`: reservas con snapshots de precio, estado y tokens de entrega/devolucion.
+- `VerificationCode`: codigos hasheados para email y password reset.
+- `UserVerification`: metadata de verificacion de identidad.
+- `PaymentRecord`: registro preparado para pagos, actualmente mock/placeholder.
+- `MediaAsset`: metadata de archivos externos.
+- `AuditLog`: auditoria administrativa.
+
+Enums relevantes: `UserRole`, `UserStatus`, `VerificationStatus`, `ListingStatus`, `BookingStatus`, `PaymentStatus`, `MediaAssetKind`, `MediaAssetStatus`.
+
+Comandos:
 
 ```bash
-npm run render:deploy:no-wait
+npm run check:prisma
+npx prisma migrate dev
+npm run db:migrate:deploy
 ```
 
-## Probar Flujo Frontend-Backend Funcional
+No usar migraciones destructivas ni `db push` contra produccion sin confirmacion explicita.
 
-Para validar una URL local o deployada usando solo funcionalidades implementadas:
+## Recursos Nest
 
-```bash
-TARGET_URL="http://localhost:3000" npm run test:functional
-TARGET_URL="https://tu-api.onrender.com" npm run test:functional
-FRONTEND_URL="https://tu-front.vercel.app" API_BASE_URL="https://tu-api.onrender.com" npm run test:functional
-```
-
-Opcionalmente se pueden usar credenciales de prueba existentes:
-
-```bash
-TEST_EMAIL="e2e-user@example.com" TEST_PASSWORD="TestPassword123!" API_BASE_URL="https://tu-api.onrender.com" npm run test:functional
-```
-
-El reporte muestra funcionalidades detectadas, pruebas ejecutadas, `PASS`, `FAIL`, `SKIP`, errores HTTP, validacion, autenticacion, conexion y CORS. Si register/login existen y no se pasan credenciales, crea un usuario falso unico con datos `e2e-test-*`. No prueba pagos, email/SMS, admin, mensajeria, reservas ni funcionalidades futuras si no existen en codigo.
-
-## Verificar Despues de Push o Deploy
-
-```bash
-npm run verify:render
-```
-
-Este comando reintenta de forma limitada contra `RENDER_API_URL`. No confirma por si mismo que Render haya terminado el deploy; solo verifica la URL disponible. Variables opcionales:
-
-```env
-RENDER_VERIFY_ATTEMPTS=5
-RENDER_VERIFY_DELAY_MS=15000
-```
-
-## Scripts de Verificacion
-
-- `test-local-endpoints`: smoke test local de endpoints publicos.
-- `test-render-endpoints`: smoke test remoto usando `RENDER_API_URL`.
-- `deploy-verification`: verificacion remota con reintentos limitados.
-- `render-hosting-control`: control de deploys, logs y estado de Render con la CLI oficial.
-- `frontend-backend-functional-test`: testing funcional local/deploy de flujos frontend-backend existentes.
-- `smart-commit`: helper para revisar diff y crear commits convencionales.
-- `project-preflight`: checks generales antes/despues de cambios importantes.
-- `env-checker`: validacion de `.env.example` y variables requeridas.
-- `prisma-safety-check`: validacion Prisma sin migraciones destructivas.
-
-## Commits
-
-Usar Conventional Commits:
-
-```txt
-feat(auth): add email verification endpoint
-fix(prisma): correct listing relation
-test(api): add local endpoint healthcheck
-docs(agents): document endpoint testing workflow
-chore(render): add deploy verification script
-```
-
-Helper:
-
-```bash
-npm run commit:smart
-git add <related-files>
-npm run commit:smart -- --commit "docs(agents): update workflow"
-```
-
-El helper revisa cambios, bloquea archivos sensibles obvios, corre build/tests y commitea solo archivos ya stageados.
+- `AuthModule`: register/login, JWT, email verification, password reset y Google OAuth opcional.
+- `UsersModule`: lectura y actualizacion de perfil propio.
+- `VehiclesModule`: alta, lectura, edicion y baja de vehiculos propios.
+- `ListingsModule`: publicaciones propias y catalogo publico activo.
+- `VerificationModule`: verificacion interna de email/phone e identidad por URLs/metadata.
+- `BookingsModule`: solicitudes, aceptacion/rechazo/cancelacion y confirmaciones por token.
+- `AdminModule`: gestion protegida por `ADMIN` de usuarios, verificaciones, listings y bookings.
+- `MediaModule`: registro de assets por URL y metadata.
+- `PaymentsModule`: reservado para integracion futura de pagos.
+- `EmailModule`: Gmail SMTP opcional para emails transaccionales.
+- `PrismaModule`: cliente Prisma compartido.
 
 ## Endpoints
 
-Los endpoints actuales se derivan de los controllers en `src/**/**.controller.ts`. Rutas implementadas:
+Publicos o auth:
 
 - `GET /`
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /auth/forgot-password`
+- `POST /auth/reset-password`
+- `GET /auth/google`
+- `GET /auth/google/callback`
+- `GET /listings`
+- `GET /listings/:id`
+
+Usuario autenticado:
+
 - `GET /users/me`
 - `PATCH /users/me`
+- `POST /auth/verify-email`
+- `POST /auth/resend-verification`
 - `POST /vehicles`
 - `GET /vehicles/me`
 - `GET /vehicles/:id`
 - `PATCH /vehicles/:id`
 - `DELETE /vehicles/:id`
 - `POST /listings`
-- `GET /listings`
 - `GET /listings/me`
-- `GET /listings/:id`
 - `PATCH /listings/:id`
 - `DELETE /listings/:id`
 - `POST /verification/email/request`
@@ -286,6 +219,9 @@ Los endpoints actuales se derivan de los controllers en `src/**/**.controller.ts
 - `POST /bookings/:id/confirm-return`
 - `POST /media/assets`
 - `GET /media/assets/me`
+
+Admin:
+
 - `GET /admin/users`
 - `GET /admin/users/:id`
 - `PATCH /admin/users/:id/status`
@@ -298,29 +234,64 @@ Los endpoints actuales se derivan de los controllers en `src/**/**.controller.ts
 - `GET /admin/bookings`
 - `GET /admin/bookings/:id`
 
+## Integraciones
+
+- PostgreSQL/Neon: persistencia principal via Prisma.
+- Vercel: runtime serverless para `api/index.ts`.
+- Gmail SMTP: opcional, usado por `EmailService`.
+- Google OAuth: opcional, se registra solo con credenciales presentes.
+- Pagos, storage real, SMS y mensajeria todavia no tienen proveedor activo.
+
+## Tests Y Checks
+
+```bash
+npm run build
+npm test
+npm run check:env
+npm run check:prisma
+npm run preflight
+```
+
+Checks de endpoints:
+
+```bash
+npm run test:endpoints:local
+API_BASE_URL="https://tu-backend.vercel.app" npm run test:endpoints:deployed
+API_BASE_URL="https://tu-backend.vercel.app" npm run verify:deployed
+```
+
+Testing funcional:
+
+```bash
+TARGET_URL="http://localhost:3000" npm run test:functional
+API_BASE_URL="https://tu-backend.vercel.app" npm run test:functional
+FRONTEND_URL="https://tu-front.vercel.app" API_BASE_URL="https://tu-backend.vercel.app" npm run test:functional
+```
+
+`npm run preflight` ejecuta Prisma, build y tests. Luego intenta el checker local; si el servidor no esta levantado, informa que hay que iniciar `npm run start:dev`.
+
 ## Estado Actual
 
 Implementado:
 
-- Auth con register/login y JWT.
-- Perfil propio.
-- Campos base de identidad: displayName, phone, profilePhotoUrl, user status y verification status.
-- Verificacion interna de email/phone con codigos hasheados, sin SendGrid/Twilio.
-- Verificacion de identidad por metadata/URLs, sin upload real.
-- Roles guard y endpoints admin protegidos por `ADMIN`.
-- CRUD de vehiculos propios con ownership.
-- CRUD de listings con soft delete y consulta publica de activos.
-- Filtros, paginacion y sorting en catalogo publico de listings.
-- Bookings sin dinero real con estados, snapshots de precio y tokens QR para pickup/return.
-- Placeholders de pagos y media sin proveedores externos.
-- Serializacion publica de vehiculos/listings sin ownerId ni patente.
-- Scripts de validacion local, Render, env, Prisma, preflight y commit helper.
+- Auth con register/login, JWT y expiracion configurable.
+- Recuperacion de password y verificacion de email con codigos hasheados.
+- Google OAuth opcional.
+- Perfil propio y serializacion segura de usuario.
+- Roles guard y endpoints admin protegidos.
+- CRUD de vehiculos con ownership.
+- CRUD de listings, soft delete y catalogo publico activo.
+- Filtros, paginacion y sorting en listings.
+- Bookings sin dinero real con estados, snapshots y tokens.
+- Registro de media por URL/metadata.
+- Payment records preparados sin proveedor externo.
+- CORS controlado por variables de entorno.
+- Entrada serverless para Vercel.
 
-Proximos pasos recomendados:
+Proximos pasos razonables:
 
-- Agregar healthcheck explicito si Render necesita una ruta dedicada.
-- Conectar proveedores reales de email/SMS solo cuando se decida SendGrid/Twilio u otro.
-- Conectar storage real solo cuando se decida Cloudinary/S3/Supabase/etc.
-- Conectar pagos reales solo cuando se decida proveedor y reglas de negocio.
+- Agregar healthcheck explicito si se necesita monitoreo dedicado.
+- Definir proveedor real de storage antes de uploads.
+- Definir proveedor real de pagos antes de cobrar reservas.
+- Definir proveedor SMS si se necesita verificacion telefonica real.
 - Mantener este README actualizado con cada cambio de contrato publico.
-- Implementar conversaciones REST si se prioriza comunicacion previa a reservas.
