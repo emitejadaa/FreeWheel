@@ -21,5 +21,7 @@ describe("CORS config", () => {
 
     expect(options.origin).toBe(true);
     expect(options.credentials).toBe(true);
+    expect(options.methods).toContain("OPTIONS");
+    expect(options.allowedHeaders).toBeUndefined();
   });
 });
