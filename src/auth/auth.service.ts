@@ -4,23 +4,23 @@ import {
   Injectable,
   NotFoundException,
   UnauthorizedException,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+} from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
 import {
   UserStatus,
   VerificationCodePurpose,
   VerificationStatus,
-} from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import * as crypto from 'crypto';
-import { LoginDto } from './dto/login.dto';
-import { RegisterDto } from './dto/register.dto';
-import { VerifyEmailDto } from './dto/verify-email.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
-import { UsersService } from '../users/users.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../email/email.service';
+} from "@prisma/client";
+import * as bcrypt from "bcryptjs";
+import * as crypto from "crypto";
+import { LoginDto } from "./dto/login.dto";
+import { RegisterDto } from "./dto/register.dto";
+import { VerifyEmailDto } from "./dto/verify-email.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
+import { UsersService } from "../users/users.service";
+import { PrismaService } from "../prisma/prisma.service";
+import { EmailService } from "../email/email.service";
 
 @Injectable()
 export class AuthService {
@@ -33,7 +33,7 @@ export class AuthService {
 
   async register(registerDto: RegisterDto) {
     const existing = await this.usersService.findByEmail(registerDto.email);
-    if (existing) throw new ConflictException('Email already registered');
+    if (existing) throw new ConflictException("Email already registered");
 
     const password = await bcrypt.hash(registerDto.password, 10);
     const user = await this.prisma.user.create({
@@ -60,17 +60,17 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const user = await this.usersService.findByEmail(loginDto.email);
 
-    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user) throw new UnauthorizedException("Invalid credentials");
 
     if (
       user.status === UserStatus.SUSPENDED ||
       user.status === UserStatus.DELETED
     ) {
-      throw new UnauthorizedException('Account is not active');
+      throw new UnauthorizedException("Account is not active");
     }
 
     const ok = await bcrypt.compare(loginDto.password, user.password);
-    if (!ok) throw new UnauthorizedException('Invalid credentials');
+    if (!ok) throw new UnauthorizedException("Invalid credentials");
 
     return {
       user: this.usersService.toSafeUser(user),
@@ -95,7 +95,7 @@ export class AuthService {
       data: {
         userId,
         purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
-        targetType: 'EMAIL',
+        targetType: "EMAIL",
         targetValue: email,
         codeHash,
         expiresAt: new Date(Date.now() + 15 * 60 * 1000),
@@ -103,15 +103,15 @@ export class AuthService {
     });
 
     await this.emailService.sendVerificationCode(email, code);
-    return { message: 'Verification code sent' };
+    return { message: "Verification code sent" };
   }
 
   async verifyEmail(userId: string, dto: VerifyEmailDto) {
     const user = await this.usersService.findById(userId);
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException("User not found");
 
     if (user.verificationStatus !== VerificationStatus.UNVERIFIED) {
-      return { message: 'Email already verified' };
+      return { message: "Email already verified" };
     }
 
     const record = await this.prisma.verificationCode.findFirst({
@@ -121,15 +121,15 @@ export class AuthService {
         consumedAt: null,
         expiresAt: { gt: new Date() },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     if (!record) {
-      throw new BadRequestException('Código expirado. Solicitá uno nuevo.');
+      throw new BadRequestException("Código expirado. Solicitá uno nuevo.");
     }
     if (record.attempts >= record.maxAttempts) {
       throw new BadRequestException(
-        'Demasiados intentos. Solicitá un nuevo código.',
+        "Demasiados intentos. Solicitá un nuevo código.",
       );
     }
 
@@ -139,7 +139,7 @@ export class AuthService {
         where: { id: record.id },
         data: { attempts: { increment: 1 } },
       });
-      throw new BadRequestException('Código incorrecto');
+      throw new BadRequestException("Código incorrecto");
     }
 
     await this.prisma.verificationCode.update({
@@ -155,12 +155,12 @@ export class AuthService {
       },
     });
 
-    return { message: 'Email verificado correctamente' };
+    return { message: "Email verificado correctamente" };
   }
 
   async forgotPassword(dto: ForgotPasswordDto) {
     const user = await this.usersService.findByEmail(dto.email);
-    if (!user) return { message: 'Si ese email existe, te enviamos un link.' };
+    if (!user) return { message: "Si ese email existe, te enviamos un link." };
 
     await this.prisma.verificationCode.updateMany({
       where: {
@@ -171,14 +171,14 @@ export class AuthService {
       data: { consumedAt: new Date() },
     });
 
-    const token = crypto.randomBytes(32).toString('hex');
+    const token = crypto.randomBytes(32).toString("hex");
     const tokenHash = await bcrypt.hash(token, 10);
 
     await this.prisma.verificationCode.create({
       data: {
         userId: user.id,
         purpose: VerificationCodePurpose.PASSWORD_RESET,
-        targetType: 'EMAIL',
+        targetType: "EMAIL",
         targetValue: user.email,
         codeHash: tokenHash,
         expiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -192,7 +192,7 @@ export class AuthService {
       user.id,
     );
 
-    return { message: 'Si ese email existe, te enviamos un link.' };
+    return { message: "Si ese email existe, te enviamos un link." };
   }
 
   async resetPassword(dto: ResetPasswordDto) {
@@ -203,15 +203,15 @@ export class AuthService {
         consumedAt: null,
         expiresAt: { gt: new Date() },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     if (!record) {
-      throw new BadRequestException('El link expiró o es inválido.');
+      throw new BadRequestException("El link expiró o es inválido.");
     }
     if (record.attempts >= record.maxAttempts) {
       throw new BadRequestException(
-        'Link inválido. Solicitá un nuevo email de recuperación.',
+        "Link inválido. Solicitá un nuevo email de recuperación.",
       );
     }
 
@@ -221,7 +221,7 @@ export class AuthService {
         where: { id: record.id },
         data: { attempts: { increment: 1 } },
       });
-      throw new BadRequestException('El link es inválido.');
+      throw new BadRequestException("El link es inválido.");
     }
 
     await this.prisma.verificationCode.update({
@@ -234,7 +234,7 @@ export class AuthService {
       data: { password: await bcrypt.hash(dto.newPassword, 10) },
     });
 
-    return { message: 'Contraseña actualizada correctamente.' };
+    return { message: "Contraseña actualizada correctamente." };
   }
 
   async googleLogin(googleUser: {
@@ -248,7 +248,7 @@ export class AuthService {
 
     if (!user) {
       const randomPassword = await bcrypt.hash(
-        crypto.randomBytes(32).toString('hex'),
+        crypto.randomBytes(32).toString("hex"),
         10,
       );
       user = await this.prisma.user.create({

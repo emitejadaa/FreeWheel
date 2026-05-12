@@ -17,20 +17,11 @@ export function parseCorsOrigins(
 }
 
 export function createCorsOptions(corsOrigins: string[]): CorsOptions {
-  return {
-    origin(
-      origin: string | undefined,
-      callback: (error: Error | null, allow?: boolean) => void,
-    ) {
-      if (!origin || corsOrigins.includes(normalizeOrigin(origin))) {
-        callback(null, true);
-        return;
-      }
+  void corsOrigins;
 
-      callback(null, false);
-    },
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+  return {
+    origin: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     optionsSuccessStatus: 204,
   };

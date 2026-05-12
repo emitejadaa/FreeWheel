@@ -3,16 +3,16 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
+} from "@nestjs/common";
 import {
   User,
   VerificationCodeTargetType,
   VerificationStatus,
-} from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { randomInt } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import { SubmitIdentityDto } from './dto/submit-identity.dto';
+} from "@prisma/client";
+import * as bcrypt from "bcryptjs";
+import { randomInt } from "crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import { SubmitIdentityDto } from "./dto/submit-identity.dto";
 
 type SafeVerificationResponse = {
   requested: true;
@@ -38,7 +38,7 @@ export class VerificationService {
 
     if (!user.phone) {
       throw new BadRequestException(
-        'User phone is required before verification',
+        "User phone is required before verification",
       );
     }
 
@@ -107,7 +107,7 @@ export class VerificationService {
   async getMyIdentity(userId: string) {
     return this.prisma.userVerification.findMany({
       where: { userId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
@@ -143,7 +143,7 @@ export class VerificationService {
     return {
       requested: true,
       expiresAt,
-      ...(process.env.NODE_ENV !== 'production' ? { code } : {}),
+      ...(process.env.NODE_ENV !== "production" ? { code } : {}),
     };
   }
 
@@ -158,19 +158,19 @@ export class VerificationService {
         targetType,
         consumedAt: null,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     if (!verificationCode) {
-      throw new NotFoundException('Verification code not found');
+      throw new NotFoundException("Verification code not found");
     }
 
     if (verificationCode.expiresAt <= new Date()) {
-      throw new BadRequestException('Verification code expired');
+      throw new BadRequestException("Verification code expired");
     }
 
     if (verificationCode.attempts >= verificationCode.maxAttempts) {
-      throw new ForbiddenException('Verification code attempts exceeded');
+      throw new ForbiddenException("Verification code attempts exceeded");
     }
 
     const matches = await bcrypt.compare(code, verificationCode.codeHash);
@@ -180,7 +180,7 @@ export class VerificationService {
         where: { id: verificationCode.id },
         data: { attempts: { increment: 1 } },
       });
-      throw new BadRequestException('Invalid verification code');
+      throw new BadRequestException("Invalid verification code");
     }
 
     await this.prisma.verificationCode.update({
@@ -234,7 +234,7 @@ export class VerificationService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException("User not found");
     }
 
     return user;

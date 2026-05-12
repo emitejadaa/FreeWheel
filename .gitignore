@@ -51,3 +51,4 @@ AGENTS.md
 ENDPOINTS.md
 *.md
 !README.md
+!backend.md

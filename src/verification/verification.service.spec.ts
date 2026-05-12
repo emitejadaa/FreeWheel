@@ -1,16 +1,16 @@
-import { BadRequestException } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { UserRole, UserStatus, VerificationStatus } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { PrismaService } from '../prisma/prisma.service';
-import { VerificationService } from './verification.service';
+import { BadRequestException } from "@nestjs/common";
+import { Test, TestingModule } from "@nestjs/testing";
+import { UserRole, UserStatus, VerificationStatus } from "@prisma/client";
+import * as bcrypt from "bcryptjs";
+import { PrismaService } from "../prisma/prisma.service";
+import { VerificationService } from "./verification.service";
 
-jest.mock('bcrypt', () => ({
+jest.mock("bcryptjs", () => ({
   hash: jest.fn(),
   compare: jest.fn(),
 }));
 
-describe('VerificationService', () => {
+describe("VerificationService", () => {
   let service: VerificationService;
   let prisma: {
     user: {
@@ -30,13 +30,13 @@ describe('VerificationService', () => {
   };
 
   const user = {
-    id: 'user-1',
-    email: 'user@example.com',
-    password: 'hashed',
-    firstName: 'Jane',
-    lastName: 'Doe',
+    id: "user-1",
+    email: "user@example.com",
+    password: "hashed",
+    firstName: "Jane",
+    lastName: "Doe",
     displayName: null,
-    phone: '+5491112345678',
+    phone: "+5491112345678",
     profilePhotoUrl: null,
     role: UserRole.USER,
     status: UserStatus.ACTIVE,
@@ -76,10 +76,10 @@ describe('VerificationService', () => {
     }).compile();
 
     service = module.get(VerificationService);
-    (bcrypt.hash as jest.Mock).mockResolvedValue('hashed-code');
+    (bcrypt.hash as jest.Mock).mockResolvedValue("hashed-code");
   });
 
-  it('creates an email code and returns it outside production', async () => {
+  it("creates an email code and returns it outside production", async () => {
     prisma.user.findUnique.mockResolvedValue(user);
 
     const result = await service.requestEmailCode(user.id);
@@ -89,14 +89,14 @@ describe('VerificationService', () => {
         data: expect.objectContaining({
           userId: user.id,
           targetValue: user.email,
-          codeHash: 'hashed-code',
+          codeHash: "hashed-code",
         }),
       }),
     );
     expect(result.code).toHaveLength(6);
   });
 
-  it('fails phone request when user has no phone', async () => {
+  it("fails phone request when user has no phone", async () => {
     prisma.user.findUnique.mockResolvedValue({ ...user, phone: null });
 
     await expect(service.requestPhoneCode(user.id)).rejects.toBeInstanceOf(
@@ -104,11 +104,11 @@ describe('VerificationService', () => {
     );
   });
 
-  it('confirms email with a valid code', async () => {
+  it("confirms email with a valid code", async () => {
     prisma.user.findUnique.mockResolvedValue(user);
     prisma.verificationCode.findFirst.mockResolvedValue({
-      id: 'code-1',
-      codeHash: 'hashed-code',
+      id: "code-1",
+      codeHash: "hashed-code",
       expiresAt: new Date(Date.now() + 1000),
       attempts: 0,
       maxAttempts: 5,
@@ -120,19 +120,19 @@ describe('VerificationService', () => {
     });
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-    const result = await service.confirmEmailCode(user.id, '123456');
+    const result = await service.confirmEmailCode(user.id, "123456");
 
     expect(result.verificationStatus).toBe(VerificationStatus.EMAIL_VERIFIED);
     expect(prisma.verificationCode.update).toHaveBeenCalledWith({
-      where: { id: 'code-1' },
+      where: { id: "code-1" },
       data: { consumedAt: expect.any(Date) },
     });
   });
 
-  it('increments attempts on invalid code', async () => {
+  it("increments attempts on invalid code", async () => {
     prisma.verificationCode.findFirst.mockResolvedValue({
-      id: 'code-1',
-      codeHash: 'hashed-code',
+      id: "code-1",
+      codeHash: "hashed-code",
       expiresAt: new Date(Date.now() + 1000),
       attempts: 0,
       maxAttempts: 5,
@@ -140,10 +140,10 @@ describe('VerificationService', () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
     await expect(
-      service.confirmPhoneCode(user.id, '000000'),
+      service.confirmPhoneCode(user.id, "000000"),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.verificationCode.update).toHaveBeenCalledWith({
-      where: { id: 'code-1' },
+      where: { id: "code-1" },
       data: { attempts: { increment: 1 } },
     });
   });

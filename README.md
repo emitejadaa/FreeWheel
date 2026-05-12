@@ -13,7 +13,7 @@ El backend esta preparado para ejecutarse localmente como Nest/Express y despleg
 - JWT con `@nestjs/jwt` y `passport-jwt`
 - Google OAuth opcional con `passport-google-oauth20`
 - Email opcional con Gmail SMTP via `nodemailer`
-- bcrypt
+- bcryptjs
 - class-validator y class-transformer
 - Jest
 - Vercel Serverless Functions
@@ -80,8 +80,9 @@ GMAIL_APP_PASSWORD=""
 Notas:
 
 - `API_BASE_URL` es la URL publica del backend. En Vercel tambien puede resolverse desde `VERCEL_URL`.
-- `FRONTEND_URL` se usa para CORS, redireccion Google y links de recuperacion de password.
-- `CORS_ORIGINS` permite multiples origenes separados por coma.
+- CORS admite cualquier origen entrante y mantiene `credentials: true` para evitar bloqueos entre frontends, previews y deploys.
+- `FRONTEND_URL` se usa para redireccion Google y links de recuperacion de password.
+- `CORS_ORIGINS` queda documentada por compatibilidad, pero el backend actual no filtra origenes.
 - `JWT_EXPIRES_IN` controla la expiracion de tokens emitidos por `JwtModule`.
 - `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` habilitan la estrategia Google solo si ambos existen.
 - `GMAIL_USER` y `GMAIL_APP_PASSWORD` habilitan envio real de email. Si faltan, el servicio loguea warning y no envia.
@@ -285,7 +286,7 @@ Implementado:
 - Bookings sin dinero real con estados, snapshots y tokens.
 - Registro de media por URL/metadata.
 - Payment records preparados sin proveedor externo.
-- CORS controlado por variables de entorno.
+- CORS permisivo para requests desde cualquier origen.
 - Entrada serverless para Vercel.
 
 Proximos pasos razonables:

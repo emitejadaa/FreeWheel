@@ -3,14 +3,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
-import { Booking, BookingStatus, ListingStatus } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { randomBytes } from 'crypto';
-import { AuditLogService } from '../common/services/audit-log.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { CancelBookingDto } from './dto/cancel-booking.dto';
-import { CreateBookingDto } from './dto/create-booking.dto';
+} from "@nestjs/common";
+import { Booking, BookingStatus, ListingStatus } from "@prisma/client";
+import * as bcrypt from "bcryptjs";
+import { randomBytes } from "crypto";
+import { AuditLogService } from "../common/services/audit-log.service";
+import { PrismaService } from "../prisma/prisma.service";
+import { CancelBookingDto } from "./dto/cancel-booking.dto";
+import { CreateBookingDto } from "./dto/create-booking.dto";
 
 const blockingStatuses: BookingStatus[] = [
   BookingStatus.ACCEPTED,
@@ -35,11 +35,11 @@ export class BookingsService {
     });
 
     if (!listing || listing.status !== ListingStatus.ACTIVE) {
-      throw new BadRequestException('Listing is not available for booking');
+      throw new BadRequestException("Listing is not available for booking");
     }
 
     if (listing.ownerId === renterId) {
-      throw new ForbiddenException('You cannot book your own listing');
+      throw new ForbiddenException("You cannot book your own listing");
     }
 
     await this.assertNoOverlap(listing.id, data.startDate, data.endDate);
@@ -68,7 +68,7 @@ export class BookingsService {
         OR: [{ renterId: userId }, { ownerId: userId }],
       },
       include: this.bookingInclude(),
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
@@ -84,7 +84,7 @@ export class BookingsService {
     this.assertOwner(booking, ownerId);
 
     if (booking.status !== BookingStatus.REQUESTED) {
-      throw new BadRequestException('Only requested bookings can be accepted');
+      throw new BadRequestException("Only requested bookings can be accepted");
     }
 
     await this.assertNoOverlap(
@@ -111,8 +111,8 @@ export class BookingsService {
     await this.auditLog.create({
       actorId: ownerId,
       targetUserId: booking.renterId,
-      action: 'booking.accept',
-      entityType: 'Booking',
+      action: "booking.accept",
+      entityType: "Booking",
       entityId: id,
       metadata: { status: BookingStatus.ACCEPTED },
     });
@@ -129,7 +129,7 @@ export class BookingsService {
     this.assertOwner(booking, ownerId);
 
     if (booking.status !== BookingStatus.REQUESTED) {
-      throw new BadRequestException('Only requested bookings can be rejected');
+      throw new BadRequestException("Only requested bookings can be rejected");
     }
 
     return this.prisma.booking.update({
@@ -153,7 +153,7 @@ export class BookingsService {
       ).includes(booking.status)
     ) {
       throw new BadRequestException(
-        'Booking cannot be cancelled in this status',
+        "Booking cannot be cancelled in this status",
       );
     }
 
@@ -179,7 +179,7 @@ export class BookingsService {
 
     if (booking.status !== BookingStatus.ACCEPTED) {
       throw new BadRequestException(
-        'Only accepted bookings can be marked ready',
+        "Only accepted bookings can be marked ready",
       );
     }
 
@@ -231,16 +231,16 @@ export class BookingsService {
       ).includes(booking.status)
     ) {
       throw new BadRequestException(
-        'Pickup cannot be confirmed in this status',
+        "Pickup cannot be confirmed in this status",
       );
     }
 
     if (!booking.pickupTokenHash) {
-      throw new BadRequestException('Pickup token was not generated');
+      throw new BadRequestException("Pickup token was not generated");
     }
 
     if (!(await bcrypt.compare(token, booking.pickupTokenHash))) {
-      throw new ForbiddenException('Invalid pickup token');
+      throw new ForbiddenException("Invalid pickup token");
     }
 
     return this.prisma.booking.update({
@@ -259,7 +259,7 @@ export class BookingsService {
     const booking = await this.findById(id);
 
     if (booking.renterId !== renterId) {
-      throw new ForbiddenException('Only the renter can confirm return');
+      throw new ForbiddenException("Only the renter can confirm return");
     }
 
     if (
@@ -271,16 +271,16 @@ export class BookingsService {
       ).includes(booking.status)
     ) {
       throw new BadRequestException(
-        'Return cannot be confirmed in this status',
+        "Return cannot be confirmed in this status",
       );
     }
 
     if (!booking.returnTokenHash) {
-      throw new BadRequestException('Return token was not generated');
+      throw new BadRequestException("Return token was not generated");
     }
 
     if (!(await bcrypt.compare(token, booking.returnTokenHash))) {
-      throw new ForbiddenException('Invalid return token');
+      throw new ForbiddenException("Invalid return token");
     }
 
     return this.prisma.booking.update({
@@ -302,7 +302,7 @@ export class BookingsService {
     });
 
     if (!booking) {
-      throw new NotFoundException('Booking not found');
+      throw new NotFoundException("Booking not found");
     }
 
     return booking;
@@ -310,19 +310,19 @@ export class BookingsService {
 
   private assertDateRange(startDate: Date, endDate: Date) {
     if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
-      throw new BadRequestException('Invalid startDate');
+      throw new BadRequestException("Invalid startDate");
     }
 
     if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
-      throw new BadRequestException('Invalid endDate');
+      throw new BadRequestException("Invalid endDate");
     }
 
     if (startDate <= new Date()) {
-      throw new BadRequestException('startDate must be in the future');
+      throw new BadRequestException("startDate must be in the future");
     }
 
     if (endDate <= startDate) {
-      throw new BadRequestException('endDate must be after startDate');
+      throw new BadRequestException("endDate must be after startDate");
     }
   }
 
@@ -344,7 +344,7 @@ export class BookingsService {
 
     if (overlapping) {
       throw new BadRequestException(
-        'Booking dates overlap with another booking',
+        "Booking dates overlap with another booking",
       );
     }
   }
@@ -356,18 +356,18 @@ export class BookingsService {
 
   private assertParticipant(booking: Booking, userId: string) {
     if (booking.ownerId !== userId && booking.renterId !== userId) {
-      throw new ForbiddenException('You cannot access this booking');
+      throw new ForbiddenException("You cannot access this booking");
     }
   }
 
   private assertOwner(booking: Booking, userId: string) {
     if (booking.ownerId !== userId) {
-      throw new ForbiddenException('Only the owner can perform this action');
+      throw new ForbiddenException("Only the owner can perform this action");
     }
   }
 
   private generateToken() {
-    return randomBytes(24).toString('hex');
+    return randomBytes(24).toString("hex");
   }
 
   private bookingInclude() {
