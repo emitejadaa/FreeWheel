@@ -74,4 +74,29 @@ export class AuthController {
       `${frontendUrl}/auth/google/callback?token=${result.accessToken}`,
     );
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Post("request-email-change")
+  requestEmailChange(
+    @Req() req: Request,
+    @Body() body: { newEmail: string },
+  ) {
+    return this.authService.requestEmailChange(
+      (req.user as any).id,
+      body.newEmail,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post("confirm-email-change")
+  confirmEmailChange(
+    @Req() req: Request,
+    @Body() body: { code: string; newEmail: string },
+  ) {
+    return this.authService.confirmEmailChange(
+      (req.user as any).id,
+      body.code,
+      body.newEmail,
+    );
+  }
 }

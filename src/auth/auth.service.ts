@@ -283,6 +283,84 @@ export class AuthService {
     };
   }
 
+  async requestEmailChange(userId: string, newEmail: string) {
+    const existing = await this.usersService.findByEmail(newEmail);
+    if (existing) throw new ConflictException("Este email ya está en uso.");
+
+    await this.prisma.verificationCode.updateMany({
+      where: {
+        userId,
+        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
+        targetValue: newEmail,
+        consumedAt: null,
+      },
+      data: { consumedAt: new Date() },
+    });
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const codeHash = await bcrypt.hash(code, 10);
+
+    await this.prisma.verificationCode.create({
+      data: {
+        userId,
+        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
+        targetType: "EMAIL",
+        targetValue: newEmail,
+        codeHash,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+
+    await this.emailService.sendVerificationCode(newEmail, code);
+    return { message: "Código enviado al nuevo email." };
+  }
+
+  async confirmEmailChange(userId: string, code: string, newEmail: string) {
+    const existing = await this.usersService.findByEmail(newEmail);
+    if (existing) throw new ConflictException("Este email ya está en uso.");
+
+    const record = await this.prisma.verificationCode.findFirst({
+      where: {
+        userId,
+        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
+        targetValue: newEmail,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!record) {
+      throw new BadRequestException("Código expirado. Solicitá uno nuevo.");
+    }
+    if (record.attempts >= record.maxAttempts) {
+      throw new BadRequestException(
+        "Demasiados intentos. Solicitá un nuevo código.",
+      );
+    }
+
+    const matches = await bcrypt.compare(code, record.codeHash);
+    if (!matches) {
+      await this.prisma.verificationCode.update({
+        where: { id: record.id },
+        data: { attempts: { increment: 1 } },
+      });
+      throw new BadRequestException("Código incorrecto");
+    }
+
+    await this.prisma.verificationCode.update({
+      where: { id: record.id },
+      data: { consumedAt: new Date() },
+    });
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { email: newEmail },
+    });
+
+    return { message: "Email actualizado correctamente." };
+  }
+
   private signToken(userId: string, email: string) {
     return this.jwtService.sign({ email }, { subject: userId });
   }
