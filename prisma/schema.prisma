@@ -202,6 +202,8 @@ model Vehicle {
   lengthMm                      Int?
   heightMm                      Int?
   weightKg                      Int?
+  horsePower                    Int?
+  engineDisplacementCC          Int?
   observations                  String?
   createdAt                     DateTime          @default(now())
   updatedAt                     DateTime          @updatedAt
