@@ -26,7 +26,7 @@ const googleStrategyProviders =
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const expiresIn = configService.get<string>("JWT_EXPIRES_IN") ?? "24h";
+        const expiresIn = configService.get<string>("JWT_EXPIRES_IN") ?? "7d";
 
         return {
           secret:
