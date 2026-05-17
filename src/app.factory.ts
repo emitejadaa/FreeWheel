@@ -35,10 +35,16 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
 export function createServer(): Express {
   if (!cachedServer) {
     cachedServer = express();
-    cachedApp = bootstrapNest(cachedServer);
 
     cachedServer.use(
       async (_req: Request, _res: Response, next: NextFunction) => {
+        if (!cachedApp) {
+          cachedApp = bootstrapNest(cachedServer!).catch((err: unknown) => {
+            console.error("[bootstrap] NestJS initialization failed:", err);
+            cachedApp = null;
+            throw err;
+          });
+        }
         try {
           await cachedApp;
           next();
