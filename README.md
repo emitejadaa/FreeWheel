@@ -1,6 +1,6 @@
 # FreeWheel Backend
 
-Backend NestJS para un marketplace de alquiler de autos entre usuarios. La progresion actual cubre autenticacion, perfil, vehiculos, listings, verificaciones internas, reservas, administracion basica, media metadata y placeholders controlados para pagos.
+Backend NestJS para un marketplace de alquiler de autos entre usuarios. La progresion actual cubre autenticacion, perfil, vehiculos, listings, disponibilidad, reservas, pagos mock reemplazables, verificaciones internas, administracion basica y media metadata.
 
 El backend esta preparado para ejecutarse localmente como Nest/Express y desplegarse en Vercel como funcion serverless usando `api/index.ts`.
 
@@ -25,17 +25,18 @@ api/index.ts                     Entrada serverless de Vercel
 src/main.ts                      Entrada local/prod tradicional
 src/app.factory.ts               Fabrica compartida de Express + Nest
 src/app.module.ts                Modulos principales
-src/cors.config.ts               CORS por FRONTEND_URL/CORS_ORIGINS
+src/cors.config.ts               CORS permisivo para previews y clientes externos
 src/config/public-urls.ts        URLs publicas compartidas
 src/auth                         Registro, login, JWT, Google OAuth, password reset
 src/users                        Perfil propio y serializacion segura de usuario
 src/vehicles                     CRUD de vehiculos con ownership
 src/listings                     CRUD/catalogo publico de publicaciones
+src/availability                 Disponibilidad y bloqueos manuales por listing
 src/verification                 Codigos email/phone e identidad metadata
 src/bookings                     Reservas y tokens de pickup/return
 src/admin                        Operaciones protegidas por rol ADMIN
 src/media                        Registro de assets externos por metadata
-src/payments                     Modulo placeholder sin proveedor real
+src/payments                     Provider mock reemplazable para pagos simulados
 src/email                        Envio opcional de emails transaccionales
 src/prisma                       PrismaService compartido
 src/common                       Guards, decorators, servicios comunes
@@ -109,6 +110,7 @@ La configuracion activa esta en `vercel.json`.
 ```json
 {
   "version": 2,
+  "buildCommand": "prisma migrate deploy && nest build",
   "builds": [{ "src": "api/index.ts", "use": "@vercel/node" }],
   "routes": [{ "src": "/(.*)", "dest": "api/index.ts" }]
 }
@@ -126,7 +128,7 @@ FRONTEND_URL="https://tu-front.vercel.app"
 API_BASE_URL="https://tu-backend.vercel.app"
 ```
 
-Las migraciones Prisma no se ejecutan automaticamente dentro del handler serverless. Aplicarlas con:
+Las migraciones Prisma no se ejecutan dentro del handler serverless. En Vercel se aplican durante el build por `buildCommand`, por lo que `DATABASE_URL` debe estar disponible en build. Para otros entornos se pueden aplicar con:
 
 ```bash
 npm run db:migrate:deploy
@@ -139,10 +141,11 @@ Modelos principales:
 - `User`: cuenta, credenciales, rol, estado, verificacion, Google ID y relaciones.
 - `Vehicle`: vehiculos propios con atributos tecnicos.
 - `Listing`: publicaciones asociadas a vehiculos y owner.
+- `ListingAvailabilityBlock`: bloqueos manuales por owner para impedir reservas en rangos concretos.
 - `Booking`: reservas con snapshots de precio, estado y tokens de entrega/devolucion.
 - `VerificationCode`: codigos hasheados para email y password reset.
 - `UserVerification`: metadata de verificacion de identidad.
-- `PaymentRecord`: registro preparado para pagos, actualmente mock/placeholder.
+- `PaymentRecord`: registro de sesiones/eventos del proveedor mock, disenado para reemplazo por proveedor real.
 - `MediaAsset`: metadata de archivos externos.
 - `AuditLog`: auditoria administrativa.
 
@@ -185,6 +188,7 @@ Publicos o auth:
 - `GET /auth/google/callback`
 - `GET /listings`
 - `GET /listings/:id`
+- `GET /listings/:id/availability`
 
 Usuario autenticado:
 
@@ -201,6 +205,9 @@ Usuario autenticado:
 - `GET /listings/me`
 - `PATCH /listings/:id`
 - `DELETE /listings/:id`
+- `POST /listings/:id/availability-blocks`
+- `GET /listings/:id/availability-blocks`
+- `DELETE /listings/:id/availability-blocks/:blockId`
 - `POST /verification/email/request`
 - `POST /verification/email/confirm`
 - `POST /verification/phone/request`
@@ -218,6 +225,12 @@ Usuario autenticado:
 - `GET /bookings/:id/tokens`
 - `POST /bookings/:id/confirm-pickup`
 - `POST /bookings/:id/confirm-return`
+- `POST /payments/bookings/:bookingId/mock-intent`
+- `GET /payments/bookings/:bookingId/status`
+- `POST /payments/bookings/:bookingId/mock-confirm`
+- `POST /payments/bookings/:bookingId/mock-fail`
+- `POST /payments/bookings/:bookingId/mock-refund`
+- `POST /payments/mock/webhook`
 - `POST /media/assets`
 - `GET /media/assets/me`
 
@@ -241,7 +254,35 @@ Admin:
 - Vercel: runtime serverless para `api/index.ts`.
 - Gmail SMTP: opcional, usado por `EmailService`.
 - Google OAuth: opcional, se registra solo con credenciales presentes.
-- Pagos, storage real, SMS y mensajeria todavia no tienen proveedor activo.
+- Pagos: provider mock sin dinero real, preparado para reemplazo.
+- Storage real, SMS y mensajeria todavia no tienen proveedor activo.
+
+## Flujo De Reserva Actual
+
+1. Renter solicita reserva sobre un listing `ACTIVE`.
+2. Backend valida fechas, ownership, reservas bloqueantes y bloqueos manuales.
+3. Owner acepta o rechaza. `REQUESTED` no bloquea disponibilidad hasta que una solicitud se acepta.
+4. Al aceptar, backend genera tokens QR hasheados, crea un `PaymentRecord` mock `PENDING` y deja `Booking.paymentStatus` en `PENDING`.
+5. Renter confirma pago simulado con `POST /payments/bookings/:bookingId/mock-confirm` o un webhook fake.
+6. Owner marca `READY_FOR_PICKUP` solo si el pago esta `PAID`.
+7. Renter muestra QR/token de retiro desde `GET /bookings/:id/tokens`.
+8. Owner confirma retiro con `POST /bookings/:id/confirm-pickup`.
+9. Reserva queda `IN_PROGRESS`.
+10. Owner muestra QR/token de devolucion desde `GET /bookings/:id/tokens`.
+11. Renter confirma devolucion con `POST /bookings/:id/confirm-return`.
+12. Reserva queda `COMPLETED` y el pago mock registra liberacion.
+
+## Disponibilidad
+
+`GET /listings/:id/availability?startDate=...&endDate=...` informa si un rango esta disponible y devuelve reservas/bloqueos que chocan. Los owners pueden crear, listar y eliminar bloqueos manuales con `/listings/:id/availability-blocks`. La validacion de solapamientos vive en `AvailabilityService` y se reutiliza en bookings y en filtros publicos de listings.
+
+## Pagos Mock
+
+El flujo de pagos no usa dinero real ni datos de tarjeta. `PaymentsService` coordina `PaymentRecord` y `Booking.paymentStatus`; `MockPaymentsProvider` solo genera IDs fake. Para reemplazarlo por Stripe, Mercado Pago u otro provider, implementar la misma frontera interna de provider y mapear webhooks reales a `confirm/fail/refund/release`.
+
+## QR Tokens
+
+Los tokens de pickup/return se guardan hasheados. Para compatibilidad temporal con frontend, el backend conserva `pickupTokenPreview` y `returnTokenPreview` hasta que el token se consume; no se exponen a usuarios fuera del rol/estado correspondiente y se limpian al confirmar pickup/return. Esta preview debe reemplazarse por emision efimera o canal seguro antes de produccion sensible.
 
 ## Tests Y Checks
 
@@ -283,7 +324,9 @@ Implementado:
 - CRUD de vehiculos con ownership.
 - CRUD de listings, soft delete y catalogo publico activo.
 - Filtros, paginacion y sorting en listings.
-- Bookings sin dinero real con estados, snapshots y tokens.
+- Disponibilidad por listing con bloqueos manuales y filtros por fecha.
+- Bookings con estados, snapshots, tokens y pago mock requerido antes de pickup.
+- Pagos mock integrados al ciclo de reserva.
 - Registro de media por URL/metadata.
 - Payment records preparados sin proveedor externo.
 - CORS permisivo para requests desde cualquier origen.

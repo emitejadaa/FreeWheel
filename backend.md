@@ -4,7 +4,7 @@ Este documento describe el estado actual del backend de FreeWheel: estructura Ne
 
 ## Resumen
 
-FreeWheel es un backend para un marketplace de alquiler de autos entre usuarios. El sistema permite registro/login, perfil propio, vehiculos, publicaciones, reservas, verificaciones internas, administracion basica, registro de media por metadata y preparacion para pagos futuros.
+FreeWheel es un backend para un marketplace de alquiler de autos entre usuarios. El sistema permite registro/login, perfil propio, vehiculos, publicaciones, disponibilidad por listing, reservas, pagos mock reemplazables, verificaciones internas, administracion basica y registro de media por metadata.
 
 El backend corre como aplicacion NestJS sobre Express. Para Vercel se expone mediante `api/index.ts`, que reutiliza una fabrica compartida (`src/app.factory.ts`) y cachea la instancia Nest para evitar inicializaciones innecesarias entre invocaciones serverless.
 
@@ -58,7 +58,7 @@ Notas de despliegue:
 - Las rutas HTTP entran por `api/index.ts`.
 - La app Nest se inicializa sobre un `ExpressAdapter`.
 - Prisma Client se genera en `postinstall`.
-- Las migraciones no se ejecutan dentro del handler serverless. Se aplican con `npm run db:migrate:deploy`.
+- Las migraciones no se ejecutan dentro del handler serverless. En Vercel se aplican durante el build por `buildCommand: "prisma migrate deploy && nest build"`; fuera de Vercel se aplican con `npm run db:migrate:deploy`.
 - `bcryptjs` evita compilacion o carga de binarios nativos en Vercel.
 
 ## CORS
@@ -303,7 +303,7 @@ No sube archivos a storage por si mismo. El backend espera una URL ya disponible
 
 ### PaymentsModule
 
-Modulo reservado para integracion futura. El schema ya tiene `PaymentRecord` y estados, pero no hay proveedor real conectado.
+Modulo de pagos mock sin dinero real. Expone endpoints para crear intent mock, consultar estado, confirmar/fallar/reembolsar y recibir webhooks fake. `PaymentsService` coordina `PaymentRecord` y `Booking.paymentStatus`; `MockPaymentsProvider` es la frontera reemplazable por Stripe, Mercado Pago u otro proveedor real.
 
 ### EmailModule
 
@@ -463,6 +463,19 @@ Campos:
 - delivery coords/radius
 - `status`
 
+#### ListingAvailabilityBlock
+
+Bloqueo manual de disponibilidad creado por el owner de un listing.
+
+Campos:
+
+- `listingId`
+- `ownerId`
+- `startDate`
+- `endDate`
+- `reason`
+- timestamps
+
 #### Booking
 
 Reserva entre renter y owner.
@@ -570,8 +583,12 @@ Campos:
 - `GET /listings`
 - `GET /listings/me`
 - `GET /listings/:id`
+- `GET /listings/:id/availability`
 - `PATCH /listings/:id`
 - `DELETE /listings/:id`
+- `POST /listings/:id/availability-blocks`
+- `GET /listings/:id/availability-blocks`
+- `DELETE /listings/:id/availability-blocks/:blockId`
 
 ### Verification
 
@@ -595,6 +612,15 @@ Campos:
 - `GET /bookings/:id/tokens`
 - `POST /bookings/:id/confirm-pickup`
 - `POST /bookings/:id/confirm-return`
+
+### Payments
+
+- `POST /payments/bookings/:bookingId/mock-intent`
+- `GET /payments/bookings/:bookingId/status`
+- `POST /payments/bookings/:bookingId/mock-confirm`
+- `POST /payments/bookings/:bookingId/mock-fail`
+- `POST /payments/bookings/:bookingId/mock-refund`
+- `POST /payments/mock/webhook`
 
 ### Media
 
@@ -655,11 +681,32 @@ Esto limpia payloads, rechaza campos no declarados y transforma tipos cuando cor
 
 ## Integraciones Preparadas Pero No Activas
 
-- Pagos reales.
+- Pagos reales. El flujo actual usa un provider mock sin dinero real.
 - Storage real de archivos.
 - SMS real.
 - Mensajeria entre usuarios.
 - Healthcheck dedicado.
+
+## Flujo De Reserva Actual
+
+1. Renter solicita reserva.
+2. Backend valida disponibilidad contra reservas aceptadas/en curso y bloqueos manuales.
+3. Owner acepta.
+4. Backend crea pago mock pendiente.
+5. Renter confirma pago simulado.
+6. Owner marca listo para retiro.
+7. Renter muestra QR de retiro.
+8. Owner confirma retiro.
+9. Reserva queda `IN_PROGRESS`.
+10. Owner muestra QR de devolucion.
+11. Renter confirma devolucion.
+12. Reserva queda `COMPLETED` y el pago mock queda liberado.
+
+Notas de seguridad:
+
+- Los tokens se guardan hasheados y se limpian al consumirse.
+- `pickupTokenPreview` y `returnTokenPreview` se mantienen temporalmente para que el frontend pueda mostrar QR hasta el consumo; no deben considerarse el diseno final para produccion sensible.
+- No se almacenan datos de tarjeta ni se mueve dinero real.
 
 ## Scripts
 

@@ -427,12 +427,151 @@ async function runListingFlow(
     });
   }
 
+  if (listingId) {
+    await runBookingFlow(baseUrl, endpointSet, headers, results, listingId);
+  }
+
   if (listingId && endpointSet.has('DELETE /listings/:id')) {
     await record(results, 'Delete created listing', 'DELETE', '/listings/:id', async () => {
       const response = await request(baseUrl, 'DELETE', `/listings/${listingId}`, undefined, { headers });
       expectStatus(response, [200]);
     });
   }
+}
+
+async function runBookingFlow(
+  baseUrl: string,
+  endpointSet: Set<string>,
+  ownerHeaders: Record<string, string>,
+  results: TestResult[],
+  listingId: string,
+): Promise<void> {
+  const required = [
+    'POST /auth/register',
+    'POST /bookings',
+    'PATCH /bookings/:id/accept',
+    'POST /payments/bookings/:bookingId/mock-confirm',
+    'PATCH /bookings/:id/ready-for-pickup',
+    'GET /bookings/:id/tokens',
+    'POST /bookings/:id/confirm-pickup',
+    'POST /bookings/:id/confirm-return',
+  ];
+
+  const missing = required.filter((endpoint) => !endpointSet.has(endpoint));
+  if (missing.length > 0) {
+    results.push({
+      name: 'Full booking/payment/QR flow',
+      status: 'SKIP',
+      detail: `Missing endpoints: ${missing.join(', ')}`,
+    });
+    return;
+  }
+
+  const renterToken = await registerFunctionalUser(baseUrl, results, 'renter');
+  if (!renterToken) return;
+
+  const renterHeaders = { Authorization: `Bearer ${renterToken}` };
+  const startDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+  const endDate = new Date(startDate.getTime() + 1000 * 60 * 60 * 24 * 2);
+
+  if (endpointSet.has('GET /listings/:id/availability')) {
+    await record(results, 'Check listing availability', 'GET', '/listings/:id/availability', async () => {
+      const response = await request(
+        baseUrl,
+        'GET',
+        `/listings/${listingId}/availability?startDate=${startDate.toISOString()}&endDate=${endDate.toISOString()}`,
+      );
+      expectStatus(response, [200]);
+    });
+  }
+
+  let bookingId: string | null = null;
+  await record(results, 'Create booking as renter', 'POST', '/bookings', async () => {
+    const response = await request(
+      baseUrl,
+      'POST',
+      '/bookings',
+      { listingId, startDate: startDate.toISOString(), endDate: endDate.toISOString() },
+      { headers: renterHeaders },
+    );
+    expectStatus(response, [200, 201]);
+    bookingId = extractId(response.body);
+  });
+
+  if (!bookingId) return;
+
+  await record(results, 'Accept booking as owner', 'PATCH', '/bookings/:id/accept', async () => {
+    const response = await request(baseUrl, 'PATCH', `/bookings/${bookingId}/accept`, undefined, { headers: ownerHeaders });
+    expectStatus(response, [200]);
+  });
+
+  await record(results, 'Confirm mock payment', 'POST', '/payments/bookings/:bookingId/mock-confirm', async () => {
+    const response = await request(baseUrl, 'POST', `/payments/bookings/${bookingId}/mock-confirm`, undefined, { headers: renterHeaders });
+    expectStatus(response, [200, 201]);
+  });
+
+  await record(results, 'Mark booking ready for pickup', 'PATCH', '/bookings/:id/ready-for-pickup', async () => {
+    const response = await request(baseUrl, 'PATCH', `/bookings/${bookingId}/ready-for-pickup`, undefined, { headers: ownerHeaders });
+    expectStatus(response, [200]);
+  });
+
+  let pickupToken: string | undefined;
+  await record(results, 'Renter reads pickup token', 'GET', '/bookings/:id/tokens', async () => {
+    const response = await request(baseUrl, 'GET', `/bookings/${bookingId}/tokens`, undefined, { headers: renterHeaders });
+    expectStatus(response, [200]);
+    pickupToken = extractStringField(response.body, 'pickupQrToken');
+    if (!pickupToken) throw new Error('pickupQrToken was not returned to renter.');
+  });
+
+  await record(results, 'Owner confirms pickup token', 'POST', '/bookings/:id/confirm-pickup', async () => {
+    const response = await request(
+      baseUrl,
+      'POST',
+      `/bookings/${bookingId}/confirm-pickup`,
+      { token: pickupToken },
+      { headers: ownerHeaders },
+    );
+    expectStatus(response, [200, 201]);
+  });
+
+  let returnToken: string | undefined;
+  await record(results, 'Owner reads return token', 'GET', '/bookings/:id/tokens', async () => {
+    const response = await request(baseUrl, 'GET', `/bookings/${bookingId}/tokens`, undefined, { headers: ownerHeaders });
+    expectStatus(response, [200]);
+    returnToken = extractStringField(response.body, 'returnQrToken');
+    if (!returnToken) throw new Error('returnQrToken was not returned to owner.');
+  });
+
+  await record(results, 'Renter confirms return token', 'POST', '/bookings/:id/confirm-return', async () => {
+    const response = await request(
+      baseUrl,
+      'POST',
+      `/bookings/${bookingId}/confirm-return`,
+      { token: returnToken },
+      { headers: renterHeaders },
+    );
+    expectStatus(response, [200, 201]);
+  });
+}
+
+async function registerFunctionalUser(
+  baseUrl: string,
+  results: TestResult[],
+  roleLabel: string,
+): Promise<string | null> {
+  const unique = Date.now();
+  let token: string | null = null;
+  await record(results, `Register ${roleLabel} functional user`, 'POST', '/auth/register', async () => {
+    const response = await request(baseUrl, 'POST', '/auth/register', {
+      email: `e2e-${roleLabel}-${unique}@example.com`,
+      password: 'TestPassword123!',
+      firstName: 'E2E',
+      lastName: roleLabel,
+    });
+    expectStatus(response, [200, 201]);
+    token = extractToken(response.body);
+  });
+  return token;
 }
 
 async function runOptionalHealth(baseUrl: string, results: TestResult[]): Promise<void> {
@@ -593,6 +732,19 @@ function extractId(body: unknown): string {
   }
 
   throw new Error('Response did not include an id.');
+}
+
+function extractStringField(body: unknown, field: string): string | undefined {
+  if (
+    body &&
+    typeof body === 'object' &&
+    field in body &&
+    typeof (body as Record<string, unknown>)[field] === 'string'
+  ) {
+    return (body as Record<string, string>)[field];
+  }
+
+  return undefined;
 }
 
 function classifyHttpError(response: HttpResult, expected?: number[]): string {

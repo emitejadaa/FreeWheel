@@ -1,8 +1,10 @@
 import { BadRequestException, ForbiddenException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
-import { BookingStatus, ListingStatus } from "@prisma/client";
+import { BookingStatus, ListingStatus, PaymentStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
+import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { BookingsService } from "./bookings.service";
 
@@ -19,9 +21,18 @@ describe("BookingsService", () => {
       create: jest.Mock;
       findMany: jest.Mock;
       findUnique: jest.Mock;
-      findFirst: jest.Mock;
       update: jest.Mock;
     };
+  };
+  let availability: {
+    assertDateRange: jest.Mock;
+    assertListingIsBookable: jest.Mock;
+    calculateDays: jest.Mock;
+  };
+  let payments: {
+    createMockIntentForAcceptedBooking: jest.Mock;
+    refundMockPayment: jest.Mock;
+    releaseMockPayment: jest.Mock;
   };
 
   const listing = {
@@ -42,6 +53,7 @@ describe("BookingsService", () => {
     startDate: new Date("2099-01-01T00:00:00.000Z"),
     endDate: new Date("2099-01-03T00:00:00.000Z"),
     status: BookingStatus.REQUESTED,
+    paymentStatus: PaymentStatus.PENDING,
     pickupTokenHash: "pickup-hash",
     returnTokenHash: "return-hash",
   };
@@ -53,15 +65,26 @@ describe("BookingsService", () => {
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
-        findFirst: jest.fn(),
         update: jest.fn(),
       },
+    };
+    availability = {
+      assertDateRange: jest.fn(),
+      assertListingIsBookable: jest.fn(),
+      calculateDays: jest.fn().mockReturnValue(2),
+    };
+    payments = {
+      createMockIntentForAcceptedBooking: jest.fn(),
+      refundMockPayment: jest.fn(),
+      releaseMockPayment: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         BookingsService,
         { provide: PrismaService, useValue: prisma },
+        { provide: AvailabilityService, useValue: availability },
+        { provide: PaymentsService, useValue: payments },
         {
           provide: AuditLogService,
           useValue: { create: jest.fn() },
@@ -75,7 +98,6 @@ describe("BookingsService", () => {
 
   it("creates a booking for an active listing", async () => {
     prisma.listing.findUnique.mockResolvedValue(listing);
-    prisma.booking.findFirst.mockResolvedValue(null);
     prisma.booking.create.mockResolvedValue(booking);
 
     const result = await service.create("renter-1", {
@@ -85,6 +107,11 @@ describe("BookingsService", () => {
     });
 
     expect(result).toBe(booking);
+    expect(availability.assertListingIsBookable).toHaveBeenCalledWith(
+      listing.id,
+      booking.startDate,
+      booking.endDate,
+    );
     expect(prisma.booking.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -110,7 +137,9 @@ describe("BookingsService", () => {
 
   it("rejects overlapping bookings", async () => {
     prisma.listing.findUnique.mockResolvedValue(listing);
-    prisma.booking.findFirst.mockResolvedValue(booking);
+    availability.assertListingIsBookable.mockRejectedValue(
+      new BadRequestException(),
+    );
 
     await expect(
       service.create("renter-1", {
@@ -123,7 +152,6 @@ describe("BookingsService", () => {
 
   it("accepts and generates QR tokens", async () => {
     prisma.booking.findUnique.mockResolvedValue(booking);
-    prisma.booking.findFirst.mockResolvedValue(null);
     prisma.booking.update.mockResolvedValue({
       ...booking,
       status: BookingStatus.ACCEPTED,
@@ -133,6 +161,35 @@ describe("BookingsService", () => {
 
     expect(result.pickupQrToken).toBeDefined();
     expect(result.returnQrToken).toBeDefined();
+    expect(payments.createMockIntentForAcceptedBooking).toHaveBeenCalled();
+  });
+
+  it("rejects ready for pickup without paid payment", async () => {
+    prisma.booking.findUnique.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.PENDING,
+    });
+
+    await expect(
+      service.readyForPickup("owner-1", booking.id),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("marks ready for pickup after paid payment", async () => {
+    prisma.booking.findUnique.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.PAID,
+    });
+    prisma.booking.update.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.READY_FOR_PICKUP,
+    });
+
+    const result = await service.readyForPickup("owner-1", booking.id);
+
+    expect(result.status).toBe(BookingStatus.READY_FOR_PICKUP);
   });
 
   it("confirms pickup with correct token", async () => {
@@ -151,6 +208,17 @@ describe("BookingsService", () => {
     expect(result.status).toBe(BookingStatus.IN_PROGRESS);
   });
 
+  it("rejects pickup before ready status", async () => {
+    prisma.booking.findUnique.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.ACCEPTED,
+    });
+
+    await expect(
+      service.confirmPickup("owner-1", booking.id, "token"),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it("rejects wrong return token", async () => {
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
@@ -161,5 +229,25 @@ describe("BookingsService", () => {
     await expect(
       service.confirmReturn("renter-1", booking.id, "bad-token"),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("confirms return and releases mock payment", async () => {
+    prisma.booking.findUnique.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.IN_PROGRESS,
+    });
+    prisma.booking.update.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.COMPLETED,
+    });
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+    const result = await service.confirmReturn("renter-1", booking.id, "token");
+
+    expect(result.status).toBe(BookingStatus.COMPLETED);
+    expect(payments.releaseMockPayment).toHaveBeenCalledWith(
+      "renter-1",
+      booking.id,
+    );
   });
 });

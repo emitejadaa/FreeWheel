@@ -2,27 +2,27 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-} from '@nestjs/common';
+} from "@nestjs/common";
 import {
-  BookingStatus,
   Listing,
   ListingStatus,
   MediaAssetKind,
   MediaAssetStatus,
   Prisma,
   Vehicle,
-} from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { CreateListingDto } from './dto/create-listing.dto';
+} from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { blockingBookingStatuses } from "../availability/availability.service";
+import { CreateListingDto } from "./dto/create-listing.dto";
 import {
   ListingSort,
   ListListingsQueryDto,
-} from './dto/list-listings-query.dto';
-import { UpdateListingDto } from './dto/update-listing.dto';
+} from "./dto/list-listings-query.dto";
+import { UpdateListingDto } from "./dto/update-listing.dto";
 
 type ListingWithVehicle = Listing & { vehicle: Vehicle };
-type PublicListing = Omit<Listing, 'ownerId'> & {
-  vehicle: Omit<Vehicle, 'ownerId' | 'plate'>;
+type PublicListing = Omit<Listing, "ownerId"> & {
+  vehicle: Omit<Vehicle, "ownerId" | "plate">;
 };
 
 @Injectable()
@@ -35,12 +35,12 @@ export class ListingsService {
     });
 
     if (!vehicle) {
-      throw new NotFoundException('Vehicle not found');
+      throw new NotFoundException("Vehicle not found");
     }
 
     if (vehicle.ownerId !== ownerId) {
       throw new ForbiddenException(
-        'You cannot create listings for this vehicle',
+        "You cannot create listings for this vehicle",
       );
     }
 
@@ -87,7 +87,7 @@ export class ListingsService {
     const listings = await this.prisma.listing.findMany({
       where: { ownerId },
       include: { vehicle: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
 
     const photosByVehicle = await this.getPhotosByVehicleIds(
@@ -107,7 +107,7 @@ export class ListingsService {
     });
 
     if (!listing || listing.status !== ListingStatus.ACTIVE) {
-      throw new NotFoundException('Listing not found');
+      throw new NotFoundException("Listing not found");
     }
 
     const publicListing = this.toPublicListing(listing);
@@ -119,7 +119,7 @@ export class ListingsService {
     const listing = await this.findEditable(id);
 
     if (listing.ownerId !== ownerId) {
-      throw new ForbiddenException('You cannot update this listing');
+      throw new ForbiddenException("You cannot update this listing");
     }
 
     if (data.vehicleId) {
@@ -127,11 +127,11 @@ export class ListingsService {
         where: { id: data.vehicleId },
       });
 
-      if (!vehicle) throw new NotFoundException('Vehicle not found');
+      if (!vehicle) throw new NotFoundException("Vehicle not found");
 
       if (vehicle.ownerId !== ownerId) {
         throw new ForbiddenException(
-          'You cannot assign this listing to that vehicle',
+          "You cannot assign this listing to that vehicle",
         );
       }
     }
@@ -147,7 +147,7 @@ export class ListingsService {
     const listing = await this.findEditable(id);
 
     if (listing.ownerId !== ownerId) {
-      throw new ForbiddenException('You cannot delete this listing');
+      throw new ForbiddenException("You cannot delete this listing");
     }
 
     return this.prisma.listing.update({
@@ -163,7 +163,7 @@ export class ListingsService {
     });
 
     if (!listing || listing.status === ListingStatus.DELETED) {
-      throw new NotFoundException('Listing not found');
+      throw new NotFoundException("Listing not found");
     }
 
     return listing;
@@ -171,20 +171,24 @@ export class ListingsService {
 
   private toPublicListing(listing: ListingWithVehicle): PublicListing {
     const { ownerId: _ownerId, vehicle, ...publicListing } = listing;
-    const { ownerId: _vehicleOwnerId, plate: _plate, ...publicVehicle } = vehicle;
+    const {
+      ownerId: _vehicleOwnerId,
+      plate: _plate,
+      ...publicVehicle
+    } = vehicle;
     return { ...publicListing, vehicle: publicVehicle };
   }
 
   private async getPhotosByVehicleId(vehicleId: string): Promise<string[]> {
     const assets = await this.prisma.mediaAsset.findMany({
       where: {
-        entityType: 'vehicle',
+        entityType: "vehicle",
         entityId: vehicleId,
         kind: MediaAssetKind.VEHICLE_PHOTO,
         status: MediaAssetStatus.ACTIVE,
       },
       select: { url: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
     });
     return assets.map((a) => a.url);
   }
@@ -195,13 +199,13 @@ export class ListingsService {
     if (vehicleIds.length === 0) return {};
     const assets = await this.prisma.mediaAsset.findMany({
       where: {
-        entityType: 'vehicle',
+        entityType: "vehicle",
         entityId: { in: vehicleIds },
         kind: MediaAssetKind.VEHICLE_PHOTO,
         status: MediaAssetStatus.ACTIVE,
       },
       select: { entityId: true, url: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
     });
     return assets.reduce(
       (acc, a) => {
@@ -214,11 +218,16 @@ export class ListingsService {
     );
   }
 
-  private buildPublicWhere(query: ListListingsQueryDto): Prisma.ListingWhereInput {
+  private buildPublicWhere(
+    query: ListListingsQueryDto,
+  ): Prisma.ListingWhereInput {
     const where: Prisma.ListingWhereInput = { status: ListingStatus.ACTIVE };
 
     if (query.locationText) {
-      where.locationText = { contains: query.locationText, mode: 'insensitive' };
+      where.locationText = {
+        contains: query.locationText,
+        mode: "insensitive",
+      };
     }
 
     if (query.minPrice !== undefined || query.maxPrice !== undefined) {
@@ -230,26 +239,36 @@ export class ListingsService {
 
     if (query.brand || query.model) {
       where.vehicle = {
-        ...(query.brand ? { brand: { contains: query.brand, mode: 'insensitive' } } : {}),
-        ...(query.model ? { model: { contains: query.model, mode: 'insensitive' } } : {}),
+        ...(query.brand
+          ? { brand: { contains: query.brand, mode: "insensitive" } }
+          : {}),
+        ...(query.model
+          ? { model: { contains: query.model, mode: "insensitive" } }
+          : {}),
       };
     }
 
     if (query.startDate && query.endDate) {
-      where.bookings = {
-        none: {
-          status: {
-            in: [
-              BookingStatus.ACCEPTED,
-              BookingStatus.READY_FOR_PICKUP,
-              BookingStatus.IN_PROGRESS,
-              BookingStatus.RETURN_PENDING,
-            ],
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : []),
+        {
+          bookings: {
+            none: {
+              status: { in: blockingBookingStatuses },
+              startDate: { lt: query.endDate },
+              endDate: { gt: query.startDate },
+            },
           },
-          startDate: { lt: query.endDate },
-          endDate: { gt: query.startDate },
         },
-      };
+        {
+          availabilityBlocks: {
+            none: {
+              startDate: { lt: query.endDate },
+              endDate: { gt: query.startDate },
+            },
+          },
+        },
+      ];
     }
 
     return where;
@@ -258,8 +277,8 @@ export class ListingsService {
   private buildOrderBy(
     sort: ListingSort = ListingSort.NEWEST,
   ): Prisma.ListingOrderByWithRelationInput {
-    if (sort === ListingSort.PRICE_ASC) return { pricePerDay: 'asc' };
-    if (sort === ListingSort.PRICE_DESC) return { pricePerDay: 'desc' };
-    return { createdAt: 'desc' };
+    if (sort === ListingSort.PRICE_ASC) return { pricePerDay: "asc" };
+    if (sort === ListingSort.PRICE_DESC) return { pricePerDay: "desc" };
+    return { createdAt: "desc" };
   }
 }
