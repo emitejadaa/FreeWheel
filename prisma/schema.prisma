@@ -109,6 +109,11 @@ enum MediaAssetStatus {
   DELETED
 }
 
+enum MessageType {
+  TEXT
+  AUDIO
+}
+
 model User {
   id                 String             @id @default(uuid())
   email              String             @unique
@@ -123,21 +128,24 @@ model User {
   verificationStatus VerificationStatus @default(UNVERIFIED)
   emailVerifiedAt    DateTime?
   acceptedTermsAt    DateTime?
-  googleId           String?   @unique
+  googleId           String?            @unique
   phoneVerifiedAt    DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  vehicles          Vehicle[]
-  listings          Listing[]
-  verifications     UserVerification[]
-  verificationCodes VerificationCode[]
-  bookingsAsOwner   Booking[]          @relation("BookingOwner")
-  bookingsAsRenter  Booking[]          @relation("BookingRenter")
-  paymentRecords    PaymentRecord[]
-  mediaAssets       MediaAsset[]
-  auditLogsAsActor  AuditLog[]         @relation("AuditActor")
-  auditLogsAsTarget AuditLog[]         @relation("AuditTargetUser")
+  vehicles              Vehicle[]
+  listings              Listing[]
+  verifications         UserVerification[]
+  verificationCodes     VerificationCode[]
+  bookingsAsOwner       Booking[]          @relation("BookingOwner")
+  bookingsAsRenter      Booking[]          @relation("BookingRenter")
+  paymentRecords        PaymentRecord[]
+  mediaAssets           MediaAsset[]
+  auditLogsAsActor      AuditLog[]         @relation("AuditActor")
+  auditLogsAsTarget     AuditLog[]         @relation("AuditTargetUser")
+  conversationsAsRenter Conversation[]     @relation("RenterConversations")
+  conversationsAsOwner  Conversation[]     @relation("OwnerConversations")
+  sentMessages          Message[]          @relation("SentMessages")
 
   @@index([email])
   @@index([status])
@@ -166,7 +174,7 @@ model VerificationCode {
   user        User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
   targetType  VerificationCodeTargetType
   targetValue String
-  purpose     VerificationCodePurpose @default(EMAIL_VERIFICATION)
+  purpose     VerificationCodePurpose    @default(EMAIL_VERIFICATION)
   codeHash    String
   expiresAt   DateTime
   consumedAt  DateTime?
@@ -234,7 +242,8 @@ model Listing {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  bookings Booking[]
+  bookings      Booking[]
+  conversations Conversation[]
 
   @@index([ownerId])
   @@index([vehicleId])
@@ -346,4 +355,38 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([action])
   @@index([createdAt])
+}
+
+model Conversation {
+  id            String    @id @default(uuid())
+  listingId     String
+  listing       Listing   @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  renterId      String
+  renter        User      @relation("RenterConversations", fields: [renterId], references: [id], onDelete: Restrict)
+  ownerId       String
+  owner         User      @relation("OwnerConversations", fields: [ownerId], references: [id], onDelete: Restrict)
+  messages      Message[]
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([listingId, renterId])
+  @@index([renterId])
+  @@index([ownerId])
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Restrict)
+  type           MessageType  @default(TEXT)
+  content        String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+  @@index([senderId])
 }
