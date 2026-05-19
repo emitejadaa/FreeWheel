@@ -91,8 +91,16 @@ export class AdminController {
     return this.adminService.listBookings();
   }
 
-  @Get('bookings/:id')
+    @Get('bookings/:id')
   getBooking(@Param('id') id: string) {
     return this.adminService.getBooking(id);
+  }
+
+  @Delete('users/:id')
+  deleteUserPermanently(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.adminService.deleteUserPermanently(user.id, id);
   }
 }
