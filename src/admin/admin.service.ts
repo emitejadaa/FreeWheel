@@ -180,6 +180,47 @@ export class AdminService {
     return updated;
   }
 
+  async deleteListingPermanently(actorId: string, id: string) {
+    const listing = await this.prisma.listing.findUnique({
+      where: { id },
+      include: { _count: { select: { bookings: true } } },
+    });
+
+    if (!listing) {
+      throw new NotFoundException('Listing not found');
+    }
+
+    if (listing._count.bookings > 0) {
+      throw new BadRequestException(
+        'Cannot permanently delete a listing with bookings',
+      );
+    }
+
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      await tx.listingAvailabilityBlock.deleteMany({
+        where: { listingId: id },
+      });
+      await tx.conversation.deleteMany({
+        where: { listingId: id },
+      });
+      return tx.listing.delete({
+        where: { id },
+        include: { vehicle: true },
+      });
+    });
+
+    await this.auditLog.create({
+      actorId,
+      targetUserId: listing.ownerId,
+      action: 'admin.listing.delete.permanent',
+      entityType: 'Listing',
+      entityId: id,
+      metadata: { title: listing.title },
+    });
+
+    return deleted;
+  }
+
   listBookings() {
     return this.prisma.booking.findMany({
       include: {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -31,26 +31,18 @@ export class AdminController {
   updateUserStatus(
     @CurrentUser() user: CurrentUserPayload,
     @Param('id') id: string,
-    @Body() updateUserStatusDto: UpdateUserStatusDto,
+    @Body() dto: UpdateUserStatusDto,
   ) {
-    return this.adminService.updateUserStatus(
-      user.id,
-      id,
-      updateUserStatusDto.status,
-    );
+    return this.adminService.updateUserStatus(user.id, id, dto.status);
   }
 
   @Patch('users/:id/role')
   updateUserRole(
     @CurrentUser() user: CurrentUserPayload,
     @Param('id') id: string,
-    @Body() updateUserRoleDto: UpdateUserRoleDto,
+    @Body() dto: UpdateUserRoleDto,
   ) {
-    return this.adminService.updateUserRole(
-      user.id,
-      id,
-      updateUserRoleDto.role,
-    );
+    return this.adminService.updateUserRole(user.id, id, dto.role);
   }
 
   @Get('verifications')
@@ -67,14 +59,9 @@ export class AdminController {
   reviewVerification(
     @CurrentUser() user: CurrentUserPayload,
     @Param('id') id: string,
-    @Body() reviewVerificationDto: ReviewVerificationDto,
+    @Body() dto: ReviewVerificationDto,
   ) {
-    return this.adminService.reviewVerification(
-      user.id,
-      id,
-      reviewVerificationDto.status,
-      reviewVerificationDto.notes,
-    );
+    return this.adminService.reviewVerification(user.id, id, dto.status, dto.notes);
   }
 
   @Get('listings')
@@ -86,13 +73,17 @@ export class AdminController {
   updateListingStatus(
     @CurrentUser() user: CurrentUserPayload,
     @Param('id') id: string,
-    @Body() updateListingStatusDto: UpdateListingStatusDto,
+    @Body() dto: UpdateListingStatusDto,
   ) {
-    return this.adminService.updateListingStatus(
-      user.id,
-      id,
-      updateListingStatusDto.status,
-    );
+    return this.adminService.updateListingStatus(user.id, id, dto.status);
+  }
+
+  @Delete('listings/:id')
+  deleteListingPermanently(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.adminService.deleteListingPermanently(user.id, id);
   }
 
   @Get('bookings')

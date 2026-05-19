@@ -20,14 +20,31 @@ import {
 } from "./dto/list-listings-query.dto";
 import { UpdateListingDto } from "./dto/update-listing.dto";
 
-type ListingWithVehicle = Listing & { vehicle: Vehicle };
+type OwnerPublic = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  displayName: string | null;
+};
+type ListingWithVehicleAndOwner = Listing & {
+  vehicle: Vehicle;
+  owner: OwnerPublic;
+};
 type PublicListing = Omit<Listing, "ownerId"> & {
   vehicle: Omit<Vehicle, "ownerId" | "plate">;
+  owner: OwnerPublic;
 };
 
 @Injectable()
 export class ListingsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private readonly ownerSelect = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    displayName: true,
+  };
 
   async create(ownerId: string, data: CreateListingDto) {
     const vehicle = await this.prisma.vehicle.findUnique({
@@ -60,7 +77,7 @@ export class ListingsService {
       this.prisma.listing.count({ where }),
       this.prisma.listing.findMany({
         where,
-        include: { vehicle: true },
+        include: { vehicle: true, owner: { select: this.ownerSelect } },
         orderBy,
         skip: (page - 1) * limit,
         take: limit,
@@ -86,7 +103,7 @@ export class ListingsService {
   async findMine(ownerId: string) {
     const listings = await this.prisma.listing.findMany({
       where: { ownerId },
-      include: { vehicle: true },
+      include: { vehicle: true, owner: { select: this.ownerSelect } },
       orderBy: { createdAt: "desc" },
     });
 
@@ -103,7 +120,7 @@ export class ListingsService {
   async findOne(id: string) {
     const listing = await this.prisma.listing.findUnique({
       where: { id },
-      include: { vehicle: true },
+      include: { vehicle: true, owner: { select: this.ownerSelect } },
     });
 
     if (!listing || listing.status !== ListingStatus.ACTIVE) {
@@ -169,14 +186,14 @@ export class ListingsService {
     return listing;
   }
 
-  private toPublicListing(listing: ListingWithVehicle): PublicListing {
-    const { ownerId: _ownerId, vehicle, ...publicListing } = listing;
+  private toPublicListing(listing: ListingWithVehicleAndOwner): PublicListing {
+    const { ownerId: _ownerId, vehicle, owner, ...publicListing } = listing;
     const {
       ownerId: _vehicleOwnerId,
       plate: _plate,
       ...publicVehicle
     } = vehicle;
-    return { ...publicListing, vehicle: publicVehicle };
+    return { ...publicListing, vehicle: publicVehicle, owner };
   }
 
   private async getPhotosByVehicleId(vehicleId: string): Promise<string[]> {
@@ -236,7 +253,6 @@ export class ListingsService {
         ...(query.maxPrice !== undefined ? { lte: query.maxPrice } : {}),
       };
     }
-
     if (query.brand || query.model) {
       where.vehicle = {
         ...(query.brand
@@ -247,7 +263,6 @@ export class ListingsService {
           : {}),
       };
     }
-
     if (query.startDate && query.endDate) {
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : []),
@@ -270,7 +285,6 @@ export class ListingsService {
         },
       ];
     }
-
     return where;
   }
 

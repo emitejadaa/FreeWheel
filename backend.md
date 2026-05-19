@@ -4,7 +4,7 @@ Documento maestro del backend de FreeWheel. Describe el contexto del proyecto, a
 
 ## 1. Contexto Del Proyecto
 
-FreeWheel es un backend NestJS para un marketplace de alquiler de autos entre usuarios. El producto permite que un owner publique vehiculos y que un renter solicite reservas en fechas concretas. El sistema ya cubre autenticacion, usuarios, vehiculos, listings, disponibilidad, reservas, pagos mock, verificacion, administracion, media metadata, auditoria y despliegue serverless en Vercel.
+FreeWheel es un backend NestJS para un marketplace de alquiler de autos entre usuarios. El producto permite que un owner publique vehiculos y que un renter solicite reservas en fechas concretas. El sistema ya cubre autenticacion, usuarios, vehiculos, listings, disponibilidad, reservas, pagos mock, conversaciones, verificacion, administracion, media metadata, auditoria y despliegue serverless en Vercel.
 
 El backend esta pensado para evolucionar hacia produccion con:
 
@@ -19,7 +19,7 @@ El backend esta pensado para evolucionar hacia produccion con:
 
 ## 2. Principios De Diseno
 
-- Separar dominio por modulos NestJS: auth, users, vehicles, listings, availability, bookings, payments, media, verification, admin, email, prisma y common.
+- Separar dominio por modulos NestJS: auth, users, vehicles, listings, availability, bookings, payments, conversations, media, verification, admin, email, prisma y common.
 - Mantener ownership claro: owners administran sus vehiculos, listings y bloqueos; renters administran sus solicitudes y pagos.
 - No duplicar reglas de disponibilidad: los solapamientos viven en `AvailabilityService`.
 - No acoplar reservas a un proveedor fake: `PaymentsService` coordina records y estado, y el provider mock queda encapsulado.
@@ -90,6 +90,7 @@ src/
   bookings/                        Ciclo de reserva y tokens pickup/return
   common/                          Guards, decorators, tipos y servicios comunes
   config/                          Helpers de URLs publicas
+  conversations/                   Chat entre renter y owner por listing
   email/                           EmailService con Gmail SMTP opcional
   listings/                        Publicaciones y catalogo publico
   media/                           Registro/listado de metadata de assets
@@ -134,6 +135,7 @@ Imports principales:
 - `BookingsModule`
 - `PaymentsModule`
 - `MediaModule`
+- `ConversationsModule`
 
 ### PrismaModule
 
@@ -475,6 +477,31 @@ Pendiente importante:
 - Validar ownership de `entityType/entityId` para impedir que un usuario registre assets sobre entidades ajenas.
 - Agregar firma segura para upload directo si se integra Cloudinary desde backend.
 
+### ConversationsModule
+
+Archivos:
+
+- `src/conversations/conversations.controller.ts`
+- `src/conversations/conversations.service.ts`
+- `src/conversations/conversations.module.ts`
+- DTOs en `src/conversations/dto`
+
+Responsabilidades:
+
+- Crear o reutilizar una conversacion entre renter y owner para un listing.
+- Listar conversaciones propias como renter u owner.
+- Obtener una conversacion si el usuario participa.
+- Listar mensajes de una conversacion.
+- Enviar mensajes `TEXT` o `AUDIO`.
+- Marcar mensajes entrantes como leidos.
+
+Reglas:
+
+- Un renter no puede iniciar conversacion sobre su propia publicacion.
+- Solo se crean conversaciones nuevas si el listing esta `ACTIVE`.
+- La unicidad `listingId + renterId` evita chats duplicados para el mismo renter/listing.
+- Solo renter u owner de la conversacion pueden leer o escribir mensajes.
+
 ### EmailModule
 
 Archivos:
@@ -605,6 +632,17 @@ Query soportada en catalogo:
 | POST | `/media/assets` | JWT | Registra metadata de asset |
 | GET | `/media/assets/me` | JWT | Lista assets propios |
 
+### Conversations
+
+| Metodo | Ruta | Auth | Descripcion |
+| --- | --- | --- | --- |
+| POST | `/conversations` | JWT renter | Crea o reutiliza conversacion para un listing |
+| GET | `/conversations/me` | JWT | Lista conversaciones propias |
+| GET | `/conversations/:id` | JWT participante | Obtiene conversacion |
+| GET | `/conversations/:id/messages` | JWT participante | Lista mensajes |
+| POST | `/conversations/:id/messages` | JWT participante | Envia mensaje |
+| PATCH | `/conversations/:id/read` | JWT participante | Marca mensajes entrantes como leidos |
+
 ### Admin
 
 | Metodo | Ruta | Auth | Descripcion |
@@ -618,6 +656,7 @@ Query soportada en catalogo:
 | PATCH | `/admin/verifications/:id/review` | JWT ADMIN | Revisa verificacion |
 | GET | `/admin/listings` | JWT ADMIN | Lista listings |
 | PATCH | `/admin/listings/:id/status` | JWT ADMIN | Cambia estado de listing |
+| DELETE | `/admin/listings/:id` | JWT ADMIN | Elimina permanentemente un listing |
 | GET | `/admin/bookings` | JWT ADMIN | Lista bookings |
 | GET | `/admin/bookings/:id` | JWT ADMIN | Obtiene booking |
 
@@ -648,6 +687,7 @@ Generator:
 - `PaymentRecordStatus`: `MOCK`, `PENDING`, `PAID`, `REFUNDED`, `FAILED`, `CANCELLED`
 - `MediaAssetKind`: `PROFILE_PHOTO`, `VEHICLE_PHOTO`, `DOCUMENT`, `SELFIE`, `LISTING_PHOTO`
 - `MediaAssetStatus`: `PENDING`, `ACTIVE`, `DELETED`
+- `MessageType`: `TEXT`, `AUDIO`
 
 ### Modelos
 
@@ -688,6 +728,9 @@ Relaciones:
 - `mediaAssets`
 - `auditLogsAsActor`
 - `auditLogsAsTarget`
+- `conversationsAsRenter`
+- `conversationsAsOwner`
+- `sentMessages`
 
 Indices:
 
@@ -763,6 +806,7 @@ Relaciones:
 - `owner`
 - `bookings`
 - `availabilityBlocks`
+- `conversations`
 
 Indices:
 
@@ -960,6 +1004,55 @@ Indices:
 - `action`
 - `createdAt`
 
+#### Conversation
+
+Chat entre un renter y el owner de un listing.
+
+Campos:
+
+- `listingId`
+- `renterId`
+- `ownerId`
+- `lastMessageAt`
+- timestamps
+
+Relaciones:
+
+- `listing`
+- `renter`
+- `owner`
+- `messages`
+
+Indices:
+
+- unico `listingId, renterId`
+- `renterId`
+- `ownerId`
+- `lastMessageAt`
+
+#### Message
+
+Mensaje dentro de una conversacion.
+
+Campos:
+
+- `conversationId`
+- `senderId`
+- `type`
+- `content`
+- `readAt`
+- `createdAt`
+
+Relaciones:
+
+- `conversation`
+- `sender`
+
+Indices:
+
+- `conversationId`
+- `senderId`
+
 ## 9. Flujos De Dominio
 
 ### Flujo De Reserva Actual
@@ -1037,6 +1130,15 @@ Return:
 - Lo confirma el renter.
 - Se expone cuando el booking esta `IN_PROGRESS` o `RETURN_PENDING`.
 
+### Conversaciones
+
+1. Renter abre o reutiliza conversacion con `POST /conversations` enviando `listingId`.
+2. Backend valida que el listing exista, este activo para conversaciones nuevas y no pertenezca al renter.
+3. Se crea `Conversation` con `renterId`, `ownerId` y `listingId`, o se devuelve la existente.
+4. Renter y owner pueden listar sus conversaciones con `GET /conversations/me`.
+5. Cualquier participante puede enviar mensajes con `POST /conversations/:id/messages`.
+6. Los mensajes entrantes pueden marcarse como leidos con `PATCH /conversations/:id/read`.
+
 ## 10. Seguridad
 
 Implementado:
@@ -1051,6 +1153,7 @@ Implementado:
 - No almacenamiento de datos de tarjeta.
 - Tokens pickup/return hasheados.
 - Limpieza de tokens al consumirse.
+- Control de participante en conversaciones y mensajes.
 - Auditoria para acciones importantes.
 - ValidationPipe global con whitelist.
 
@@ -1288,7 +1391,9 @@ Implementado:
 - Confirmacion de pickup/return por token.
 - Refund mock en cancelaciones pagadas.
 - Release mock al completar return.
+- Conversaciones y mensajes renter/owner por listing.
 - Admin para usuarios, verificaciones, listings y bookings.
+- Delete permanente de listings desde admin.
 - Registro de media por URL/metadata.
 - Audit logs.
 - CORS permisivo.
@@ -1315,7 +1420,6 @@ Media prioridad:
 - Politicas de cancelacion y penalidades.
 - Availability avanzada por calendario recurrente.
 - Estados o tabla de disputes.
-- Mensajeria renter/owner.
 - Notificaciones por email/eventos.
 - Observabilidad: logs estructurados, tracing y metricas.
 
@@ -1363,7 +1467,7 @@ Baja prioridad:
 ### Fase 4 - Producto Marketplace
 
 - Reviews.
-- Mensajeria.
+- Mejoras de mensajeria: adjuntos, moderacion y notificaciones.
 - Disputas.
 - Penalidades de cancelacion.
 - Depositos de garantia.
