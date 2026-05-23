@@ -181,28 +181,39 @@ export class AdminService {
   }
 
   async deleteListingPermanently(actorId: string, id: string) {
-    const listing = await this.prisma.listing.findUnique({
-      where: { id },
-      include: { _count: { select: { bookings: true } } },
-    });
+    const listing = await this.prisma.listing.findUnique({ where: { id } });
 
     if (!listing) {
       throw new NotFoundException('Listing not found');
     }
 
-    if (listing._count.bookings > 0) {
-      throw new BadRequestException(
-        'Cannot permanently delete a listing with bookings',
-      );
-    }
-
     const deleted = await this.prisma.$transaction(async (tx) => {
-      await tx.listingAvailabilityBlock.deleteMany({
+      const bookings = await tx.booking.findMany({
         where: { listingId: id },
+        select: { id: true },
       });
-      await tx.conversation.deleteMany({
+      const bookingIds = bookings.map((b) => b.id);
+
+      if (bookingIds.length > 0) {
+        await tx.paymentRecord.deleteMany({
+          where: { bookingId: { in: bookingIds } },
+        });
+        await tx.booking.deleteMany({ where: { listingId: id } });
+      }
+
+      await tx.listingAvailabilityBlock.deleteMany({ where: { listingId: id } });
+
+      const convs = await tx.conversation.findMany({
         where: { listingId: id },
+        select: { id: true },
       });
+      if (convs.length > 0) {
+        await tx.message.deleteMany({
+          where: { conversationId: { in: convs.map((c) => c.id) } },
+        });
+      }
+      await tx.conversation.deleteMany({ where: { listingId: id } });
+
       return tx.listing.delete({
         where: { id },
         include: { vehicle: true },
@@ -251,6 +262,98 @@ export class AdminService {
     return booking;
   }
 
+  async deleteUserPermanently(actorId: string, id: string) {
+    if (actorId === id) {
+      throw new BadRequestException('No podés eliminarte a vos mismo');
+    }
+
+    await this.getUser(id);
+
+    await this.prisma.$transaction(async (tx) => {
+      const listings = await tx.listing.findMany({
+        where: { ownerId: id },
+        select: { id: true },
+      });
+      const listingIds = listings.map((l) => l.id);
+
+      const bookings = await tx.booking.findMany({
+        where: {
+          OR: [
+            { ownerId: id },
+            { renterId: id },
+            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+          ],
+        },
+        select: { id: true },
+      });
+      const bookingIds = bookings.map((b) => b.id);
+
+      await tx.auditLog.deleteMany({
+        where: { OR: [{ actorId: id }, { targetUserId: id }] },
+      });
+
+      await tx.message.deleteMany({ where: { senderId: id } });
+
+      const convs = await tx.conversation.findMany({
+        where: {
+          OR: [
+            { renterId: id },
+            { ownerId: id },
+            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+          ],
+        },
+        select: { id: true },
+      });
+      await tx.message.deleteMany({
+        where: { conversationId: { in: convs.map((c) => c.id) } },
+      });
+      await tx.conversation.deleteMany({
+        where: {
+          OR: [
+            { renterId: id },
+            { ownerId: id },
+            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+          ],
+        },
+      });
+
+      await tx.paymentRecord.deleteMany({
+        where: {
+          OR: [
+            { userId: id },
+            ...(bookingIds.length > 0 ? [{ bookingId: { in: bookingIds } }] : []),
+          ],
+        },
+      });
+
+      if (bookingIds.length > 0) {
+        await tx.booking.deleteMany({ where: { id: { in: bookingIds } } });
+      }
+
+      await tx.listingAvailabilityBlock.deleteMany({
+        where: {
+          OR: [
+            { ownerId: id },
+            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+          ],
+        },
+      });
+
+      if (listingIds.length > 0) {
+        await tx.listing.deleteMany({ where: { id: { in: listingIds } } });
+      }
+
+      await tx.vehicle.deleteMany({ where: { ownerId: id } });
+      await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
+      await tx.verificationCode.deleteMany({ where: { userId: id } });
+      await tx.userVerification.deleteMany({ where: { userId: id } });
+
+      return tx.user.delete({ where: { id } });
+    });
+
+    return { deleted: true };
+  }
+
   private resolveApprovedUserStatus(
     emailVerifiedAt: Date | null,
     phoneVerifiedAt: Date | null,
@@ -258,15 +361,12 @@ export class AdminService {
     if (emailVerifiedAt && phoneVerifiedAt) {
       return VerificationStatus.VERIFIED;
     }
-
     if (emailVerifiedAt) {
       return VerificationStatus.EMAIL_VERIFIED;
     }
-
     if (phoneVerifiedAt) {
       return VerificationStatus.PHONE_VERIFIED;
     }
-
     return VerificationStatus.ID_SUBMITTED;
   }
 
@@ -288,95 +388,4 @@ export class AdminService {
       updatedAt: true,
     };
   }
-
-  async deleteUserPermanently(actorId: string, id: string) {
-  if (actorId === id) {
-    throw new BadRequestException('No podés eliminarte a vos mismo');
-  }
-
-  await this.getUser(id);
-
-  await this.prisma.$transaction(async (tx) => {
-    const listings = await tx.listing.findMany({
-      where: { ownerId: id },
-      select: { id: true },
-    });
-    const listingIds = listings.map(l => l.id);
-
-    const bookings = await tx.booking.findMany({
-      where: {
-        OR: [
-          { ownerId: id },
-          { renterId: id },
-          ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
-        ],
-      },
-      select: { id: true },
-    });
-    const bookingIds = bookings.map(b => b.id);
-
-    await tx.auditLog.deleteMany({
-      where: { OR: [{ actorId: id }, { targetUserId: id }] },
-    });
-
-    await tx.message.deleteMany({ where: { senderId: id } });
-
-    const convs = await tx.conversation.findMany({
-      where: {
-        OR: [
-          { renterId: id },
-          { ownerId: id },
-          ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
-        ],
-      },
-      select: { id: true },
-    });
-    await tx.message.deleteMany({ where: { conversationId: { in: convs.map(c => c.id) } } });
-    await tx.conversation.deleteMany({
-      where: {
-        OR: [
-          { renterId: id },
-          { ownerId: id },
-          ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
-        ],
-      },
-    });
-
-    await tx.paymentRecord.deleteMany({
-      where: {
-        OR: [
-          { userId: id },
-          ...(bookingIds.length > 0 ? [{ bookingId: { in: bookingIds } }] : []),
-        ],
-      },
-    });
-
-    if (bookingIds.length > 0) {
-      await tx.booking.deleteMany({ where: { id: { in: bookingIds } } });
-    }
-
-    await tx.listingAvailabilityBlock.deleteMany({
-      where: {
-        OR: [
-          { ownerId: id },
-          ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
-        ],
-      },
-    });
-
-    if (listingIds.length > 0) {
-      await tx.listing.deleteMany({ where: { id: { in: listingIds } } });
-    }
-
-    await tx.vehicle.deleteMany({ where: { ownerId: id } });
-    await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
-    await tx.verificationCode.deleteMany({ where: { userId: id } });
-    await tx.userVerification.deleteMany({ where: { userId: id } });
-
-    return tx.user.delete({ where: { id } });
-  });
-
-  return { deleted: true };
-}
-
 }
