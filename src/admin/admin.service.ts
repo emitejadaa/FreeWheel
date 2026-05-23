@@ -54,7 +54,6 @@ export class AdminService {
       entityId: id,
       metadata: { status },
     });
-
     return user;
   }
 
@@ -73,7 +72,6 @@ export class AdminService {
       entityId: id,
       metadata: { role },
     });
-
     return user;
   }
 
@@ -152,11 +150,7 @@ export class AdminService {
     });
   }
 
-  async updateListingStatus(
-    actorId: string,
-    id: string,
-    status: ListingStatus,
-  ) {
+  async updateListingStatus(actorId: string, id: string, status: ListingStatus) {
     const listing = await this.prisma.listing.findUnique({ where: { id } });
 
     if (!listing) {
@@ -176,7 +170,6 @@ export class AdminService {
       entityId: id,
       metadata: { status },
     });
-
     return updated;
   }
 
@@ -281,7 +274,7 @@ export class AdminService {
           OR: [
             { ownerId: id },
             { renterId: id },
-            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+            { listingId: { in: listingIds } },
           ],
         },
         select: { id: true },
@@ -299,7 +292,7 @@ export class AdminService {
           OR: [
             { renterId: id },
             { ownerId: id },
-            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+            { listingId: { in: listingIds } },
           ],
         },
         select: { id: true },
@@ -312,7 +305,7 @@ export class AdminService {
           OR: [
             { renterId: id },
             { ownerId: id },
-            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+            { listingId: { in: listingIds } },
           ],
         },
       });
@@ -321,28 +314,31 @@ export class AdminService {
         where: {
           OR: [
             { userId: id },
-            ...(bookingIds.length > 0 ? [{ bookingId: { in: bookingIds } }] : []),
+            { bookingId: { in: bookingIds } },
           ],
         },
       });
 
-      if (bookingIds.length > 0) {
-        await tx.booking.deleteMany({ where: { id: { in: bookingIds } } });
-      }
+      await tx.booking.deleteMany({
+        where: {
+          OR: [
+            { ownerId: id },
+            { renterId: id },
+            { listingId: { in: listingIds } },
+          ],
+        },
+      });
 
       await tx.listingAvailabilityBlock.deleteMany({
         where: {
           OR: [
             { ownerId: id },
-            ...(listingIds.length > 0 ? [{ listingId: { in: listingIds } }] : []),
+            { listingId: { in: listingIds } },
           ],
         },
       });
 
-      if (listingIds.length > 0) {
-        await tx.listing.deleteMany({ where: { id: { in: listingIds } } });
-      }
-
+      await tx.listing.deleteMany({ where: { ownerId: id } });
       await tx.vehicle.deleteMany({ where: { ownerId: id } });
       await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
       await tx.verificationCode.deleteMany({ where: { userId: id } });
