@@ -76,16 +76,6 @@ export class ListingsService {
     };
   }
 
-  async findActiveListForLegacyTests(): Promise<PublicListing[]> {
-    const listings = await this.prisma.listing.findMany({
-      where: this.buildPublicWhere({}),
-      include: { vehicle: true },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    return listings.map((listing) => this.toPublicListing(listing));
-  }
-
   findMine(ownerId: string) {
     return this.prisma.listing.findMany({
       where: { ownerId },

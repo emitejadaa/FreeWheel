@@ -10,25 +10,10 @@ const ALLOWED_METHODS = [
   "OPTIONS",
 ];
 
-export function parseCorsOrigins(
-  env: NodeJS.ProcessEnv = process.env,
-): string[] {
-  const configuredOrigins = [env.FRONTEND_URL, env.CORS_ORIGINS]
-    .filter(Boolean)
-    .flatMap((value) => value!.split(","))
-    .map(normalizeOrigin)
-    .filter(Boolean);
-
-  if (env.NODE_ENV !== "production") {
-    configuredOrigins.push("http://localhost:3000", "http://localhost:5173");
-  }
-
-  return Array.from(new Set(configuredOrigins));
-}
-
-export function createCorsOptions(corsOrigins: string[]): CorsOptions {
-  void corsOrigins;
-
+// CORS intentionally reflects any incoming origin (origin: true) to support the
+// main frontend, Vercel preview deployments, and local clients without a
+// maintained whitelist. Tighten to an explicit allowlist when origins stabilize.
+export function createCorsOptions(): CorsOptions {
   return {
     origin: true,
     methods: ALLOWED_METHODS,
@@ -38,8 +23,4 @@ export function createCorsOptions(corsOrigins: string[]): CorsOptions {
     preflightContinue: false,
     optionsSuccessStatus: 204,
   };
-}
-
-function normalizeOrigin(origin: string): string {
-  return origin.trim().replace(/\/$/, "");
 }
