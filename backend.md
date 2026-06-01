@@ -74,7 +74,7 @@ El backend actual admite cualquier origen entrante:
 
 Esto hace que Express/Nest refleje el origen recibido y evita bloqueos entre el frontend principal, previews de Vercel, localhost u otros clientes temporales.
 
-`parseCorsOrigins()` se conserva por compatibilidad con documentacion/tests previos, pero `createCorsOptions()` ya no filtra por whitelist.
+`createCorsOptions()` no aplica whitelist: refleja el origen recibido para cualquier cliente.
 
 ## Variables De Entorno
 
@@ -262,6 +262,8 @@ Responsabilidades:
 
 Actualmente las verificaciones son internas. No hay proveedor SMS real integrado.
 
+Los codigos se generan con RNG criptografico y expiran a los 10 minutos (constante compartida con la verificacion de email de `AuthModule`). No se devuelven en la respuesta HTTP; en entornos no productivos se loguean para pruebas manuales.
+
 ### BookingsModule
 
 Responsabilidades:
@@ -329,6 +331,7 @@ Expone `PrismaService`, que extiende `PrismaClient` e implementa:
 - `@CurrentUser()`: obtiene el usuario actual desde request.
 - `CurrentUser`: tipo comun para usuario autenticado.
 - `AuditLogService`: registra acciones administrativas o relevantes.
+- `AllExceptionsFilter` (`src/common/filters`): filtro global de excepciones; loguea contexto (metodo, ruta, usuario, stack) sin exponer secretos.
 
 ## Prisma Schema
 
@@ -623,6 +626,7 @@ JWT:
 - El token lleva `email` en payload y `subject` con `userId`.
 - La expiracion se define con `JWT_EXPIRES_IN`.
 - `JwtStrategy` usa `JWT_SECRET`.
+- `JWT_SECRET` es obligatorio: si falta, la app falla al iniciar (no hay fallback inseguro).
 
 Roles:
 
@@ -645,6 +649,14 @@ Google:
 - `transform: true`
 
 Esto limpia payloads, rechaza campos no declarados y transforma tipos cuando corresponde.
+
+## Manejo De Errores
+
+`src/app.factory.ts` registra `AllExceptionsFilter` como filtro global.
+
+- Preserva las respuestas HTTP nativas de Nest: mismo status y body para cada `HttpException`, y el 500 generico por defecto para errores inesperados.
+- Loguea contexto del fallo (metodo, ruta, `userId` si existe y stack en 5xx) para diagnostico.
+- No loguea headers ni body para evitar filtrar credenciales o tokens.
 
 ## Integraciones Activas
 

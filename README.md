@@ -25,7 +25,7 @@ api/index.ts                     Entrada serverless de Vercel
 src/main.ts                      Entrada local/prod tradicional
 src/app.factory.ts               Fabrica compartida de Express + Nest
 src/app.module.ts                Modulos principales
-src/cors.config.ts               CORS por FRONTEND_URL/CORS_ORIGINS
+src/cors.config.ts               CORS reflejando cualquier origen entrante
 src/config/public-urls.ts        URLs publicas compartidas
 src/auth                         Registro, login, JWT, Google OAuth, password reset
 src/users                        Perfil propio y serializacion segura de usuario
@@ -125,6 +125,8 @@ JWT_EXPIRES_IN="24h"
 FRONTEND_URL="https://tu-front.vercel.app"
 API_BASE_URL="https://tu-backend.vercel.app"
 ```
+
+`JWT_SECRET` es obligatorio: la aplicacion no inicia si falta (sin fallback inseguro).
 
 Las migraciones Prisma no se ejecutan automaticamente dentro del handler serverless. Aplicarlas con:
 
