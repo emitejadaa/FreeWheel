@@ -30,6 +30,9 @@ claude.md
 # Codex local configuration
 .codex/
 
+# Claude Code local settings
+.claude/
+
 # Claude Flow runtime data
 .claude-flow/data/
 .claude-flow/logs/
