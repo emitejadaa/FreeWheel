@@ -21,6 +21,7 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { UsersService } from "../users/users.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../email/email.service";
+import { GoogleProfilePayload } from "./strategies/google.strategy";
 
 @Injectable()
 export class AuthService {
@@ -237,13 +238,7 @@ export class AuthService {
     return { message: "Contraseña actualizada correctamente." };
   }
 
-  async googleLogin(googleUser: {
-    email: string;
-    firstName: string;
-    lastName: string;
-    googleId: string;
-    profilePhotoUrl?: string | null;
-  }) {
+  async googleLogin(googleUser: GoogleProfilePayload) {
     let user = await this.usersService.findByEmail(googleUser.email);
 
     if (!user) {
