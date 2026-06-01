@@ -76,10 +76,11 @@ describe("VerificationService", () => {
     }).compile();
 
     service = module.get(VerificationService);
+    jest.spyOn(service["logger"], "debug").mockImplementation(() => undefined);
     (bcrypt.hash as jest.Mock).mockResolvedValue("hashed-code");
   });
 
-  it("creates an email code and returns it outside production", async () => {
+  it("creates an email code without exposing it in the response", async () => {
     prisma.user.findUnique.mockResolvedValue(user);
 
     const result = await service.requestEmailCode(user.id);
@@ -93,7 +94,8 @@ describe("VerificationService", () => {
         }),
       }),
     );
-    expect(result.code).toHaveLength(6);
+    expect(result).not.toHaveProperty("code");
+    expect(result.requested).toBe(true);
   });
 
   it("fails phone request when user has no phone", async () => {

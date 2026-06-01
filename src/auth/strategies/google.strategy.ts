@@ -4,6 +4,14 @@ import { PassportStrategy } from "@nestjs/passport";
 import { Strategy, VerifyCallback } from "passport-google-oauth20";
 import { getPublicApiBaseUrl } from "../../config/public-urls";
 
+export interface GoogleProfilePayload {
+  googleId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  profilePhotoUrl: string | null;
+}
+
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   constructor(configService: ConfigService) {
@@ -22,12 +30,13 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
     done: VerifyCallback,
   ) {
     const { id, name, emails, photos } = profile;
-    done(null, {
+    const payload: GoogleProfilePayload = {
       googleId: id,
       email: emails[0].value,
       firstName: name.givenName ?? "",
       lastName: name.familyName ?? "",
       profilePhotoUrl: photos?.[0]?.value ?? null,
-    });
+    };
+    done(null, payload);
   }
 }

@@ -167,6 +167,7 @@ Archivos:
 - `src/common/guards/roles.guard.ts`
 - `src/common/services/audit-log.service.ts`
 - `src/common/types/current-user.type.ts`
+- `src/common/filters/all-exceptions.filter.ts`
 
 Recursos:
 
@@ -175,6 +176,7 @@ Recursos:
 - `RolesGuard`: valida roles contra metadata.
 - `AuditLogService`: crea registros en `AuditLog`.
 - `CurrentUserPayload`: tipo comun de usuario autenticado.
+- `AllExceptionsFilter`: filtro global de excepciones (registrado en `app.factory`). Loguea metodo, ruta, usuario y stack en 5xx; preserva las respuestas HTTP nativas de Nest y no loguea headers ni body.
 
 ### AuthModule
 
@@ -419,6 +421,8 @@ Responsabilidades:
 Estado actual:
 
 - Verificaciones internas con codigos hasheados.
+- Codigos numericos con RNG criptografico y TTL de 10 minutos (constante compartida con la verificacion de email de `AuthModule`).
+- El codigo no se devuelve en la respuesta HTTP; en entornos no productivos se loguea para pruebas manuales.
 - No hay proveedor SMS real integrado.
 - Identidad se maneja por metadata/URLs, no por verificador externo.
 
@@ -1156,6 +1160,7 @@ Implementado:
 - Control de participante en conversaciones y mensajes.
 - Auditoria para acciones importantes.
 - ValidationPipe global con whitelist.
+- Filtro global de errores (`AllExceptionsFilter`) con logging de contexto sin filtrar secretos.
 
 Riesgos conocidos:
 
@@ -1163,6 +1168,7 @@ Riesgos conocidos:
 - `POST /payments/mock/webhook` es simulacion de desarrollo; en produccion real deberia validar firma del provider.
 - `MediaAsset` necesita validacion mas estricta de ownership por `entityType/entityId`.
 - CORS esta abierto con `origin: true`.
+- `JWT_SECRET` cae a un valor por defecto interno si no esta seteado (deuda de seguridad); configurar la variable en cada entorno y luego pasar a fail-fast.
 - Falta rate limiting para auth, verification, token confirmation y payment mock.
 - Falta observabilidad avanzada y tracing.
 

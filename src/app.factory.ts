@@ -6,7 +6,8 @@ import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 
 import { AppModule } from "./app.module";
-import { createCorsOptions, parseCorsOrigins } from "./cors.config";
+import { createCorsOptions } from "./cors.config";
+import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 
 let cachedServer: Express | null = null;
 let cachedApp: Promise<INestApplication> | null = null;
@@ -17,7 +18,7 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
     new ExpressAdapter(expressApp),
   );
 
-  app.enableCors(createCorsOptions(parseCorsOrigins()));
+  app.enableCors(createCorsOptions());
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -26,6 +27,8 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
       transform: true,
     }),
   );
+
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   await app.init();
 

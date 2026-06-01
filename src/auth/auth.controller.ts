@@ -18,6 +18,9 @@ import { VerifyEmailDto } from "./dto/verify-email.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { getFrontendUrl } from "../config/public-urls";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
+import type { CurrentUserPayload } from "../common/types/current-user.type";
+import type { GoogleProfilePayload } from "./strategies/google.strategy";
 
 @Controller("auth")
 export class AuthController {
@@ -38,15 +41,17 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Post("verify-email")
-  verifyEmail(@Req() req: Request, @Body() dto: VerifyEmailDto) {
-    return this.authService.verifyEmail((req.user as any).id, dto);
+  verifyEmail(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() dto: VerifyEmailDto,
+  ) {
+    return this.authService.verifyEmail(user.id, dto);
   }
 
   @UseGuards(JwtAuthGuard)
   @Post("resend-verification")
-  resendVerification(@Req() req: Request) {
-    const u = req.user as any;
-    return this.authService.sendVerificationEmail(u.id, u.email);
+  resendVerification(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.sendVerificationEmail(user.id, user.email);
   }
 
   @Post("forgot-password")
@@ -68,7 +73,9 @@ export class AuthController {
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
   async googleCallback(@Req() req: Request, @Res() res: Response) {
-    const result = await this.authService.googleLogin(req.user as any);
+    const result = await this.authService.googleLogin(
+      req.user as GoogleProfilePayload,
+    );
     const frontendUrl = getFrontendUrl(this.configService);
     res.redirect(
       `${frontendUrl}/auth/google/callback?token=${result.accessToken}`,
