@@ -4,30 +4,32 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Booking, BookingStatus, ListingStatus } from "@prisma/client";
+import {
+  Booking,
+  BookingStatus,
+  ListingStatus,
+  PaymentStatus,
+} from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
+import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
-
-const blockingStatuses: BookingStatus[] = [
-  BookingStatus.ACCEPTED,
-  BookingStatus.READY_FOR_PICKUP,
-  BookingStatus.IN_PROGRESS,
-  BookingStatus.RETURN_PENDING,
-];
 
 @Injectable()
 export class BookingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly availability: AvailabilityService,
+    private readonly payments: PaymentsService,
   ) {}
 
   async create(renterId: string, data: CreateBookingDto) {
-    this.assertDateRange(data.startDate, data.endDate);
+    this.availability.assertDateRange(data.startDate, data.endDate);
 
     const listing = await this.prisma.listing.findUnique({
       where: { id: data.listingId },
@@ -42,12 +44,16 @@ export class BookingsService {
       throw new ForbiddenException("You cannot book your own listing");
     }
 
-    await this.assertNoOverlap(listing.id, data.startDate, data.endDate);
+    await this.availability.assertListingIsBookable(
+      listing.id,
+      data.startDate,
+      data.endDate,
+    );
 
-    const days = this.calculateDays(data.startDate, data.endDate);
+    const days = this.availability.calculateDays(data.startDate, data.endDate);
     const totalPriceSnapshot = listing.pricePerDay * days;
 
-    return this.prisma.booking.create({
+    const created = await this.prisma.booking.create({
       data: {
         listingId: listing.id,
         vehicleId: listing.vehicleId,
@@ -60,6 +66,17 @@ export class BookingsService {
       },
       include: this.bookingInclude(),
     });
+
+    await this.auditLog.create({
+      actorId: renterId,
+      targetUserId: listing.ownerId,
+      action: "booking.created",
+      entityType: "Booking",
+      entityId: created.id,
+      metadata: { status: BookingStatus.REQUESTED },
+    });
+
+    return created;
   }
 
   findMine(userId: string) {
@@ -87,7 +104,7 @@ export class BookingsService {
       throw new BadRequestException("Only requested bookings can be accepted");
     }
 
-    await this.assertNoOverlap(
+    await this.availability.assertListingIsBookable(
       booking.listingId,
       booking.startDate,
       booking.endDate,
@@ -100,6 +117,7 @@ export class BookingsService {
       where: { id },
       data: {
         status: BookingStatus.ACCEPTED,
+        paymentStatus: PaymentStatus.PENDING,
         pickupTokenHash: await bcrypt.hash(pickupToken, 10),
         returnTokenHash: await bcrypt.hash(returnToken, 10),
         pickupTokenPreview: pickupToken,
@@ -108,10 +126,12 @@ export class BookingsService {
       include: this.bookingInclude(),
     });
 
+    await this.payments.createMockIntentForAcceptedBooking(updated, ownerId);
+
     await this.auditLog.create({
       actorId: ownerId,
       targetUserId: booking.renterId,
-      action: "booking.accept",
+      action: "booking.accepted",
       entityType: "Booking",
       entityId: id,
       metadata: { status: BookingStatus.ACCEPTED },
@@ -132,11 +152,22 @@ export class BookingsService {
       throw new BadRequestException("Only requested bookings can be rejected");
     }
 
-    return this.prisma.booking.update({
+    const updated = await this.prisma.booking.update({
       where: { id },
       data: { status: BookingStatus.REJECTED },
       include: this.bookingInclude(),
     });
+
+    await this.auditLog.create({
+      actorId: ownerId,
+      targetUserId: booking.renterId,
+      action: "booking.rejected",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { status: BookingStatus.REJECTED },
+    });
+
+    return updated;
   }
 
   async cancel(userId: string, id: string, data: CancelBookingDto) {
@@ -162,7 +193,7 @@ export class BookingsService {
         ? BookingStatus.CANCELLED_BY_RENTER
         : BookingStatus.CANCELLED_BY_OWNER;
 
-    return this.prisma.booking.update({
+    const updated = await this.prisma.booking.update({
       where: { id },
       data: {
         status,
@@ -171,6 +202,22 @@ export class BookingsService {
       },
       include: this.bookingInclude(),
     });
+
+    if (booking.paymentStatus === PaymentStatus.PAID) {
+      await this.payments.refundMockPayment(userId, id);
+    }
+
+    await this.auditLog.create({
+      actorId: userId,
+      targetUserId:
+        userId === booking.renterId ? booking.ownerId : booking.renterId,
+      action: "booking.cancelled",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { status },
+    });
+
+    return updated;
   }
 
   async readyForPickup(ownerId: string, id: string) {
@@ -183,11 +230,26 @@ export class BookingsService {
       );
     }
 
-    return this.prisma.booking.update({
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException("Payment must be confirmed before pickup");
+    }
+
+    const updated = await this.prisma.booking.update({
       where: { id },
       data: { status: BookingStatus.READY_FOR_PICKUP },
       include: this.bookingInclude(),
     });
+
+    await this.auditLog.create({
+      actorId: ownerId,
+      targetUserId: booking.renterId,
+      action: "booking.ready_for_pickup",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { status: BookingStatus.READY_FOR_PICKUP },
+    });
+
+    return updated;
   }
 
   async getTokens(userId: string, id: string) {
@@ -197,12 +259,9 @@ export class BookingsService {
     return {
       pickupQrToken:
         userId === booking.renterId &&
-        (
-          [
-            BookingStatus.ACCEPTED,
-            BookingStatus.READY_FOR_PICKUP,
-          ] as BookingStatus[]
-        ).includes(booking.status)
+        ([BookingStatus.READY_FOR_PICKUP] as BookingStatus[]).includes(
+          booking.status,
+        )
           ? booking.pickupTokenPreview
           : undefined,
       returnQrToken:
@@ -223,12 +282,9 @@ export class BookingsService {
     this.assertOwner(booking, ownerId);
 
     if (
-      !(
-        [
-          BookingStatus.ACCEPTED,
-          BookingStatus.READY_FOR_PICKUP,
-        ] as BookingStatus[]
-      ).includes(booking.status)
+      !([BookingStatus.READY_FOR_PICKUP] as BookingStatus[]).includes(
+        booking.status,
+      )
     ) {
       throw new BadRequestException(
         "Pickup cannot be confirmed in this status",
@@ -243,7 +299,7 @@ export class BookingsService {
       throw new ForbiddenException("Invalid pickup token");
     }
 
-    return this.prisma.booking.update({
+    const updated = await this.prisma.booking.update({
       where: { id },
       data: {
         status: BookingStatus.IN_PROGRESS,
@@ -253,6 +309,17 @@ export class BookingsService {
       },
       include: this.bookingInclude(),
     });
+
+    await this.auditLog.create({
+      actorId: ownerId,
+      targetUserId: booking.renterId,
+      action: "booking.pickup_confirmed",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { status: BookingStatus.IN_PROGRESS },
+    });
+
+    return updated;
   }
 
   async confirmReturn(renterId: string, id: string, token: string) {
@@ -283,7 +350,7 @@ export class BookingsService {
       throw new ForbiddenException("Invalid return token");
     }
 
-    return this.prisma.booking.update({
+    const updated = await this.prisma.booking.update({
       where: { id },
       data: {
         status: BookingStatus.COMPLETED,
@@ -293,6 +360,19 @@ export class BookingsService {
       },
       include: this.bookingInclude(),
     });
+
+    await this.payments.releaseMockPayment(renterId, id);
+
+    await this.auditLog.create({
+      actorId: renterId,
+      targetUserId: booking.ownerId,
+      action: "booking.return_confirmed",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { status: BookingStatus.COMPLETED },
+    });
+
+    return updated;
   }
 
   private async findById(id: string) {
@@ -306,52 +386,6 @@ export class BookingsService {
     }
 
     return booking;
-  }
-
-  private assertDateRange(startDate: Date, endDate: Date) {
-    if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
-      throw new BadRequestException("Invalid startDate");
-    }
-
-    if (!(endDate instanceof Date) || Number.isNaN(endDate.getTime())) {
-      throw new BadRequestException("Invalid endDate");
-    }
-
-    if (startDate <= new Date()) {
-      throw new BadRequestException("startDate must be in the future");
-    }
-
-    if (endDate <= startDate) {
-      throw new BadRequestException("endDate must be after startDate");
-    }
-  }
-
-  private async assertNoOverlap(
-    listingId: string,
-    startDate: Date,
-    endDate: Date,
-    excludeBookingId?: string,
-  ) {
-    const overlapping = await this.prisma.booking.findFirst({
-      where: {
-        listingId,
-        status: { in: blockingStatuses },
-        ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),
-        startDate: { lt: endDate },
-        endDate: { gt: startDate },
-      },
-    });
-
-    if (overlapping) {
-      throw new BadRequestException(
-        "Booking dates overlap with another booking",
-      );
-    }
-  }
-
-  private calculateDays(startDate: Date, endDate: Date) {
-    const milliseconds = endDate.getTime() - startDate.getTime();
-    return Math.ceil(milliseconds / (1000 * 60 * 60 * 24));
   }
 
   private assertParticipant(booking: Booking, userId: string) {

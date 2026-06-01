@@ -12,6 +12,7 @@ import { AdminModule } from './admin/admin.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { PaymentsModule } from './payments/payments.module';
 import { MediaModule } from './media/media.module';
+import { ConversationsModule } from './conversations/conversations.module';
 
 @Module({
   controllers: [AppController],
@@ -28,6 +29,7 @@ import { MediaModule } from './media/media.module';
     BookingsModule,
     PaymentsModule,
     MediaModule,
+    ConversationsModule,
   ],
 })
 export class AppModule {}

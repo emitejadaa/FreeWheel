@@ -112,4 +112,14 @@ export class UpdateVehicleDto {
   @IsString()
   @MaxLength(1000)
   observations?: string;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  horsePower?: number;
+
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  engineDisplacementCC?: number;
 }

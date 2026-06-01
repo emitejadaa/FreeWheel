@@ -1,4 +1,5 @@
 import {
+  Equals,
   IsBoolean,
   IsEmail,
   IsOptional,
@@ -33,7 +34,7 @@ export class RegisterDto {
   @MaxLength(120)
   displayName?: string;
 
-  @IsOptional()
   @IsBoolean()
-  acceptedTerms?: boolean;
+  @Equals(true, { message: 'Debés aceptar los términos y condiciones' })
+  acceptedTerms!: boolean;
 }

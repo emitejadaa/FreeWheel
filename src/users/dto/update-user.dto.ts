@@ -1,6 +1,5 @@
 import {
   IsOptional,
-  IsPhoneNumber,
   IsString,
   IsUrl,
   MaxLength,
@@ -27,7 +26,7 @@ export class UpdateUserDto {
   displayName?: string;
 
   @IsOptional()
-  @IsPhoneNumber()
+  @IsString()
   @MaxLength(32)
   phone?: string;
 
