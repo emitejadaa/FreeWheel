@@ -10,6 +10,7 @@ import { GoogleStrategy } from "./strategies/google.strategy";
 import { UsersModule } from "../users/users.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { EmailModule } from "../email/email.module";
+import { getJwtSecret } from "../config/jwt.config";
 
 const googleStrategyProviders =
   process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
@@ -29,9 +30,7 @@ const googleStrategyProviders =
         const expiresIn = configService.get<string>("JWT_EXPIRES_IN") ?? "24h";
 
         return {
-          secret:
-            configService.get<string>("JWT_SECRET") ??
-            "freewheel-secret-key-change-in-production",
+          secret: getJwtSecret(configService),
           signOptions: {
             expiresIn: expiresIn as SignOptions["expiresIn"],
           },
