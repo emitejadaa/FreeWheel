@@ -1,13 +1,11 @@
 import { ConfigService } from "@nestjs/config";
 
-// JWT_SECRET must be provided explicitly. A hardcoded fallback would let the app
-// boot with a publicly known signing key, allowing anyone to forge valid tokens.
+const DEFAULT_JWT_SECRET = "freewheel-secret-key-change-in-production";
+
+// SECURITY DEBT: falls back to a known default when JWT_SECRET is unset, retained
+// because the live app currently relies on it. Anyone who knows this default can
+// forge tokens, so set JWT_SECRET in every environment and then switch this to
+// fail-fast (throw when the variable is missing).
 export function getJwtSecret(configService: ConfigService): string {
-  const secret = configService.get<string>("JWT_SECRET");
-
-  if (!secret) {
-    throw new Error("JWT_SECRET environment variable is required");
-  }
-
-  return secret;
+  return configService.get<string>("JWT_SECRET") ?? DEFAULT_JWT_SECRET;
 }

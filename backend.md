@@ -626,7 +626,7 @@ JWT:
 - El token lleva `email` en payload y `subject` con `userId`.
 - La expiracion se define con `JWT_EXPIRES_IN`.
 - `JwtStrategy` usa `JWT_SECRET`.
-- `JWT_SECRET` es obligatorio: si falta, la app falla al iniciar (no hay fallback inseguro).
+- Si falta `JWT_SECRET`, se usa un valor por defecto interno (deuda de seguridad, mantenido por continuidad en produccion). Configurar `JWT_SECRET` en cada entorno para firmar con un secreto propio.
 
 Roles:
 

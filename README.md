@@ -126,7 +126,7 @@ FRONTEND_URL="https://tu-front.vercel.app"
 API_BASE_URL="https://tu-backend.vercel.app"
 ```
 
-`JWT_SECRET` es obligatorio: la aplicacion no inicia si falta (sin fallback inseguro).
+Si falta `JWT_SECRET`, la aplicacion usa un valor por defecto interno por continuidad (deuda de seguridad). Configurar `JWT_SECRET` en el entorno para usar un secreto propio.
 
 Las migraciones Prisma no se ejecutan automaticamente dentro del handler serverless. Aplicarlas con:
 
