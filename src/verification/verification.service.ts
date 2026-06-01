@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import {
@@ -10,20 +11,22 @@ import {
   VerificationStatus,
 } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
-import { randomInt } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubmitIdentityDto } from "./dto/submit-identity.dto";
+import {
+  generateNumericCode,
+  VERIFICATION_CODE_TTL_MS,
+} from "../common/utils/verification-code.util";
 
 type SafeVerificationResponse = {
   requested: true;
   expiresAt: Date;
-  code?: string;
 };
 
 @Injectable()
 export class VerificationService {
-  private readonly codeTtlMs = 10 * 60 * 1000;
   private readonly maxAttempts = 5;
+  private readonly logger = new Logger(VerificationService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -116,9 +119,9 @@ export class VerificationService {
     targetType: VerificationCodeTargetType,
     targetValue: string,
   ): Promise<SafeVerificationResponse> {
-    const code = randomInt(100000, 999999).toString();
+    const code = generateNumericCode();
     const codeHash = await bcrypt.hash(code, 10);
-    const expiresAt = new Date(Date.now() + this.codeTtlMs);
+    const expiresAt = new Date(Date.now() + VERIFICATION_CODE_TTL_MS);
 
     await this.prisma.verificationCode.updateMany({
       where: {
@@ -140,11 +143,16 @@ export class VerificationService {
       },
     });
 
-    return {
-      requested: true,
-      expiresAt,
-      ...(process.env.NODE_ENV !== "production" ? { code } : {}),
-    };
+    // In non-production, log the code so it can be used for manual testing. It is
+    // never returned in the HTTP response and never logged in production, so it
+    // cannot leak to clients.
+    if (process.env.NODE_ENV !== "production") {
+      this.logger.debug(
+        `Verification code for ${targetType} ${targetValue}: ${code}`,
+      );
+    }
+
+    return { requested: true, expiresAt };
   }
 
   private async confirmCode(

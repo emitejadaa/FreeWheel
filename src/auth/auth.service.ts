@@ -22,6 +22,10 @@ import { UsersService } from "../users/users.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../email/email.service";
 import { GoogleProfilePayload } from "./strategies/google.strategy";
+import {
+  generateNumericCode,
+  VERIFICATION_CODE_TTL_MS,
+} from "../common/utils/verification-code.util";
 
 @Injectable()
 export class AuthService {
@@ -89,7 +93,7 @@ export class AuthService {
       data: { consumedAt: new Date() },
     });
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateNumericCode();
     const codeHash = await bcrypt.hash(code, 10);
 
     await this.prisma.verificationCode.create({
@@ -99,7 +103,7 @@ export class AuthService {
         targetType: "EMAIL",
         targetValue: email,
         codeHash,
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        expiresAt: new Date(Date.now() + VERIFICATION_CODE_TTL_MS),
       },
     });
 

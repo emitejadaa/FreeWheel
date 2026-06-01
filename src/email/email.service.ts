@@ -52,7 +52,7 @@ export class EmailService {
         <div style="font-size:40px;font-weight:bold;letter-spacing:10px;color:#1a4d2e;padding:20px 0">
           ${code}
         </div>
-        <p style="color:#6b7280;font-size:13px">Expira en 15 minutos. No lo compartas con nadie.</p>
+        <p style="color:#6b7280;font-size:13px">Expira en 10 minutos. No lo compartas con nadie.</p>
       </div>`;
     await this.send(email, "Tu codigo de verificacion - Freewheel", html);
   }
