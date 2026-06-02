@@ -55,3 +55,6 @@ ENDPOINTS.md
 *.md
 !README.md
 !backend.md
+
+# External skill repos (local only, not committed)
+.tools/
