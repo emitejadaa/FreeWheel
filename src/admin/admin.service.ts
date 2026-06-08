@@ -1,16 +1,14 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable } from "@nestjs/common";
 import {
   ListingStatus,
   UserRole,
   UserStatus,
   VerificationStatus,
-} from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { AuditLogService } from '../common/services/audit-log.service';
+} from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { AuditLogService } from "../common/services/audit-log.service";
+import { assertFound } from "../common/utils/entity.util";
+import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 
 @Injectable()
 export class AdminService {
@@ -21,20 +19,17 @@ export class AdminService {
 
   listUsers() {
     return this.prisma.user.findMany({
-      select: this.safeUserSelect(),
-      orderBy: { createdAt: 'desc' },
+      select: USER_SAFE_SELECT,
+      orderBy: { createdAt: "desc" },
     });
   }
 
   async getUser(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      select: this.safeUserSelect(),
+      select: USER_SAFE_SELECT,
     });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+    assertFound(user, "User not found");
 
     return user;
   }
@@ -44,13 +39,13 @@ export class AdminService {
     const user = await this.prisma.user.update({
       where: { id },
       data: { status },
-      select: this.safeUserSelect(),
+      select: USER_SAFE_SELECT,
     });
     await this.auditLog.create({
       actorId,
       targetUserId: id,
-      action: 'admin.user.status.update',
-      entityType: 'User',
+      action: "admin.user.status.update",
+      entityType: "User",
       entityId: id,
       metadata: { status },
     });
@@ -62,13 +57,13 @@ export class AdminService {
     const user = await this.prisma.user.update({
       where: { id },
       data: { role },
-      select: this.safeUserSelect(),
+      select: USER_SAFE_SELECT,
     });
     await this.auditLog.create({
       actorId,
       targetUserId: id,
-      action: 'admin.user.role.update',
-      entityType: 'User',
+      action: "admin.user.role.update",
+      entityType: "User",
       entityId: id,
       metadata: { role },
     });
@@ -77,20 +72,17 @@ export class AdminService {
 
   listVerifications() {
     return this.prisma.userVerification.findMany({
-      include: { user: { select: this.safeUserSelect() } },
-      orderBy: { createdAt: 'desc' },
+      include: { user: { select: USER_SAFE_SELECT } },
+      orderBy: { createdAt: "desc" },
     });
   }
 
   async getVerification(id: string) {
     const verification = await this.prisma.userVerification.findUnique({
       where: { id },
-      include: { user: { select: this.safeUserSelect() } },
+      include: { user: { select: USER_SAFE_SELECT } },
     });
-
-    if (!verification) {
-      throw new NotFoundException('Verification not found');
-    }
+    assertFound(verification, "Verification not found");
 
     return verification;
   }
@@ -107,7 +99,7 @@ export class AdminService {
       status !== VerificationStatus.REJECTED
     ) {
       throw new BadRequestException(
-        'Verification review status must be VERIFIED or REJECTED',
+        "Verification review status must be VERIFIED or REJECTED",
       );
     }
     const reviewedAt = new Date();
@@ -115,7 +107,7 @@ export class AdminService {
     const updated = await this.prisma.userVerification.update({
       where: { id },
       data: { status, notes, reviewedAt },
-      include: { user: { select: this.safeUserSelect() } },
+      include: { user: { select: USER_SAFE_SELECT } },
     });
 
     await this.prisma.user.update({
@@ -134,8 +126,8 @@ export class AdminService {
     await this.auditLog.create({
       actorId,
       targetUserId: verification.userId,
-      action: 'admin.verification.review',
-      entityType: 'UserVerification',
+      action: "admin.verification.review",
+      entityType: "UserVerification",
       entityId: id,
       metadata: { status },
     });
@@ -146,16 +138,17 @@ export class AdminService {
   listListings() {
     return this.prisma.listing.findMany({
       include: { vehicle: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
-  async updateListingStatus(actorId: string, id: string, status: ListingStatus) {
+  async updateListingStatus(
+    actorId: string,
+    id: string,
+    status: ListingStatus,
+  ) {
     const listing = await this.prisma.listing.findUnique({ where: { id } });
-
-    if (!listing) {
-      throw new NotFoundException('Listing not found');
-    }
+    assertFound(listing, "Listing not found");
 
     const updated = await this.prisma.listing.update({
       where: { id },
@@ -165,8 +158,8 @@ export class AdminService {
     await this.auditLog.create({
       actorId,
       targetUserId: listing.ownerId,
-      action: 'admin.listing.status.update',
-      entityType: 'Listing',
+      action: "admin.listing.status.update",
+      entityType: "Listing",
       entityId: id,
       metadata: { status },
     });
@@ -175,10 +168,7 @@ export class AdminService {
 
   async deleteListingPermanently(actorId: string, id: string) {
     const listing = await this.prisma.listing.findUnique({ where: { id } });
-
-    if (!listing) {
-      throw new NotFoundException('Listing not found');
-    }
+    assertFound(listing, "Listing not found");
 
     const deleted = await this.prisma.$transaction(async (tx) => {
       const bookings = await tx.booking.findMany({
@@ -194,7 +184,9 @@ export class AdminService {
         await tx.booking.deleteMany({ where: { listingId: id } });
       }
 
-      await tx.listingAvailabilityBlock.deleteMany({ where: { listingId: id } });
+      await tx.listingAvailabilityBlock.deleteMany({
+        where: { listingId: id },
+      });
 
       const convs = await tx.conversation.findMany({
         where: { listingId: id },
@@ -216,8 +208,8 @@ export class AdminService {
     await this.auditLog.create({
       actorId,
       targetUserId: listing.ownerId,
-      action: 'admin.listing.delete.permanent',
-      entityType: 'Listing',
+      action: "admin.listing.delete.permanent",
+      entityType: "Listing",
       entityId: id,
       metadata: { title: listing.title },
     });
@@ -230,10 +222,10 @@ export class AdminService {
       include: {
         listing: true,
         vehicle: true,
-        owner: { select: this.safeUserSelect() },
-        renter: { select: this.safeUserSelect() },
+        owner: { select: USER_SAFE_SELECT },
+        renter: { select: USER_SAFE_SELECT },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
@@ -243,25 +235,26 @@ export class AdminService {
       include: {
         listing: true,
         vehicle: true,
-        owner: { select: this.safeUserSelect() },
-        renter: { select: this.safeUserSelect() },
+        owner: { select: USER_SAFE_SELECT },
+        renter: { select: USER_SAFE_SELECT },
       },
     });
-
-    if (!booking) {
-      throw new NotFoundException('Booking not found');
-    }
+    assertFound(booking, "Booking not found");
 
     return booking;
   }
 
   async deleteUserPermanently(actorId: string, id: string) {
     if (actorId === id) {
-      throw new BadRequestException('No podés eliminarte a vos mismo');
+      throw new BadRequestException("You cannot delete yourself");
     }
 
     await this.getUser(id);
 
+    // FK relations use onDelete: Restrict, so every dependent row must be
+    // removed before the user. Order matters: messages and payment records
+    // first, then conversations/bookings/blocks, then the owned listings,
+    // vehicles, media, and verification rows, and finally the user itself.
     await this.prisma.$transaction(async (tx) => {
       const listings = await tx.listing.findMany({
         where: { ownerId: id },
@@ -312,10 +305,7 @@ export class AdminService {
 
       await tx.paymentRecord.deleteMany({
         where: {
-          OR: [
-            { userId: id },
-            { bookingId: { in: bookingIds } },
-          ],
+          OR: [{ userId: id }, { bookingId: { in: bookingIds } }],
         },
       });
 
@@ -331,10 +321,7 @@ export class AdminService {
 
       await tx.listingAvailabilityBlock.deleteMany({
         where: {
-          OR: [
-            { ownerId: id },
-            { listingId: { in: listingIds } },
-          ],
+          OR: [{ ownerId: id }, { listingId: { in: listingIds } }],
         },
       });
 
@@ -364,24 +351,5 @@ export class AdminService {
       return VerificationStatus.PHONE_VERIFIED;
     }
     return VerificationStatus.ID_SUBMITTED;
-  }
-
-  private safeUserSelect() {
-    return {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      displayName: true,
-      phone: true,
-      profilePhotoUrl: true,
-      role: true,
-      status: true,
-      verificationStatus: true,
-      emailVerifiedAt: true,
-      phoneVerifiedAt: true,
-      createdAt: true,
-      updatedAt: true,
-    };
   }
 }

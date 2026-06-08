@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, User } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { UpdateUserDto } from './dto/update-user.dto';
+import { Injectable } from "@nestjs/common";
+import { Prisma, User } from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { assertFound } from "../common/utils/entity.util";
+import { UpdateUserDto } from "./dto/update-user.dto";
 
-type SafeUser = Omit<User, 'password'>;
+type SafeUser = Omit<User, "password">;
 
 @Injectable()
 export class UsersService {
@@ -25,10 +26,7 @@ export class UsersService {
 
   async getMe(userId: string): Promise<SafeUser> {
     const user = await this.findById(userId);
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+    assertFound(user, "User not found");
 
     return this.toSafeUser(user);
   }

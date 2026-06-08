@@ -1,7 +1,12 @@
-import { hasCriticalFailures, printDiscoveredEndpoints, printReport, runEndpointChecks } from './shared';
+import {
+  hasCriticalFailures,
+  printDiscoveredEndpoints,
+  printReport,
+  runEndpointChecks,
+} from "./shared";
 
 async function main() {
-  const baseUrl = process.env.LOCAL_API_URL ?? 'http://localhost:3000';
+  const baseUrl = process.env.LOCAL_API_URL ?? "http://localhost:3000";
   const results = await runEndpointChecks(baseUrl);
 
   printDiscoveredEndpoints();

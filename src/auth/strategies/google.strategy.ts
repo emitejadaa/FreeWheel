@@ -12,6 +12,14 @@ export interface GoogleProfilePayload {
   profilePhotoUrl: string | null;
 }
 
+// Shape of the relevant fields from a passport-google-oauth20 profile.
+interface GoogleProfile {
+  id: string;
+  name: { givenName?: string; familyName?: string };
+  emails: { value: string }[];
+  photos?: { value: string }[];
+}
+
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   constructor(configService: ConfigService) {
@@ -23,10 +31,10 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
     });
   }
 
-  async validate(
+  validate(
     _accessToken: string,
     _refreshToken: string,
-    profile: any,
+    profile: GoogleProfile,
     done: VerifyCallback,
   ) {
     const { id, name, emails, photos } = profile;

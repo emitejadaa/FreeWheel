@@ -33,8 +33,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
       // Server errors are unexpected even when modeled as HttpException; log the
       // stack. Client errors (4xx) are routine, so warn without the stack.
-      if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
-        this.logger.error(`${where} -> ${status}${who}: ${exception.message}`, exception.stack);
+      if (status >= (HttpStatus.INTERNAL_SERVER_ERROR as number)) {
+        this.logger.error(
+          `${where} -> ${status}${who}: ${exception.message}`,
+          exception.stack,
+        );
       } else {
         this.logger.warn(`${where} -> ${status}${who}: ${exception.message}`);
       }

@@ -1,4 +1,4 @@
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import type { INestApplication } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
@@ -8,6 +8,8 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { AppModule } from "./app.module";
 import { createCorsOptions } from "./cors.config";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+
+const logger = new Logger("Bootstrap");
 
 let cachedServer: Express | null = null;
 let cachedApp: Promise<INestApplication> | null = null;
@@ -32,6 +34,15 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
 
   await app.init();
 
+  // One-line readiness summary on every (cold) start so it is clear which
+  // optional integrations are active in the running environment.
+  const env = process.env.NODE_ENV ?? "development";
+  logger.log(`NestJS application initialized (env: ${env})`);
+  logger.log(
+    `Email: ${process.env.GMAIL_USER ? "configured" : "disabled"} | ` +
+      `Google OAuth: ${process.env.GOOGLE_CLIENT_ID ? "enabled" : "disabled"}`,
+  );
+
   return app;
 }
 
@@ -43,7 +54,7 @@ export function createServer(): Express {
       async (_req: Request, _res: Response, next: NextFunction) => {
         if (!cachedApp) {
           cachedApp = bootstrapNest(cachedServer!).catch((err: unknown) => {
-            console.error("[bootstrap] NestJS initialization failed:", err);
+            logger.error("NestJS initialization failed", err as Error);
             cachedApp = null;
             throw err;
           });

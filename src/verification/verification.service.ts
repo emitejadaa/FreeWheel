@@ -12,8 +12,10 @@ import {
 } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertFound } from "../common/utils/entity.util";
 import { SubmitIdentityDto } from "./dto/submit-identity.dto";
 import {
+  consumeVerificationCode,
   generateNumericCode,
   VERIFICATION_CODE_TTL_MS,
 } from "../common/utils/verification-code.util";
@@ -160,40 +162,16 @@ export class VerificationService {
     targetType: VerificationCodeTargetType,
     code: string,
   ) {
-    const verificationCode = await this.prisma.verificationCode.findFirst({
-      where: {
-        userId,
-        targetType,
-        consumedAt: null,
+    await consumeVerificationCode(this.prisma, {
+      where: { userId, targetType },
+      plaintext: code,
+      errors: {
+        missing: () => new NotFoundException("Verification code not found"),
+        expired: () => new BadRequestException("Verification code expired"),
+        tooManyAttempts: () =>
+          new ForbiddenException("Verification code attempts exceeded"),
+        invalid: () => new BadRequestException("Invalid verification code"),
       },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (!verificationCode) {
-      throw new NotFoundException("Verification code not found");
-    }
-
-    if (verificationCode.expiresAt <= new Date()) {
-      throw new BadRequestException("Verification code expired");
-    }
-
-    if (verificationCode.attempts >= verificationCode.maxAttempts) {
-      throw new ForbiddenException("Verification code attempts exceeded");
-    }
-
-    const matches = await bcrypt.compare(code, verificationCode.codeHash);
-
-    if (!matches) {
-      await this.prisma.verificationCode.update({
-        where: { id: verificationCode.id },
-        data: { attempts: { increment: 1 } },
-      });
-      throw new BadRequestException("Invalid verification code");
-    }
-
-    await this.prisma.verificationCode.update({
-      where: { id: verificationCode.id },
-      data: { consumedAt: new Date() },
     });
   }
 
@@ -240,10 +218,7 @@ export class VerificationService {
 
   private async getUser(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-
-    if (!user) {
-      throw new NotFoundException("User not found");
-    }
+    assertFound(user, "User not found");
 
     return user;
   }

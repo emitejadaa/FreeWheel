@@ -3,6 +3,8 @@
 /node_modules
 /build
 /tmp
+/coverage
+*.tsbuildinfo
 
 # Logs
 logs

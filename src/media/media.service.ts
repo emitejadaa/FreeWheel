@@ -1,6 +1,6 @@
-import { Injectable, NotImplementedException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { RegisterMediaAssetDto } from './dto/register-media-asset.dto';
+import { Injectable, NotImplementedException } from "@nestjs/common";
+import { PrismaService } from "../prisma/prisma.service";
+import { RegisterMediaAssetDto } from "./dto/register-media-asset.dto";
 
 @Injectable()
 export class MediaService {
@@ -8,7 +8,7 @@ export class MediaService {
 
   createPresignedUpload(): never {
     throw new NotImplementedException(
-      'Real media storage is not integrated yet',
+      "Real media storage is not integrated yet",
     );
   }
 
@@ -24,7 +24,7 @@ export class MediaService {
   listMine(ownerId: string) {
     return this.prisma.mediaAsset.findMany({
       where: { ownerId },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 }

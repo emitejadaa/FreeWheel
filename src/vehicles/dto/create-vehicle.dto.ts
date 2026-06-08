@@ -1,4 +1,4 @@
-import { DrivetrainType, FuelType, TransmissionType } from '@prisma/client';
+import { DrivetrainType, FuelType, TransmissionType } from "@prisma/client";
 import {
   IsBoolean,
   IsEnum,
@@ -11,7 +11,7 @@ import {
   MaxLength,
   Min,
   MinLength,
-} from 'class-validator';
+} from "class-validator";
 
 export class CreateVehicleDto {
   @IsString()
@@ -119,5 +119,4 @@ export class CreateVehicleDto {
   @IsInt()
   @IsPositive()
   engineDisplacementCC?: number;
-
 }

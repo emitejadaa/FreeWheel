@@ -1,8 +1,4 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import {
   Listing,
   ListingStatus,
@@ -13,6 +9,9 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { blockingBookingStatuses } from "../availability/availability.service";
+import { assertFound } from "../common/utils/entity.util";
+import { assertOwner } from "../common/utils/authorization.util";
+import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
 import { CreateListingDto } from "./dto/create-listing.dto";
 import {
   ListingSort,
@@ -39,27 +38,16 @@ type PublicListing = Omit<Listing, "ownerId"> & {
 export class ListingsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly ownerSelect = {
-    id: true,
-    firstName: true,
-    lastName: true,
-    displayName: true,
-  };
-
   async create(ownerId: string, data: CreateListingDto) {
     const vehicle = await this.prisma.vehicle.findUnique({
       where: { id: data.vehicleId },
     });
-
-    if (!vehicle) {
-      throw new NotFoundException("Vehicle not found");
-    }
-
-    if (vehicle.ownerId !== ownerId) {
-      throw new ForbiddenException(
-        "You cannot create listings for this vehicle",
-      );
-    }
+    assertFound(vehicle, "Vehicle not found");
+    assertOwner(
+      vehicle.ownerId,
+      ownerId,
+      "You cannot create listings for this vehicle",
+    );
 
     return this.prisma.listing.create({
       data: { ...data, ownerId },
@@ -77,7 +65,7 @@ export class ListingsService {
       this.prisma.listing.count({ where }),
       this.prisma.listing.findMany({
         where,
-        include: { vehicle: true, owner: { select: this.ownerSelect } },
+        include: { vehicle: true, owner: { select: USER_PUBLIC_SELECT } },
         orderBy,
         skip: (page - 1) * limit,
         take: limit,
@@ -103,7 +91,7 @@ export class ListingsService {
   async findMine(ownerId: string) {
     const listings = await this.prisma.listing.findMany({
       where: { ownerId },
-      include: { vehicle: true, owner: { select: this.ownerSelect } },
+      include: { vehicle: true, owner: { select: USER_PUBLIC_SELECT } },
       orderBy: { createdAt: "desc" },
     });
 
@@ -120,7 +108,7 @@ export class ListingsService {
   async findOne(id: string) {
     const listing = await this.prisma.listing.findUnique({
       where: { id },
-      include: { vehicle: true, owner: { select: this.ownerSelect } },
+      include: { vehicle: true, owner: { select: USER_PUBLIC_SELECT } },
     });
 
     if (!listing || listing.status !== ListingStatus.ACTIVE) {
@@ -134,23 +122,18 @@ export class ListingsService {
 
   async update(ownerId: string, id: string, data: UpdateListingDto) {
     const listing = await this.findEditable(id);
-
-    if (listing.ownerId !== ownerId) {
-      throw new ForbiddenException("You cannot update this listing");
-    }
+    assertOwner(listing.ownerId, ownerId, "You cannot update this listing");
 
     if (data.vehicleId) {
       const vehicle = await this.prisma.vehicle.findUnique({
         where: { id: data.vehicleId },
       });
-
-      if (!vehicle) throw new NotFoundException("Vehicle not found");
-
-      if (vehicle.ownerId !== ownerId) {
-        throw new ForbiddenException(
-          "You cannot assign this listing to that vehicle",
-        );
-      }
+      assertFound(vehicle, "Vehicle not found");
+      assertOwner(
+        vehicle.ownerId,
+        ownerId,
+        "You cannot assign this listing to that vehicle",
+      );
     }
 
     return this.prisma.listing.update({
@@ -162,10 +145,7 @@ export class ListingsService {
 
   async remove(ownerId: string, id: string) {
     const listing = await this.findEditable(id);
-
-    if (listing.ownerId !== ownerId) {
-      throw new ForbiddenException("You cannot delete this listing");
-    }
+    assertOwner(listing.ownerId, ownerId, "You cannot delete this listing");
 
     return this.prisma.listing.update({
       where: { id },
@@ -263,6 +243,10 @@ export class ListingsService {
           : {}),
       };
     }
+    // When a date range is requested, drop listings that already have a blocking
+    // booking or an owner availability block overlapping it. Overlap uses the
+    // standard half-open test: existing.start < requestedEnd && existing.end >
+    // requestedStart.
     if (query.startDate && query.endDate) {
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : []),
