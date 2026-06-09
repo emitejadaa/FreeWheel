@@ -50,7 +50,6 @@ ruvector.db
 
 # Local agent/project notes and generated documentation
 .agents/
-.github/
 docs/
 AGENTS.md
 ENDPOINTS.md

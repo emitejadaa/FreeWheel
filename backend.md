@@ -105,6 +105,15 @@ src/
   app.service.ts                   Servicio root
   cors.config.ts                   Configuracion CORS
   main.ts                          Entrada local
+
+test/
+  helpers/                         Helpers de test (app, db, email fake, factory)
+  *.e2e-spec.ts                    Specs E2E por dominio
+  jest-global-setup.ts             Carga .env.test, guard de seguridad y migrate
+  setup-env.ts                     Carga .env.test por worker
+  tsconfig.json                    tsconfig de los specs
+
+jest.config.js                     Config Jest (E2E)
 ```
 
 ## 6. Modulos NestJS Y Recursos
@@ -1328,6 +1337,9 @@ Notas:
 | `npm run start:debug` | Inicia Nest con debugger |
 | `npm run start:prod` | Ejecuta `dist/main.js` |
 | `npm run lint` | ESLint con fix |
+| `npm test` | Suite E2E (Jest + Supertest, serial) |
+| `npm run test:watch` | Suite E2E en watch |
+| `npm run test:cov` | Suite E2E con cobertura |
 | `npm run test:endpoints:local` | Endpoint checker local |
 | `npm run test:endpoints:deployed` | Endpoint checker deploy |
 | `npm run test:functional` | Flujo funcional |
@@ -1339,32 +1351,44 @@ Notas:
 | `npm run commit:smart` | Commit asistido local |
 | `postinstall` | `prisma generate` |
 
-## 14. Testing Actual
+## 14. Testing
 
-Las suites unitarias y E2E (Jest) fueron removidas y seran reimplementadas desde cero. Se conservan las herramientas operativas:
+Suite E2E con Jest + Supertest que ejercita los endpoints reales (routing, guards JWT/roles, `ValidationPipe`, `AllExceptionsFilter` y queries Prisma) contra una base de datos de test dedicada. Es el tipo de test que detecta roturas al cambiar codigo o desplegar.
 
-- `scripts/test-functional.ts`: flujo funcional multiendpoint.
+Estructura:
+
+- `jest.config.js` (raiz): config Jest; corre serial (`--runInBand`) porque los specs comparten la misma base.
+- `test/tsconfig.json`: tsconfig de los specs (extiende el base).
+- `test/jest-global-setup.ts`: carga `.env.test`, exige `ALLOW_DB_RESET=true` (guard de seguridad) y corre `prisma migrate deploy`.
+- `test/setup-env.ts`: carga `.env.test` en cada worker antes de importar la app.
+- `test/helpers/`: `app.ts` (boot del app con `EmailService` fake y `configureApp`), `email.fake.ts` (captura codigos/tokens), `db.ts` (`cleanDatabase` en orden FK-safe), `factory.ts` (`registerUser`/`createAdmin`/`createVehicle`/`createListing`).
+- `test/*.e2e-spec.ts`: health, auth, users, vehicles, listings, bookings, payments, conversations, verification, admin.
+
+Cobertura: cada endpoint con happy-path + guards (401/403) + validacion (400) + errores clave; mas dos flujos completos:
+
+- Ciclo de booking: request → accept → pago mock → ready-for-pickup → confirm-pickup → confirm-return → `COMPLETED`.
+- Ciclo de auth: register → verify-email → login → forgot/reset-password → email-change.
+
+Base de datos de test:
+
+- Requiere `.env.test` (gitignored) apuntando a una branch de Neon DESCARTABLE. Ver `.env.test.example`.
+- La suite borra todas las tablas entre tests; el guard `ALLOW_DB_RESET=true` impide correr contra dev/prod.
+
+Comandos:
+
+```bash
+npm test            # corre la suite E2E (serial)
+npm run test:watch  # modo watch
+npm run test:cov    # con cobertura
+```
+
+CI: `.github/workflows/test.yml` levanta un Postgres de servicio, corre migraciones y ejecuta la suite en cada push/PR.
+
+Herramientas operativas (no-Jest) que se conservan:
+
+- `scripts/test-functional.ts`: flujo funcional multiendpoint contra un server corriendo.
 - `scripts/endpoint-checker/*`: checkers local/deploy con reintentos.
-- `npm run preflight`: Prisma validate/generate, build y checker local.
-
-Cobertura funcional del script:
-
-- Root.
-- Listings publicos.
-- Auth register/login.
-- Users me.
-- Vehicles CRUD parcial.
-- Listings CRUD parcial.
-- Disponibilidad.
-- Booking owner/renter.
-- Pago mock.
-- Pickup token.
-- Return token.
-
-Notas:
-
-- Las dependencias de testing (`jest`, `ts-jest`, `@types/jest`, `supertest`) siguen instaladas para facilitar la reimplementacion.
-- `preflight` intenta el checker local; si no hay server escuchando, informa `fetch failed`.
+- `npm run preflight`: Prisma validate/generate + build + checker local.
 
 ## 15. Estado Actual Implementado
 

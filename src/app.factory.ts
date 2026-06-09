@@ -14,14 +14,12 @@ const logger = new Logger("Bootstrap");
 let cachedServer: Express | null = null;
 let cachedApp: Promise<INestApplication> | null = null;
 
-async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
-  const app = await NestFactory.create(
-    AppModule,
-    new ExpressAdapter(expressApp),
-  );
-
-  app.enableCors(createCorsOptions());
-
+/**
+ * Applies the global pipes and filters that every environment must share.
+ * Exported so the E2E test harness can build an app that behaves exactly like
+ * the one served in production.
+ */
+export function configureApp(app: INestApplication): void {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -31,6 +29,16 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
+}
+
+async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
+  const app = await NestFactory.create(
+    AppModule,
+    new ExpressAdapter(expressApp),
+  );
+
+  app.enableCors(createCorsOptions());
+  configureApp(app);
 
   await app.init();
 
