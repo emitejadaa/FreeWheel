@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 
 import { AppModule } from "./app.module";
 import { createCorsOptions } from "./cors.config";
@@ -38,6 +39,19 @@ async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
 export function createServer(): Express {
   if (!cachedServer) {
     cachedServer = express();
+
+    // Cabeceras de seguridad. CSP off y CORP cross-origin porque el front
+    // vive en otro dominio y consume esta API por CORS.
+    cachedServer.use(
+      helmet({
+        contentSecurityPolicy: false,
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+      }),
+    );
+
+    // Límite de body amplio para el proxy de visión (imagen en base64).
+    cachedServer.use(express.json({ limit: "8mb" }));
+    cachedServer.use(express.urlencoded({ extended: true, limit: "8mb" }));
 
     cachedServer.use(
       async (_req: Request, _res: Response, next: NextFunction) => {
