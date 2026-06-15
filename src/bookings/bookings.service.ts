@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import {
@@ -14,6 +15,7 @@ import * as bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
@@ -21,11 +23,14 @@ import { CreateBookingDto } from "./dto/create-booking.dto";
 
 @Injectable()
 export class BookingsService {
+  private readonly logger = new Logger(BookingsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
     private readonly availability: AvailabilityService,
     private readonly payments: PaymentsService,
+    private readonly email: EmailService,
   ) {}
 
   async create(renterId: string, data: CreateBookingDto) {
@@ -74,6 +79,19 @@ export class BookingsService {
       entityType: "Booking",
       entityId: created.id,
       metadata: { status: BookingStatus.REQUESTED },
+    });
+
+    await this.safeNotify(() => {
+      if (!created.owner?.email) return;
+      return this.email.sendBookingRequestedToOwner(created.owner.email, {
+        ownerName: this.personName(created.owner),
+        renterName: this.personName(created.renter),
+        vehicleLabel: this.vehicleLabel(created),
+        startDate: created.startDate,
+        endDate: created.endDate,
+        totalPrice: created.totalPriceSnapshot,
+        currency: created.currency,
+      });
     });
 
     return created;
@@ -137,6 +155,16 @@ export class BookingsService {
       metadata: { status: BookingStatus.ACCEPTED },
     });
 
+    await this.safeNotify(() => {
+      if (!updated.renter?.email) return;
+      return this.email.sendBookingAcceptedToRenter(updated.renter.email, {
+        renterName: this.personName(updated.renter),
+        vehicleLabel: this.vehicleLabel(updated),
+        startDate: updated.startDate,
+        endDate: updated.endDate,
+      });
+    });
+
     return {
       ...updated,
       pickupQrToken: pickupToken,
@@ -165,6 +193,16 @@ export class BookingsService {
       entityType: "Booking",
       entityId: id,
       metadata: { status: BookingStatus.REJECTED },
+    });
+
+    await this.safeNotify(() => {
+      if (!updated.renter?.email) return;
+      return this.email.sendBookingRejectedToRenter(updated.renter.email, {
+        renterName: this.personName(updated.renter),
+        vehicleLabel: this.vehicleLabel(updated),
+        startDate: updated.startDate,
+        endDate: updated.endDate,
+      });
     });
 
     return updated;
@@ -402,6 +440,42 @@ export class BookingsService {
 
   private generateToken() {
     return randomBytes(24).toString("hex");
+  }
+
+  private async safeNotify(fn: () => Promise<unknown> | void): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Error enviando notificación de reserva: ${message}`);
+    }
+  }
+
+  private personName(person?: {
+    displayName?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+  }): string {
+    if (!person) return "";
+    return (
+      person.displayName ||
+      [person.firstName, person.lastName].filter(Boolean).join(" ") ||
+      person.email ||
+      ""
+    );
+  }
+
+  private vehicleLabel(booking: {
+    vehicle?: {
+      brand?: string | null;
+      model?: string | null;
+      year?: number | null;
+    } | null;
+  }): string {
+    const v = booking.vehicle;
+    if (!v) return "el vehículo";
+    return [v.brand, v.model, v.year].filter(Boolean).join(" ") || "el vehículo";
   }
 
   private bookingInclude() {

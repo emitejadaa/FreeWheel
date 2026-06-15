@@ -4,6 +4,7 @@ import { BookingStatus, ListingStatus, PaymentStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { BookingsService } from "./bookings.service";
@@ -88,6 +89,14 @@ describe("BookingsService", () => {
         {
           provide: AuditLogService,
           useValue: { create: jest.fn() },
+        },
+        {
+          provide: EmailService,
+          useValue: {
+            sendBookingRequestedToOwner: jest.fn(),
+            sendBookingAcceptedToRenter: jest.fn(),
+            sendBookingRejectedToRenter: jest.fn(),
+          },
         },
       ],
     }).compile();
