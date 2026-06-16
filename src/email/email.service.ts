@@ -87,4 +87,115 @@ export class EmailService {
       </div>`;
     await this.send(email, "Restablecer tu contraseña - Freewheel", html);
   }
+  async sendBookingRequestedToOwner(
+    email: string,
+    params: {
+      ownerName?: string;
+      renterName: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+      totalPrice: number;
+      currency: string;
+    },
+  ) {
+    const url = `${getFrontendUrl(this.configService)}/my-bookings`;
+    const greeting = params.ownerName ? `Hola ${params.ownerName},` : "Hola,";
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">Nueva solicitud de reserva</h2>
+          <p style="color:#374151;margin:0 0 16px">${greeting} <strong>${params.renterName}</strong> quiere reservar tu <strong>${params.vehicleLabel}</strong>.</p>
+          <div style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:16px;margin-bottom:20px">
+            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Desde</span><strong>${this.formatDate(params.startDate)}</strong></div>
+            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Hasta</span><strong>${this.formatDate(params.endDate)}</strong></div>
+            <div style="display:flex;justify-content:space-between;font-size:14px;color:#111827"><span style="color:#6b7280">Total estimado</span><strong style="color:#2563eb">${this.formatMoney(params.totalPrice, params.currency)}</strong></div>
+          </div>
+          <p style="color:#374151;margin:0 0 20px">Revisá la disponibilidad y confirmá o rechazá la solicitud desde tu panel.</p>
+          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
+            Ver la solicitud
+          </a>
+          <p style="color:#6b7280;font-size:13px;margin-top:20px">Si no reconocés esta solicitud, podés ignorar este email.</p>
+        </div>
+      </div>`;
+    await this.send(
+      email,
+      "Nueva solicitud de reserva - Freewheel",
+      html,
+    );
+  }
+
+  async sendBookingAcceptedToRenter(
+    email: string,
+    params: {
+      renterName?: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+    },
+  ) {
+    const url = `${getFrontendUrl(this.configService)}/my-bookings`;
+    const greeting = params.renterName ? `Hola ${params.renterName},` : "Hola,";
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">¡Tu reserva fue aceptada! 🎉</h2>
+          <p style="color:#374151;margin:0 0 16px">${greeting} el dueño confirmó la disponibilidad de <strong>${params.vehicleLabel}</strong> para las fechas solicitadas.</p>
+          <div style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:16px;margin-bottom:20px">
+            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Desde</span><strong>${this.formatDate(params.startDate)}</strong></div>
+            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151"><span style="color:#6b7280">Hasta</span><strong>${this.formatDate(params.endDate)}</strong></div>
+          </div>
+          <p style="color:#374151;margin:0 0 20px">Ingresá para completar el pago y coordinar el retiro del vehículo.</p>
+          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
+            Completar mi reserva
+          </a>
+        </div>
+      </div>`;
+    await this.send(email, "Tu reserva fue aceptada - Freewheel", html);
+  }
+
+  async sendBookingRejectedToRenter(
+    email: string,
+    params: {
+      renterName?: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+    },
+  ) {
+    const url = `${getFrontendUrl(this.configService)}`;
+    const greeting = params.renterName ? `Hola ${params.renterName},` : "Hola,";
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">Tu solicitud no fue aceptada</h2>
+          <p style="color:#374151;margin:0 0 16px">${greeting} lamentablemente el dueño no pudo confirmar <strong>${params.vehicleLabel}</strong> para las fechas del ${this.formatDate(params.startDate)} al ${this.formatDate(params.endDate)}.</p>
+          <p style="color:#374151;margin:0 0 20px">No te preocupes, hay muchos otros vehículos disponibles en Freewheel.</p>
+          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
+            Buscar otros autos
+          </a>
+        </div>
+      </div>`;
+    await this.send(email, "Actualización de tu solicitud - Freewheel", html);
+  }
+
+  private formatDate(date: Date): string {
+    const d = new Date(date);
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+    return `${day}/${month}/${d.getUTCFullYear()}`;
+  }
+
+  private formatMoney(amount: number, currency = "ARS"): string {
+    return `$${Number(amount || 0).toLocaleString("es-AR")} ${currency}`;
+  }
 }
