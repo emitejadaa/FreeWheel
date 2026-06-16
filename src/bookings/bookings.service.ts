@@ -3,7 +3,6 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
-  NotFoundException,
 } from "@nestjs/common";
 import {
   Booking,
@@ -12,12 +11,18 @@ import {
   PaymentStatus,
 } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
-import { randomBytes } from "crypto";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
 import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertFound } from "../common/utils/entity.util";
+import {
+  assertOwner,
+  assertParticipant,
+} from "../common/utils/authorization.util";
+import { generateOpaqueToken } from "../common/utils/verification-code.util";
+import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
@@ -69,7 +74,7 @@ export class BookingsService {
         pricePerDaySnapshot: listing.pricePerDay,
         totalPriceSnapshot,
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.auditLog.create({
@@ -80,6 +85,10 @@ export class BookingsService {
       entityId: created.id,
       metadata: { status: BookingStatus.REQUESTED },
     });
+
+    this.logger.log(
+      `Booking ${created.id} requested by renter ${renterId} on listing ${listing.id}`,
+    );
 
     await this.safeNotify(() => {
       if (!created.owner?.email) return;
@@ -102,21 +111,21 @@ export class BookingsService {
       where: {
         OR: [{ renterId: userId }, { ownerId: userId }],
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
       orderBy: { createdAt: "desc" },
     });
   }
 
   async findOneForParticipant(userId: string, id: string) {
     const booking = await this.findById(id);
-    this.assertParticipant(booking, userId);
+    this.assertBookingParticipant(booking, userId);
 
     return booking;
   }
 
   async accept(ownerId: string, id: string) {
     const booking = await this.findById(id);
-    this.assertOwner(booking, ownerId);
+    this.assertBookingOwner(booking, ownerId);
 
     if (booking.status !== BookingStatus.REQUESTED) {
       throw new BadRequestException("Only requested bookings can be accepted");
@@ -129,8 +138,8 @@ export class BookingsService {
       id,
     );
 
-    const pickupToken = this.generateToken();
-    const returnToken = this.generateToken();
+    const pickupToken = generateOpaqueToken(24);
+    const returnToken = generateOpaqueToken(24);
     const updated = await this.prisma.booking.update({
       where: { id },
       data: {
@@ -141,7 +150,7 @@ export class BookingsService {
         pickupTokenPreview: pickupToken,
         returnTokenPreview: returnToken,
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.payments.createMockIntentForAcceptedBooking(updated, ownerId);
@@ -154,6 +163,8 @@ export class BookingsService {
       entityId: id,
       metadata: { status: BookingStatus.ACCEPTED },
     });
+
+    this.logger.log(`Booking ${id} accepted by owner ${ownerId}`);
 
     await this.safeNotify(() => {
       if (!updated.renter?.email) return;
@@ -174,7 +185,7 @@ export class BookingsService {
 
   async reject(ownerId: string, id: string) {
     const booking = await this.findById(id);
-    this.assertOwner(booking, ownerId);
+    this.assertBookingOwner(booking, ownerId);
 
     if (booking.status !== BookingStatus.REQUESTED) {
       throw new BadRequestException("Only requested bookings can be rejected");
@@ -183,7 +194,7 @@ export class BookingsService {
     const updated = await this.prisma.booking.update({
       where: { id },
       data: { status: BookingStatus.REJECTED },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.auditLog.create({
@@ -194,6 +205,8 @@ export class BookingsService {
       entityId: id,
       metadata: { status: BookingStatus.REJECTED },
     });
+
+    this.logger.log(`Booking ${id} rejected by owner ${ownerId}`);
 
     await this.safeNotify(() => {
       if (!updated.renter?.email) return;
@@ -210,7 +223,7 @@ export class BookingsService {
 
   async cancel(userId: string, id: string, data: CancelBookingDto) {
     const booking = await this.findById(id);
-    this.assertParticipant(booking, userId);
+    this.assertBookingParticipant(booking, userId);
 
     if (
       !(
@@ -238,7 +251,7 @@ export class BookingsService {
         cancelledAt: new Date(),
         cancellationReason: data.reason,
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     if (booking.paymentStatus === PaymentStatus.PAID) {
@@ -255,12 +268,14 @@ export class BookingsService {
       metadata: { status },
     });
 
+    this.logger.log(`Booking ${id} cancelled by ${userId} (${status})`);
+
     return updated;
   }
 
   async readyForPickup(ownerId: string, id: string) {
     const booking = await this.findById(id);
-    this.assertOwner(booking, ownerId);
+    this.assertBookingOwner(booking, ownerId);
 
     if (booking.status !== BookingStatus.ACCEPTED) {
       throw new BadRequestException(
@@ -275,7 +290,7 @@ export class BookingsService {
     const updated = await this.prisma.booking.update({
       where: { id },
       data: { status: BookingStatus.READY_FOR_PICKUP },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.auditLog.create({
@@ -287,14 +302,20 @@ export class BookingsService {
       metadata: { status: BookingStatus.READY_FOR_PICKUP },
     });
 
+    this.logger.log(
+      `Booking ${id} marked ready for pickup by owner ${ownerId}`,
+    );
+
     return updated;
   }
 
   async getTokens(userId: string, id: string) {
     const booking = await this.findById(id);
-    this.assertParticipant(booking, userId);
+    this.assertBookingParticipant(booking, userId);
 
     return {
+      // The renter sees the pickup QR only while the booking is ready for
+      // pickup; the owner sees the return QR only once the rental is underway.
       pickupQrToken:
         userId === booking.renterId &&
         ([BookingStatus.READY_FOR_PICKUP] as BookingStatus[]).includes(
@@ -317,7 +338,7 @@ export class BookingsService {
 
   async confirmPickup(ownerId: string, id: string, token: string) {
     const booking = await this.findById(id);
-    this.assertOwner(booking, ownerId);
+    this.assertBookingOwner(booking, ownerId);
 
     if (
       !([BookingStatus.READY_FOR_PICKUP] as BookingStatus[]).includes(
@@ -345,7 +366,7 @@ export class BookingsService {
         pickupTokenHash: null,
         pickupTokenPreview: null,
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.auditLog.create({
@@ -356,6 +377,8 @@ export class BookingsService {
       entityId: id,
       metadata: { status: BookingStatus.IN_PROGRESS },
     });
+
+    this.logger.log(`Booking ${id} pickup confirmed by owner ${ownerId}`);
 
     return updated;
   }
@@ -396,7 +419,7 @@ export class BookingsService {
         returnTokenHash: null,
         returnTokenPreview: null,
       },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
     await this.payments.releaseMockPayment(renterId, id);
@@ -410,36 +433,36 @@ export class BookingsService {
       metadata: { status: BookingStatus.COMPLETED },
     });
 
+    this.logger.log(`Booking ${id} return confirmed by renter ${renterId}`);
+
     return updated;
   }
 
   private async findById(id: string) {
     const booking = await this.prisma.booking.findUnique({
       where: { id },
-      include: this.bookingInclude(),
+      include: BOOKING_PARTICIPANT_INCLUDE,
     });
-
-    if (!booking) {
-      throw new NotFoundException("Booking not found");
-    }
+    assertFound(booking, "Booking not found");
 
     return booking;
   }
 
-  private assertParticipant(booking: Booking, userId: string) {
-    if (booking.ownerId !== userId && booking.renterId !== userId) {
-      throw new ForbiddenException("You cannot access this booking");
-    }
+  private assertBookingParticipant(booking: Booking, userId: string) {
+    assertParticipant(
+      booking.ownerId,
+      booking.renterId,
+      userId,
+      "You cannot access this booking",
+    );
   }
 
-  private assertOwner(booking: Booking, userId: string) {
-    if (booking.ownerId !== userId) {
-      throw new ForbiddenException("Only the owner can perform this action");
-    }
-  }
-
-  private generateToken() {
-    return randomBytes(24).toString("hex");
+  private assertBookingOwner(booking: Booking, userId: string) {
+    assertOwner(
+      booking.ownerId,
+      userId,
+      "Only the owner can perform this action",
+    );
   }
 
   private async safeNotify(fn: () => Promise<unknown> | void): Promise<void> {
@@ -447,7 +470,7 @@ export class BookingsService {
       await fn();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Error enviando notificación de reserva: ${message}`);
+      this.logger.error(`Error enviando notificacion de reserva: ${message}`);
     }
   }
 
@@ -474,32 +497,9 @@ export class BookingsService {
     } | null;
   }): string {
     const v = booking.vehicle;
-    if (!v) return "el vehículo";
-    return [v.brand, v.model, v.year].filter(Boolean).join(" ") || "el vehículo";
-  }
-
-  private bookingInclude() {
-    return {
-      listing: true,
-      vehicle: true,
-      owner: {
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          displayName: true,
-        },
-      },
-      renter: {
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          displayName: true,
-        },
-      },
-    };
+    if (!v) return "el vehiculo";
+    return (
+      [v.brand, v.model, v.year].filter(Boolean).join(" ") || "el vehiculo"
+    );
   }
 }

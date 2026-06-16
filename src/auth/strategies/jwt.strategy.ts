@@ -1,10 +1,10 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { PassportStrategy } from '@nestjs/passport';
-import { UserStatus } from '@prisma/client';
-import { ExtractJwt, Strategy } from 'passport-jwt';
-import { UsersService } from '../../users/users.service';
-import { getJwtSecret } from '../../config/jwt.config';
+import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { PassportStrategy } from "@nestjs/passport";
+import { UserStatus } from "@prisma/client";
+import { ExtractJwt, Strategy } from "passport-jwt";
+import { UsersService } from "../../users/users.service";
+import { getJwtSecret } from "../../config/jwt.config";
 
 interface JwtPayload {
   sub: string;
@@ -32,7 +32,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       user.status === UserStatus.SUSPENDED ||
       user.status === UserStatus.DELETED
     ) {
-      throw new UnauthorizedException('Invalid token');
+      throw new UnauthorizedException("Invalid token");
     }
 
     return {

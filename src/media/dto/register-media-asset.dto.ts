@@ -1,4 +1,4 @@
-import { MediaAssetKind } from '@prisma/client';
+import { MediaAssetKind } from "@prisma/client";
 import {
   IsEnum,
   IsInt,
@@ -8,7 +8,7 @@ import {
   Max,
   MaxLength,
   Min,
-} from 'class-validator';
+} from "class-validator";
 
 export class RegisterMediaAssetDto {
   @IsEnum(MediaAssetKind)

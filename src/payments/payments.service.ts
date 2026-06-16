@@ -2,7 +2,6 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
-  NotFoundException,
 } from "@nestjs/common";
 import {
   BookingStatus,
@@ -12,6 +11,8 @@ import {
 } from "@prisma/client";
 import { AuditLogService } from "../common/services/audit-log.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertFound } from "../common/utils/entity.util";
+import { assertParticipant } from "../common/utils/authorization.util";
 import { MockWebhookEventType } from "./dto/mock-webhook.dto";
 import { MockPaymentsProvider } from "./providers/mock-payments.provider";
 
@@ -273,10 +274,12 @@ export class PaymentsService {
 
   private async findBookingForParticipant(userId: string, bookingId: string) {
     const booking = await this.findBooking(bookingId);
-
-    if (booking.ownerId !== userId && booking.renterId !== userId) {
-      throw new ForbiddenException("You cannot access this payment");
-    }
+    assertParticipant(
+      booking.ownerId,
+      booking.renterId,
+      userId,
+      "You cannot access this payment",
+    );
 
     return booking;
   }
@@ -285,10 +288,7 @@ export class PaymentsService {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
     });
-
-    if (!booking) {
-      throw new NotFoundException("Booking not found");
-    }
+    assertFound(booking, "Booking not found");
 
     return booking;
   }

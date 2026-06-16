@@ -1,5 +1,5 @@
-import { VerificationStatus } from '@prisma/client';
-import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+import { VerificationStatus } from "@prisma/client";
+import { IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
 
 export class ReviewVerificationDto {
   @IsEnum(VerificationStatus)

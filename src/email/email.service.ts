@@ -13,10 +13,15 @@ export class EmailService {
     const user = this.configService.get<string>("GMAIL_USER");
     const pass = this.configService.get<string>("GMAIL_APP_PASSWORD");
     if (!user || !pass) {
-      this.logger.warn("Email no configurado (faltan GMAIL_USER o GMAIL_APP_PASSWORD)");
+      this.logger.warn(
+        "Email not configured (missing GMAIL_USER or GMAIL_APP_PASSWORD)",
+      );
       return null;
     }
-    return nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+    return nodemailer.createTransport({
+      service: "gmail",
+      auth: { user, pass },
+    });
   }
 
   private async send(to: string, subject: string, html: string) {
@@ -24,10 +29,16 @@ export class EmailService {
     if (!transporter) return;
     const from = this.configService.get<string>("GMAIL_USER");
     try {
-      await transporter.sendMail({ from: `Freewheel <${from}>`, to, subject, html });
+      await transporter.sendMail({
+        from: `Freewheel <${from}>`,
+        to,
+        subject,
+        html,
+      });
+      this.logger.log(`Email sent to ${to}: ${subject}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Error enviando email: ${message}`);
+      this.logger.error(`Failed to send email to ${to}: ${message}`);
     }
   }
 
@@ -49,7 +60,12 @@ export class EmailService {
     await this.send(email, "Tu código de verificación - Freewheel", html);
   }
 
-  async sendPasswordReset(email: string, firstName: string, token: string, userId: string) {
+  async sendPasswordReset(
+    email: string,
+    firstName: string,
+    token: string,
+    userId: string,
+  ) {
     const resetUrl = `${getFrontendUrl(this.configService)}/reset-password?token=${token}&uid=${userId}`;
     const html = `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
@@ -71,7 +87,6 @@ export class EmailService {
       </div>`;
     await this.send(email, "Restablecer tu contraseña - Freewheel", html);
   }
-
   async sendBookingRequestedToOwner(
     email: string,
     params: {

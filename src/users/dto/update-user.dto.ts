@@ -4,7 +4,7 @@ import {
   IsUrl,
   MaxLength,
   MinLength,
-} from 'class-validator';
+} from "class-validator";
 
 export class UpdateUserDto {
   @IsOptional()

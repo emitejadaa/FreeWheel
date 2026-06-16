@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Type } from "class-transformer";
 import {
   IsDate,
   IsEnum,
@@ -8,12 +8,12 @@ import {
   IsString,
   Max,
   Min,
-} from 'class-validator';
+} from "class-validator";
 
 export enum ListingSort {
-  NEWEST = 'newest',
-  PRICE_ASC = 'priceAsc',
-  PRICE_DESC = 'priceDesc',
+  NEWEST = "newest",
+  PRICE_ASC = "priceAsc",
+  PRICE_DESC = "priceDesc",
 }
 
 export class ListListingsQueryDto {

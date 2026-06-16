@@ -1,105 +1,118 @@
-import { Body, Controller, Delete, Get, Param, Patch, UseGuards } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../common/decorators/roles.decorator';
-import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { RolesGuard } from '../common/guards/roles.guard';
-import type { CurrentUserPayload } from '../common/types/current-user.type';
-import { AdminService } from './admin.service';
-import { ReviewVerificationDto } from './dto/review-verification.dto';
-import { UpdateListingStatusDto } from './dto/update-listing-status.dto';
-import { UpdateUserRoleDto } from './dto/update-user-role.dto';
-import { UpdateUserStatusDto } from './dto/update-user-status.dto';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  UseGuards,
+} from "@nestjs/common";
+import { UserRole } from "@prisma/client";
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { Roles } from "../common/decorators/roles.decorator";
+import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { RolesGuard } from "../common/guards/roles.guard";
+import type { CurrentUserPayload } from "../common/types/current-user.type";
+import { AdminService } from "./admin.service";
+import { ReviewVerificationDto } from "./dto/review-verification.dto";
+import { UpdateListingStatusDto } from "./dto/update-listing-status.dto";
+import { UpdateUserRoleDto } from "./dto/update-user-role.dto";
+import { UpdateUserStatusDto } from "./dto/update-user-status.dto";
 
-@Controller('admin')
+@Controller("admin")
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
-  @Get('users')
+  @Get("users")
   listUsers() {
     return this.adminService.listUsers();
   }
 
-  @Get('users/:id')
-  getUser(@Param('id') id: string) {
+  @Get("users/:id")
+  getUser(@Param("id") id: string) {
     return this.adminService.getUser(id);
   }
 
-  @Patch('users/:id/status')
+  @Patch("users/:id/status")
   updateUserStatus(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() dto: UpdateUserStatusDto,
   ) {
     return this.adminService.updateUserStatus(user.id, id, dto.status);
   }
 
-  @Patch('users/:id/role')
+  @Patch("users/:id/role")
   updateUserRole(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() dto: UpdateUserRoleDto,
   ) {
     return this.adminService.updateUserRole(user.id, id, dto.role);
   }
 
-  @Get('verifications')
+  @Get("verifications")
   listVerifications() {
     return this.adminService.listVerifications();
   }
 
-  @Get('verifications/:id')
-  getVerification(@Param('id') id: string) {
+  @Get("verifications/:id")
+  getVerification(@Param("id") id: string) {
     return this.adminService.getVerification(id);
   }
 
-  @Patch('verifications/:id/review')
+  @Patch("verifications/:id/review")
   reviewVerification(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() dto: ReviewVerificationDto,
   ) {
-    return this.adminService.reviewVerification(user.id, id, dto.status, dto.notes);
+    return this.adminService.reviewVerification(
+      user.id,
+      id,
+      dto.status,
+      dto.notes,
+    );
   }
 
-  @Get('listings')
+  @Get("listings")
   listListings() {
     return this.adminService.listListings();
   }
 
-  @Patch('listings/:id/status')
+  @Patch("listings/:id/status")
   updateListingStatus(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() dto: UpdateListingStatusDto,
   ) {
     return this.adminService.updateListingStatus(user.id, id, dto.status);
   }
 
-  @Delete('listings/:id')
+  @Delete("listings/:id")
   deleteListingPermanently(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
   ) {
     return this.adminService.deleteListingPermanently(user.id, id);
   }
 
-  @Get('bookings')
+  @Get("bookings")
   listBookings() {
     return this.adminService.listBookings();
   }
 
-    @Get('bookings/:id')
-  getBooking(@Param('id') id: string) {
+  @Get("bookings/:id")
+  getBooking(@Param("id") id: string) {
     return this.adminService.getBooking(id);
   }
 
-  @Delete('users/:id')
+  @Delete("users/:id")
   deleteUserPermanently(
     @CurrentUser() user: CurrentUserPayload,
-    @Param('id') id: string,
+    @Param("id") id: string,
   ) {
     return this.adminService.deleteUserPermanently(user.id, id);
   }

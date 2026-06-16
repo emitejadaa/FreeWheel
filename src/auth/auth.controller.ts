@@ -84,12 +84,9 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Post("request-email-change")
-  requestEmailChange(
-    @Req() req: Request,
-    @Body() body: { newEmail: string },
-  ) {
+  requestEmailChange(@Req() req: Request, @Body() body: { newEmail: string }) {
     return this.authService.requestEmailChange(
-      (req.user as any).id,
+      (req.user as CurrentUserPayload).id,
       body.newEmail,
     );
   }
@@ -101,7 +98,7 @@ export class AuthController {
     @Body() body: { code: string; newEmail: string },
   ) {
     return this.authService.confirmEmailChange(
-      (req.user as any).id,
+      (req.user as CurrentUserPayload).id,
       body.code,
       body.newEmail,
     );

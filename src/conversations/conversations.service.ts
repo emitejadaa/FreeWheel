@@ -1,11 +1,9 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { ListingStatus, MessageType } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { BadRequestException, Injectable } from "@nestjs/common";
+import { ListingStatus, MessageType } from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { assertFound } from "../common/utils/entity.util";
+import { assertParticipant } from "../common/utils/authorization.util";
+import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
 
 @Injectable()
 export class ConversationsService {
@@ -17,22 +15,28 @@ export class ConversationsService {
       select: { ownerId: true, status: true },
     });
 
-    if (!listing) throw new NotFoundException('Listing not found');
-    if (listing.ownerId === renterId)
-      throw new BadRequestException('No podés iniciar una conversación con tu propia publicación');
+    assertFound(listing, "Listing not found");
+    if (listing.ownerId === renterId) {
+      throw new BadRequestException(
+        "You cannot start a conversation with your own listing",
+      );
+    }
 
     const existing = await this.prisma.conversation.findUnique({
       where: { listingId_renterId: { listingId, renterId } },
-      include: this.convInclude(),
+      include: this.conversationInclude(),
     });
     if (existing) return existing;
 
-    if (listing.status !== ListingStatus.ACTIVE)
-      throw new BadRequestException('Esta publicación no está disponible');
+    // Allow reopening an existing thread, but only start a new one while the
+    // listing is still active.
+    if (listing.status !== ListingStatus.ACTIVE) {
+      throw new BadRequestException("This listing is not available");
+    }
 
     return this.prisma.conversation.create({
       data: { listingId, renterId, ownerId: listing.ownerId },
-      include: this.convInclude(),
+      include: this.conversationInclude(),
     });
   }
 
@@ -40,21 +44,20 @@ export class ConversationsService {
     return this.prisma.conversation.findMany({
       where: { OR: [{ renterId: userId }, { ownerId: userId }] },
       include: {
-        ...this.convInclude(),
-        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+        ...this.conversationInclude(),
+        messages: { orderBy: { createdAt: "desc" }, take: 1 },
       },
-      orderBy: { lastMessageAt: 'desc' },
+      orderBy: { lastMessageAt: "desc" },
     });
   }
 
   async findOne(userId: string, conversationId: string) {
     const conv = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: this.convInclude(),
+      include: this.conversationInclude(),
     });
-    if (!conv) throw new NotFoundException('Conversation not found');
-    if (conv.renterId !== userId && conv.ownerId !== userId)
-      throw new ForbiddenException('Not a participant');
+    assertFound(conv, "Conversation not found");
+    assertParticipant(conv.ownerId, conv.renterId, userId, "Not a participant");
     return conv;
   }
 
@@ -62,10 +65,8 @@ export class ConversationsService {
     await this.findOne(userId, conversationId);
     return this.prisma.message.findMany({
       where: { conversationId },
-      include: {
-        sender: { select: { id: true, firstName: true, lastName: true, displayName: true } },
-      },
-      orderBy: { createdAt: 'asc' },
+      include: { sender: { select: USER_PUBLIC_SELECT } },
+      orderBy: { createdAt: "asc" },
     });
   }
 
@@ -79,9 +80,7 @@ export class ConversationsService {
 
     const message = await this.prisma.message.create({
       data: { conversationId, senderId: userId, content, type },
-      include: {
-        sender: { select: { id: true, firstName: true, lastName: true, displayName: true } },
-      },
+      include: { sender: { select: USER_PUBLIC_SELECT } },
     });
 
     await this.prisma.conversation.update({
@@ -101,10 +100,7 @@ export class ConversationsService {
     return { ok: true };
   }
 
-  private convInclude() {
-    const userSelect = {
-      select: { id: true, firstName: true, lastName: true, displayName: true },
-    };
+  private conversationInclude() {
     return {
       listing: {
         select: {
@@ -113,8 +109,8 @@ export class ConversationsService {
           vehicle: { select: { brand: true, model: true, year: true } },
         },
       },
-      renter: userSelect,
-      owner: userSelect,
+      renter: { select: USER_PUBLIC_SELECT },
+      owner: { select: USER_PUBLIC_SELECT },
     };
   }
 }

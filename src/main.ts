@@ -1,11 +1,15 @@
-import { createServer } from './app.factory';
+import { Logger } from "@nestjs/common";
+import { createServer } from "./app.factory";
 
-async function bootstrap() {
+function bootstrap() {
+  const logger = new Logger("Bootstrap");
   const server = createServer();
   const port = process.env.PORT ?? 3000;
 
   server.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+    const env = process.env.NODE_ENV ?? "development";
+    logger.log(`FreeWheel API listening on port ${port}`);
+    logger.log(`Environment: ${env} | Node: ${process.version}`);
   });
 }
 

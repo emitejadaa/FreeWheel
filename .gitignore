@@ -3,6 +3,8 @@
 /node_modules
 /build
 /tmp
+/coverage
+*.tsbuildinfo
 
 # Logs
 logs
@@ -48,10 +50,12 @@ ruvector.db
 
 # Local agent/project notes and generated documentation
 .agents/
-.github/
 docs/
 AGENTS.md
 ENDPOINTS.md
 *.md
 !README.md
 !backend.md
+
+# External skill repos (local only, not committed)
+.tools/

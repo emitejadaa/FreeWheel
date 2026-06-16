@@ -6,7 +6,7 @@ import {
   IsString,
   MaxLength,
   MinLength,
-} from 'class-validator';
+} from "class-validator";
 
 export class RegisterDto {
   @IsEmail()
@@ -35,6 +35,6 @@ export class RegisterDto {
   displayName?: string;
 
   @IsBoolean()
-  @Equals(true, { message: 'Debés aceptar los términos y condiciones' })
+  @Equals(true, { message: "Debés aceptar los términos y condiciones" })
   acceptedTerms!: boolean;
 }

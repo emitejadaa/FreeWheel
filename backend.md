@@ -78,7 +78,7 @@ scripts/
     verify-deployed.ts             Checker con reintentos para deploys
     shared.ts                      Utilidades compartidas de endpoint checker
   env-check.ts                     Valida variables requeridas y documentadas
-  preflight.ts                     Corre Prisma, build, tests y checker local
+  preflight.ts                     Corre Prisma, build y checker local
   prisma-check.ts                  Valida schema y ejecuta prisma generate
   smart-commit.ts                  Script local de commit asistido
   test-functional.ts               Flujo funcional multiendpoint
@@ -88,7 +88,7 @@ src/
   auth/                            Register, login, JWT, OAuth, email verification, password reset
   availability/                    Disponibilidad y bloqueos manuales por listing
   bookings/                        Ciclo de reserva y tokens pickup/return
-  common/                          Guards, decorators, tipos y servicios comunes
+  common/                          Guards, decorators, tipos, utils, constantes y servicios comunes
   config/                          Helpers de URLs publicas
   conversations/                   Chat entre renter y owner por listing
   email/                           EmailService con Gmail SMTP opcional
@@ -107,8 +107,13 @@ src/
   main.ts                          Entrada local
 
 test/
-  app.e2e-spec.ts                  E2E base
-  jest-e2e.json                    Config E2E
+  helpers/                         Helpers de test (app, db, email fake, factory)
+  *.e2e-spec.ts                    Specs E2E por dominio
+  jest-global-setup.ts             Carga .env.test, guard de seguridad y migrate
+  setup-env.ts                     Carga .env.test por worker
+  tsconfig.json                    tsconfig de los specs
+
+jest.config.js                     Config Jest (E2E)
 ```
 
 ## 6. Modulos NestJS Y Recursos
@@ -156,6 +161,7 @@ Notas:
 - Prisma usa `DATABASE_URL`.
 - El cliente se genera en `postinstall` y en `npm run check:prisma`.
 - Las migraciones viven en `prisma/migrations`.
+- Loguea conexion/desconexion; un fallo al conectar se registra y se relanza en `onModuleInit`.
 
 ### CommonModule
 
@@ -168,6 +174,10 @@ Archivos:
 - `src/common/services/audit-log.service.ts`
 - `src/common/types/current-user.type.ts`
 - `src/common/filters/all-exceptions.filter.ts`
+- `src/common/utils/verification-code.util.ts`
+- `src/common/utils/entity.util.ts`
+- `src/common/utils/authorization.util.ts`
+- `src/common/constants/prisma-select.ts`
 
 Recursos:
 
@@ -177,6 +187,10 @@ Recursos:
 - `AuditLogService`: crea registros en `AuditLog`.
 - `CurrentUserPayload`: tipo comun de usuario autenticado.
 - `AllExceptionsFilter`: filtro global de excepciones (registrado en `app.factory`). Loguea metodo, ruta, usuario y stack en 5xx; preserva las respuestas HTTP nativas de Nest y no loguea headers ni body.
+- `consumeVerificationCode`, `generateNumericCode`, `generateOpaqueToken`: helpers compartidos de codigos/tokens (`utils/verification-code.util.ts`). `consumeVerificationCode` unifica la confirmacion (find, expiry, intentos, compare, consume) usada por auth y verification, con factories de error por flujo para preservar status codes.
+- `assertFound`: narrowing + 404 reutilizable (`utils/entity.util.ts`).
+- `assertOwner` y `assertParticipant`: chequeos de autorizacion reutilizables (`utils/authorization.util.ts`).
+- `USER_PUBLIC_SELECT`, `USER_CONTACT_SELECT`, `USER_SAFE_SELECT`, `BOOKING_PARTICIPANT_INCLUDE`: shapes Prisma compartidos (`constants/prisma-select.ts`).
 
 ### AuthModule
 
@@ -1323,8 +1337,9 @@ Notas:
 | `npm run start:debug` | Inicia Nest con debugger |
 | `npm run start:prod` | Ejecuta `dist/main.js` |
 | `npm run lint` | ESLint con fix |
-| `npm test` | Jest unit tests |
-| `npm run test:e2e` | Jest E2E |
+| `npm test` | Suite E2E (Jest + Supertest, serial) |
+| `npm run test:watch` | Suite E2E en watch |
+| `npm run test:cov` | Suite E2E con cobertura |
 | `npm run test:endpoints:local` | Endpoint checker local |
 | `npm run test:endpoints:deployed` | Endpoint checker deploy |
 | `npm run test:functional` | Flujo funcional |
@@ -1332,47 +1347,48 @@ Notas:
 | `npm run verify:deployed` | Checker desplegado con reintentos |
 | `npm run check:env` | Valida env/docs |
 | `npm run check:prisma` | Prisma validate/generate |
-| `npm run preflight` | Prisma, build, tests y checker local |
+| `npm run preflight` | Prisma, build y checker local |
 | `npm run commit:smart` | Commit asistido local |
 | `postinstall` | `prisma generate` |
 
-## 14. Testing Actual
+## 14. Testing
 
-Suites actuales:
+Suite E2E con Jest + Supertest que ejercita los endpoints reales (routing, guards JWT/roles, `ValidationPipe`, `AllExceptionsFilter` y queries Prisma) contra una base de datos de test dedicada. Es el tipo de test que detecta roturas al cambiar codigo o desplegar.
 
-- `app.controller.spec.ts`
-- `cors.config.spec.ts`
-- Auth service/controller.
-- Users service/controller.
-- Vehicles service.
-- Listings service.
-- Availability service.
-- Bookings service.
-- Payments service.
-- Verification service.
-- Admin service.
-- Prisma service.
-- Roles guard.
-- E2E base en `test/app.e2e-spec.ts`.
+Estructura:
 
-Cobertura funcional del script:
+- `jest.config.js` (raiz): config Jest; corre serial (`--runInBand`) porque los specs comparten la misma base.
+- `test/tsconfig.json`: tsconfig de los specs (extiende el base).
+- `test/jest-global-setup.ts`: carga `.env.test`, exige `ALLOW_DB_RESET=true` (guard de seguridad) y corre `prisma migrate deploy`.
+- `test/setup-env.ts`: carga `.env.test` en cada worker antes de importar la app.
+- `test/helpers/`: `app.ts` (boot del app con `EmailService` fake y `configureApp`), `email.fake.ts` (captura codigos/tokens), `db.ts` (`cleanDatabase` en orden FK-safe), `factory.ts` (`registerUser`/`createAdmin`/`createVehicle`/`createListing`).
+- `test/*.e2e-spec.ts`: health, auth, users, vehicles, listings, bookings, payments, conversations, verification, admin.
 
-- Root.
-- Listings publicos.
-- Auth register/login.
-- Users me.
-- Vehicles CRUD parcial.
-- Listings CRUD parcial.
-- Disponibilidad.
-- Booking owner/renter.
-- Pago mock.
-- Pickup token.
-- Return token.
+Cobertura: cada endpoint con happy-path + guards (401/403) + validacion (400) + errores clave; mas dos flujos completos:
 
-Limitaciones:
+- Ciclo de booking: request → accept → pago mock → ready-for-pickup → confirm-pickup → confirm-return → `COMPLETED`.
+- Ciclo de auth: register → verify-email → login → forgot/reset-password → email-change.
 
-- `preflight` intenta checker local; si no hay server escuchando, informa `fetch failed`.
-- `npx tsc --noEmit` puede revelar errores de types en specs antiguos si mocks no incluyen campos nuevos de Prisma.
+Base de datos de test:
+
+- Requiere `.env.test` (gitignored) apuntando a una branch de Neon DESCARTABLE. Ver `.env.test.example`.
+- La suite borra todas las tablas entre tests; el guard `ALLOW_DB_RESET=true` impide correr contra dev/prod.
+
+Comandos:
+
+```bash
+npm test            # corre la suite E2E (serial)
+npm run test:watch  # modo watch
+npm run test:cov    # con cobertura
+```
+
+CI: `.github/workflows/test.yml` levanta un Postgres de servicio, corre migraciones y ejecuta la suite en cada push/PR.
+
+Herramientas operativas (no-Jest) que se conservan:
+
+- `scripts/test-functional.ts`: flujo funcional multiendpoint contra un server corriendo.
+- `scripts/endpoint-checker/*`: checkers local/deploy con reintentos.
+- `npm run preflight`: Prisma validate/generate + build + checker local.
 
 ## 15. Estado Actual Implementado
 
@@ -1504,7 +1520,6 @@ Validacion normal:
 
 ```bash
 npm run build
-npm test -- --runInBand
 npm run check:env
 npm run check:prisma
 ```

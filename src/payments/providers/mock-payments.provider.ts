@@ -9,13 +9,13 @@ import {
 export class MockPaymentsProvider implements PaymentProvider {
   readonly name = "mock";
 
-  async createIntent(input: {
+  createIntent(input: {
     bookingId: string;
     amount: number;
     currency: string;
     metadata?: Record<string, unknown>;
   }): Promise<MockPaymentIntent> {
-    return {
+    return Promise.resolve({
       providerId: `mock_${randomBytes(12).toString("hex")}`,
       status: "PENDING",
       amount: input.amount,
@@ -24,6 +24,6 @@ export class MockPaymentsProvider implements PaymentProvider {
         bookingId: input.bookingId,
         ...input.metadata,
       },
-    };
+    });
   }
 }

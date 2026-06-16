@@ -1,4 +1,4 @@
-import { ListingStatus } from '@prisma/client';
+import { ListingStatus } from "@prisma/client";
 import {
   IsEnum,
   IsNumber,
@@ -9,7 +9,7 @@ import {
   MaxLength,
   Min,
   MinLength,
-} from 'class-validator';
+} from "class-validator";
 
 export class CreateListingDto {
   @IsString()
