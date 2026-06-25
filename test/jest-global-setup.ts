@@ -28,6 +28,14 @@ export default function globalSetup(): void {
     );
   }
 
-  // Ensure the test database schema matches the current migrations.
-  execSync("npx prisma migrate deploy", { stdio: "inherit", env: process.env });
+  // The throwaway test DB is materialized directly from `schema.prisma` with
+  // `db push` (reset each run) instead of `migrate deploy`. The committed
+  // migration history has no initial baseline (User/Vehicle/Listing predate it
+  // from an original `db push`), so `migrate deploy` cannot build a database
+  // from scratch. `db push` mirrors the current schema exactly, which is what an
+  // ephemeral E2E database needs; production keeps using the migration chain.
+  execSync("npx prisma db push --skip-generate", {
+    stdio: "inherit",
+    env: process.env,
+  });
 }
