@@ -382,36 +382,33 @@ Archivos:
 
 - `src/payments/payments.controller.ts`
 - `src/payments/payments.service.ts`
-- `src/payments/dto/mock-webhook.dto.ts`
+- `src/payments/pricing.service.ts`
 - `src/payments/providers/payment-provider.interface.ts`
+- `src/payments/providers/stripe-payments.provider.ts`
 - `src/payments/providers/mock-payments.provider.ts`
 
 Responsabilidades:
 
-- Crear intent mock para una reserva aceptada.
-- Consultar estado de pago por booking.
-- Confirmar pago mock.
-- Fallar pago mock.
-- Reembolsar pago mock.
-- Simular webhook fake.
-- Registrar release mock al completar reserva.
-- Actualizar `PaymentRecord`.
-- Actualizar `Booking.paymentStatus`, `paidAt` y `refundedAt`.
-- Auditar eventos de pago.
+- Calcular montos del lado del servidor (`PricingService`): seña, saldo, seguro, comisión, depósito, payout del owner (en unidades mínimas/centavos).
+- Crear PaymentIntents de seña y saldo, y el hold de garantía (captura manual).
+- Procesar webhooks de Stripe firmados, idempotentes por `event.id` (tabla `StripeEvent`).
+- Liquidar al check-out: liberar (o capturar) el hold y transferir el payout al owner (Connect).
+- Reembolsar seña/saldo y liberar el hold en cancelaciones.
+- Onboarding del owner como cuenta conectada (Connect).
+- Actualizar `PaymentRecord` (ledger) y `Booking.paymentStatus`, `paidAt`, `refundedAt`, `ownerTransferId`.
 
 Diseno reemplazable:
 
-- `PaymentProvider` define la frontera interna.
-- `MockPaymentsProvider` genera `providerId` fake y metadata.
-- `PaymentsService` no deberia saber detalles de Stripe/Mercado Pago cuando se agreguen.
-- Los webhooks reales deben mapearse a los mismos eventos de dominio: confirm, fail, refund, release.
+- `PaymentProvider` define la frontera interna (intents, hold/capture/release, refund, transfer, connect, webhook).
+- `StripePaymentsProvider` (real, solo claves `sk_test_…`) y `MockPaymentsProvider` (determinista/offline) la implementan; se elige por `PAYMENTS_PROVIDER`.
+- Modelo Stripe Connect con *separate charges & transfers*: el payout al owner se transfiere al completar la reserva.
 
 Seguridad:
 
-- No se guarda tarjeta.
-- No se mueve dinero real.
+- No se guarda tarjeta (PaymentIntents; el front tokeniza con Stripe.js).
+- Solo modo test: el provider Stripe rechaza arrancar con claves live (`sk_live_`/`rk_live_`).
+- Montos calculados en el servidor; idempotency keys en cada operación; firma de webhook verificada sobre el raw body.
 - Las acciones autenticadas validan que el usuario sea participante de la reserva.
-- El webhook mock es una simulacion para desarrollo y no debe exponerse igual en produccion real.
 
 ### VerificationModule
 
@@ -636,12 +633,20 @@ Query soportada en catalogo:
 
 | Metodo | Ruta | Auth | Descripcion |
 | --- | --- | --- | --- |
-| POST | `/payments/bookings/:bookingId/mock-intent` | JWT renter | Crea o devuelve intent mock pendiente |
-| GET | `/payments/bookings/:bookingId/status` | JWT participante | Consulta estado y records |
-| POST | `/payments/bookings/:bookingId/mock-confirm` | JWT participante | Simula pago confirmado |
-| POST | `/payments/bookings/:bookingId/mock-fail` | JWT participante | Simula pago fallido |
-| POST | `/payments/bookings/:bookingId/mock-refund` | JWT participante | Simula refund |
-| POST | `/payments/mock/webhook` | Publico/dev | Webhook fake para desarrollo |
+| POST | `/payments/bookings/:bookingId/sena-intent` | JWT renter | Crea/reusa el PaymentIntent de la seña (30%) |
+| POST | `/payments/bookings/:bookingId/balance-intent` | JWT renter | PaymentIntent del saldo (requiere seña pagada) |
+| POST | `/payments/bookings/:bookingId/deposit-hold` | JWT renter | PaymentIntent de garantía con captura manual (hold) |
+| GET | `/payments/bookings/:bookingId/status` | JWT participante | Estado de pago, montos y records |
+| POST | `/payments/connect/onboarding` | JWT owner | Crea la cuenta conectada (Connect) del owner |
+| POST | `/payments/stripe/webhook` | Publico (firma) | Webhook de Stripe; firma verificada sobre el raw body |
+
+### Contracts
+
+| Metodo | Ruta | Auth | Descripcion |
+| --- | --- | --- | --- |
+| GET | `/contracts/bookings/:bookingId` | JWT participante | Contrato digital de la reserva (terms) |
+| GET | `/contracts/bookings/:bookingId/pdf` | JWT participante | Contrato en PDF |
+| POST | `/contracts/bookings/:bookingId/accept` | JWT participante | Registra la aceptación de cada parte |
 
 ### Media
 
@@ -1110,15 +1115,16 @@ No bloquean:
 - `COMPLETED`
 - `DISPUTED`, salvo que se decida cambiar la regla de negocio.
 
-### Pago Mock
+### Pago Stripe (modo test)
 
-Estados principales:
+Estados principales (`Booking.paymentStatus` y `PaymentRecord.status` por `kind`):
 
-- Al aceptar booking: `PaymentRecord.PENDING`, `Booking.paymentStatus = PENDING`.
-- Confirmacion mock: `PaymentRecord.PAID`, `Booking.paymentStatus = PAID`, `paidAt`.
-- Fallo mock: `PaymentRecord.FAILED`, `Booking.paymentStatus = FAILED`.
-- Refund mock: `PaymentRecord.REFUNDED`, `Booking.paymentStatus = REFUNDED`, `refundedAt`.
-- Release mock: se crea record/evento de release cuando el booking completa return.
+- Al aceptar: snapshots congelados, contrato creado, `Booking.paymentStatus = PENDING`.
+- Seña pagada (webhook `payment_intent.succeeded`): record `SENA` → `CAPTURED`, `Booking.paymentStatus = DEPOSIT_PAID`.
+- Saldo pagado: record `BALANCE` → `CAPTURED`; con seña y saldo pagados → `Booking.paymentStatus = FULLY_PAID`.
+- Hold de garantía autorizado (webhook `payment_intent.amount_capturable_updated`): record `DEPOSIT_HOLD` → `AUTHORIZED`.
+- Check-out (`confirm-return`): hold `RELEASED` (o capturado por daños) y `OWNER_TRANSFER` → `PAID` (transfer al owner).
+- Cancelación: refunds de seña/saldo (`REFUND`), hold liberado, `Booking.paymentStatus = REFUNDED`.
 
 ### Cancelacion
 
@@ -1317,7 +1323,24 @@ GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
 GMAIL_USER=""
 GMAIL_APP_PASSWORD=""
+PAYMENTS_PROVIDER="mock"
+STRIPE_SECRET_KEY=""
+STRIPE_PUBLISHABLE_KEY=""
+STRIPE_WEBHOOK_SECRET=""
+STRIPE_API_VERSION=""
+STRIPE_CONNECT_ENABLED="true"
+PLATFORM_FEE_PCT="0.10"
+INSURANCE_PCT="0.10"
+SENA_PCT="0.30"
+DEPOSIT_DEFAULT_USD="200"
+DEFAULT_CURRENCY="usd"
 ```
+
+Notas de pagos:
+
+- `PAYMENTS_PROVIDER` elige `stripe` (real, solo claves `sk_test_…`) o `mock` (offline). El provider Stripe rechaza arrancar con claves live.
+- `STRIPE_WEBHOOK_SECRET` valida la firma del webhook; la ruta `/payments/stripe/webhook` recibe el raw body (configurado en `app.factory`).
+- Los porcentajes son fracciones (`0.10` = 10%). Montos calculados en el servidor en unidades mínimas (centavos).
 
 Notas:
 

@@ -227,12 +227,15 @@ Usuario autenticado:
 - `GET /bookings/:id/tokens`
 - `POST /bookings/:id/confirm-pickup`
 - `POST /bookings/:id/confirm-return`
-- `POST /payments/bookings/:bookingId/mock-intent`
+- `POST /payments/bookings/:bookingId/sena-intent`
+- `POST /payments/bookings/:bookingId/balance-intent`
+- `POST /payments/bookings/:bookingId/deposit-hold`
 - `GET /payments/bookings/:bookingId/status`
-- `POST /payments/bookings/:bookingId/mock-confirm`
-- `POST /payments/bookings/:bookingId/mock-fail`
-- `POST /payments/bookings/:bookingId/mock-refund`
-- `POST /payments/mock/webhook`
+- `POST /payments/connect/onboarding`
+- `POST /payments/stripe/webhook` (público, firma verificada con raw body)
+- `GET /contracts/bookings/:bookingId`
+- `GET /contracts/bookings/:bookingId/pdf`
+- `POST /contracts/bookings/:bookingId/accept`
 - `POST /media/assets`
 - `GET /media/assets/me`
 
@@ -264,9 +267,9 @@ Admin:
 1. Renter solicita reserva sobre un listing `ACTIVE`.
 2. Backend valida fechas, ownership, reservas bloqueantes y bloqueos manuales.
 3. Owner acepta o rechaza. `REQUESTED` no bloquea disponibilidad hasta que una solicitud se acepta.
-4. Al aceptar, backend genera tokens QR hasheados, crea un `PaymentRecord` mock `PENDING` y deja `Booking.paymentStatus` en `PENDING`.
-5. Renter confirma pago simulado con `POST /payments/bookings/:bookingId/mock-confirm` o un webhook fake.
-6. Owner marca `READY_FOR_PICKUP` solo si el pago esta `PAID`.
+4. Al aceptar, backend genera tokens QR hasheados, congela los snapshots de precio (seña/saldo/seguro/comisión/depósito), crea el contrato y deja `Booking.paymentStatus` en `PENDING`.
+5. Renter paga la seña, el saldo y autoriza el hold del depósito (PaymentIntents de Stripe en modo test); los webhooks firmados actualizan el estado a `DEPOSIT_PAID` → `FULLY_PAID`.
+6. Owner marca `READY_FOR_PICKUP` solo si el pago está `FULLY_PAID` y el depósito autorizado.
 7. Renter muestra QR/token de retiro desde `GET /bookings/:id/tokens`.
 8. Owner confirma retiro con `POST /bookings/:id/confirm-pickup`.
 9. Reserva queda `IN_PROGRESS`.
@@ -278,9 +281,30 @@ Admin:
 
 `GET /listings/:id/availability?startDate=...&endDate=...` informa si un rango esta disponible y devuelve reservas/bloqueos que chocan. Los owners pueden crear, listar y eliminar bloqueos manuales con `/listings/:id/availability-blocks`. La validacion de solapamientos vive en `AvailabilityService` y se reutiliza en bookings y en filtros publicos de listings.
 
-## Pagos Mock
+## Pagos (Stripe, modo test)
 
-El flujo de pagos no usa dinero real ni datos de tarjeta. `PaymentsService` coordina `PaymentRecord` y `Booking.paymentStatus`; `MockPaymentsProvider` solo genera IDs fake. Para reemplazarlo por Stripe, Mercado Pago u otro provider, implementar la misma frontera interna de provider y mapear webhooks reales a `confirm/fail/refund/release`.
+Pagos con **Stripe en modo test** (USD de prueba), sin dinero real. El backend
+calcula todos los montos del lado del servidor (`PricingService`): seña (30%),
+saldo (70%), seguro (10%), comisión de plataforma (10%) y depósito de garantía.
+
+Modelo Stripe Connect con *separate charges & transfers*: la plataforma cobra al
+renter y **transfiere el pago al owner al confirmarse el check-out**. El depósito
+de garantía es un **hold con captura manual** que se libera (o captura por daños)
+en la devolución. Flujo por reserva:
+
+1. `accept` (owner): se congelan los snapshots de precio y se genera el contrato.
+2. `POST /payments/bookings/:id/sena-intent` (renter): PaymentIntent de la seña → `clientSecret`.
+3. `POST .../balance-intent` y `POST .../deposit-hold`: saldo + hold de garantía.
+4. El front confirma cada PaymentIntent con Stripe.js; Stripe emite webhooks a
+   `POST /payments/stripe/webhook` (firma verificada con `STRIPE_WEBHOOK_SECRET`
+   sobre el raw body; idempotencia por `event.id`).
+5. Con todo pagado y el hold autorizado, `ready-for-pickup` → `confirm-pickup` →
+   `confirm-return`, que libera el hold y transfiere el pago al owner.
+
+El provider es intercambiable (`PaymentProvider`): `stripe` (real, sólo claves
+`sk_test_…`) o `mock` (determinista, offline) según `PAYMENTS_PROVIDER`. Una guarda
+impide arrancar con claves live. Cada reserva genera un **contrato digital** (PDF)
+accesible para ambas partes en `/contracts/bookings/:id`.
 
 ## QR Tokens
 
