@@ -266,35 +266,62 @@ export class PaymentsService {
       where: { stripePaymentIntentId: piId },
     });
     if (!record?.bookingId) return;
+    const bookingId = record.bookingId;
 
-    await this.prisma.paymentRecord.update({
-      where: { id: record.id },
-      data: {
-        status: PaymentRecordStatus.CAPTURED,
-        stripeChargeId: chargeId,
-        paidAt: new Date(),
-      },
-    });
-
-    if (record.kind === PaymentRecordKind.SENA) {
-      await this.setBookingPaymentStatus(record.bookingId, {
-        from: [PaymentStatus.PENDING],
-        to: PaymentStatus.DEPOSIT_PAID,
-        paidAt: true,
+    // The record's capture and the booking's payment status must move together.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentRecord.update({
+        where: { id: record.id },
+        data: {
+          status: PaymentRecordStatus.CAPTURED,
+          stripeChargeId: chargeId,
+          paidAt: new Date(),
+        },
       });
-    } else if (record.kind === PaymentRecordKind.BALANCE) {
-      if (await this.isFullyCharged(record.bookingId)) {
-        await this.setBookingPaymentStatus(record.bookingId, {
-          to: PaymentStatus.FULLY_PAID,
-          paidAt: true,
+
+      if (record.kind === PaymentRecordKind.SENA) {
+        const booking = await tx.booking.findUnique({
+          where: { id: bookingId },
+          select: { paymentStatus: true },
         });
+        if (booking?.paymentStatus === PaymentStatus.PENDING) {
+          await tx.booking.update({
+            where: { id: bookingId },
+            data: {
+              paymentStatus: PaymentStatus.DEPOSIT_PAID,
+              paidAt: new Date(),
+            },
+          });
+        }
+      } else if (record.kind === PaymentRecordKind.BALANCE) {
+        const charged = await tx.paymentRecord.findMany({
+          where: {
+            bookingId,
+            kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
+            status: { in: PAID_RECORD_STATUSES },
+          },
+          select: { kind: true },
+        });
+        const kinds = new Set(charged.map((r) => r.kind));
+        if (
+          kinds.has(PaymentRecordKind.SENA) &&
+          kinds.has(PaymentRecordKind.BALANCE)
+        ) {
+          await tx.booking.update({
+            where: { id: bookingId },
+            data: {
+              paymentStatus: PaymentStatus.FULLY_PAID,
+              paidAt: new Date(),
+            },
+          });
+        }
       }
-    }
+    });
 
     await this.auditLog.create({
       action: "payment.intent.succeeded",
       entityType: "Booking",
-      entityId: record.bookingId,
+      entityId: bookingId,
       metadata: { paymentIntentId: piId, kind: record.kind },
     });
   }
@@ -315,56 +342,22 @@ export class PaymentsService {
       where: { stripePaymentIntentId: piId },
     });
     if (!record?.bookingId) return;
-    await this.prisma.paymentRecord.update({
-      where: { id: record.id },
-      data: { status: PaymentRecordStatus.FAILED },
-    });
-    if (
+    const bookingId = record.bookingId;
+    const isCharge =
       record.kind === PaymentRecordKind.SENA ||
-      record.kind === PaymentRecordKind.BALANCE
-    ) {
-      await this.prisma.booking.update({
-        where: { id: record.bookingId },
-        data: { paymentStatus: PaymentStatus.FAILED },
-      });
-    }
-  }
+      record.kind === PaymentRecordKind.BALANCE;
 
-  private async isFullyCharged(bookingId: string): Promise<boolean> {
-    const charged = await this.prisma.paymentRecord.findMany({
-      where: {
-        bookingId,
-        kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
-        status: { in: PAID_RECORD_STATUSES },
-      },
-      select: { kind: true },
-    });
-    const kinds = new Set(charged.map((r) => r.kind));
-    return (
-      kinds.has(PaymentRecordKind.SENA) && kinds.has(PaymentRecordKind.BALANCE)
-    );
-  }
-
-  private async setBookingPaymentStatus(
-    bookingId: string,
-    opts: { from?: PaymentStatus[]; to: PaymentStatus; paidAt?: boolean },
-  ) {
-    if (opts.from) {
-      const booking = await this.prisma.booking.findUnique({
-        where: { id: bookingId },
-        select: { paymentStatus: true },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentRecord.update({
+        where: { id: record.id },
+        data: { status: PaymentRecordStatus.FAILED },
       });
-      if (booking && !opts.from.includes(booking.paymentStatus)) {
-        // Already advanced past this state; don't regress.
-        if (booking.paymentStatus === PaymentStatus.FULLY_PAID) return;
+      if (isCharge) {
+        await tx.booking.update({
+          where: { id: bookingId },
+          data: { paymentStatus: PaymentStatus.FAILED },
+        });
       }
-    }
-    await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: {
-        paymentStatus: opts.to,
-        ...(opts.paidAt ? { paidAt: new Date() } : {}),
-      },
     });
   }
 
@@ -428,25 +421,27 @@ export class PaymentsService {
         idempotencyKey: `booking_${bookingId}_owner_transfer`,
       });
 
-      await this.prisma.paymentRecord.create({
-        data: {
-          bookingId,
-          userId: booking.ownerId,
-          kind: PaymentRecordKind.OWNER_TRANSFER,
-          status: PaymentRecordStatus.PAID,
-          provider: this.provider.name,
-          providerId: transfer.id,
-          stripeTransferId: transfer.id,
-          amount: amountMinor / 100,
-          amountMinor,
-          currency: booking.currency,
-          paidAt: new Date(),
-        },
-      });
-      await this.prisma.booking.update({
-        where: { id: bookingId },
-        data: { ownerTransferId: transfer.id },
-      });
+      await this.prisma.$transaction([
+        this.prisma.paymentRecord.create({
+          data: {
+            bookingId,
+            userId: booking.ownerId,
+            kind: PaymentRecordKind.OWNER_TRANSFER,
+            status: PaymentRecordStatus.PAID,
+            provider: this.provider.name,
+            providerId: transfer.id,
+            stripeTransferId: transfer.id,
+            amount: amountMinor / 100,
+            amountMinor,
+            currency: booking.currency,
+            paidAt: new Date(),
+          },
+        }),
+        this.prisma.booking.update({
+          where: { id: bookingId },
+          data: { ownerTransferId: transfer.id },
+        }),
+      ]);
     }
 
     await this.auditLog.create({
@@ -478,25 +473,30 @@ export class PaymentsService {
         amountMinor: record.amountMinor ?? undefined,
         idempotencyKey: `booking_${bookingId}_${record.kind}_refund`,
       });
-      await this.prisma.paymentRecord.update({
-        where: { id: record.id },
-        data: { status: PaymentRecordStatus.REFUNDED, refundedAt: new Date() },
-      });
-      await this.prisma.paymentRecord.create({
-        data: {
-          bookingId,
-          userId: record.userId,
-          kind: PaymentRecordKind.REFUND,
-          status: PaymentRecordStatus.REFUNDED,
-          provider: this.provider.name,
-          providerId: refund.id,
-          stripeRefundId: refund.id,
-          amount: (record.amountMinor ?? 0) / 100,
-          amountMinor: record.amountMinor,
-          currency: record.currency,
-          refundedAt: new Date(),
-        },
-      });
+      await this.prisma.$transaction([
+        this.prisma.paymentRecord.update({
+          where: { id: record.id },
+          data: {
+            status: PaymentRecordStatus.REFUNDED,
+            refundedAt: new Date(),
+          },
+        }),
+        this.prisma.paymentRecord.create({
+          data: {
+            bookingId,
+            userId: record.userId,
+            kind: PaymentRecordKind.REFUND,
+            status: PaymentRecordStatus.REFUNDED,
+            provider: this.provider.name,
+            providerId: refund.id,
+            stripeRefundId: refund.id,
+            amount: (record.amountMinor ?? 0) / 100,
+            amountMinor: record.amountMinor,
+            currency: record.currency,
+            refundedAt: new Date(),
+          },
+        }),
+      ]);
     }
 
     // Release any authorized deposit hold.
