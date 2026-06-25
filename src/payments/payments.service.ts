@@ -1,275 +1,612 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
+  Booking,
   BookingStatus,
+  PaymentRecordKind,
   PaymentRecordStatus,
   PaymentStatus,
   Prisma,
+  StripeAccountStatus,
+  User,
 } from "@prisma/client";
 import { AuditLogService } from "../common/services/audit-log.service";
-import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
-import { MockWebhookEventType } from "./dto/mock-webhook.dto";
-import { MockPaymentsProvider } from "./providers/mock-payments.provider";
+import { PrismaService } from "../prisma/prisma.service";
+import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
+import type {
+  PaymentProvider,
+  PaymentRecordKindLike,
+} from "./providers/payment-provider.interface";
+
+const PAID_RECORD_STATUSES: PaymentRecordStatus[] = [
+  PaymentRecordStatus.PAID,
+  PaymentRecordStatus.CAPTURED,
+];
 
 @Injectable()
 export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly provider: MockPaymentsProvider,
+    @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly auditLog: AuditLogService,
+    private readonly config: ConfigService,
   ) {}
 
-  async createMockIntent(userId: string, bookingId: string) {
-    const booking = await this.findBookingForParticipant(userId, bookingId);
+  // ---- intent creation (renter, on demand) --------------------------------
 
-    if (booking.renterId !== userId) {
-      throw new ForbiddenException("Only the renter can start payment");
-    }
-
-    if (booking.status !== BookingStatus.ACCEPTED) {
-      throw new BadRequestException("Only accepted bookings can start payment");
-    }
-
-    return this.createMockIntentForAcceptedBooking(booking, userId);
+  createSenaIntent(renterId: string, bookingId: string) {
+    return this.createChargeIntent(renterId, bookingId, "SENA");
   }
 
-  async createMockIntentForAcceptedBooking(
-    booking: {
-      id: string;
-      renterId: string;
-      ownerId: string;
-      status: BookingStatus;
-      totalPriceSnapshot: number;
-      currency: string;
-    },
-    actorId?: string,
+  async createBalanceIntent(renterId: string, bookingId: string) {
+    const booking = await this.findBooking(bookingId);
+    if (booking.paymentStatus === PaymentStatus.PENDING) {
+      throw new BadRequestException("Pay the deposit (seña) before the balance");
+    }
+    return this.createChargeIntent(renterId, bookingId, "BALANCE");
+  }
+
+  createDepositHold(renterId: string, bookingId: string) {
+    return this.createChargeIntent(renterId, bookingId, "DEPOSIT_HOLD");
+  }
+
+  private async createChargeIntent(
+    renterId: string,
+    bookingId: string,
+    kind: PaymentRecordKindLike,
   ) {
+    const booking = await this.findBookingWithUsers(bookingId);
+    if (booking.renterId !== renterId) {
+      throw new ForbiddenException("Only the renter can pay for this booking");
+    }
     if (booking.status !== BookingStatus.ACCEPTED) {
-      throw new BadRequestException("Only accepted bookings can start payment");
+      throw new BadRequestException(
+        "Payments can only be made on accepted bookings",
+      );
     }
 
+    const amountMinor = this.amountForKind(booking, kind);
+    const currency = booking.currency;
+
+    // Idempotent: reuse a non-failed intent of the same kind if present.
     const existing = await this.prisma.paymentRecord.findFirst({
       where: {
-        bookingId: booking.id,
-        provider: this.provider.name,
-        status: { in: [PaymentRecordStatus.PENDING, PaymentRecordStatus.PAID] },
+        bookingId,
+        kind: kind as PaymentRecordKind,
+        status: { notIn: [PaymentRecordStatus.FAILED] },
       },
       orderBy: { createdAt: "desc" },
     });
-
-    if (existing) {
-      return existing;
+    if (existing?.stripePaymentIntentId) {
+      const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
+      return {
+        bookingId,
+        kind,
+        paymentIntentId: existing.stripePaymentIntentId,
+        clientSecret: (meta.clientSecret as string | undefined) ?? null,
+        amountMinor: existing.amountMinor ?? amountMinor,
+        currency,
+        status: existing.status,
+        reused: true,
+      };
     }
 
-    const intent = await this.provider.createIntent({
-      bookingId: booking.id,
-      amount: booking.totalPriceSnapshot,
-      currency: booking.currency,
-      metadata: {
-        renterId: booking.renterId,
-        ownerId: booking.ownerId,
-      },
-    });
+    const customerId = await this.ensureRenterCustomer(booking.renter);
+    const input = {
+      bookingId,
+      kind,
+      amountMinor,
+      currency,
+      customerId,
+      transferGroup: booking.transferGroup,
+      metadata: { renterId: booking.renterId, ownerId: booking.ownerId },
+      idempotencyKey: `booking_${bookingId}_${kind.toLowerCase()}`,
+    };
 
-    const paymentRecord = await this.prisma.paymentRecord.create({
+    const intent =
+      kind === "DEPOSIT_HOLD"
+        ? await this.provider.createDepositHold(input)
+        : await this.provider.createPaymentIntent(input);
+
+    const record = await this.prisma.paymentRecord.create({
       data: {
-        bookingId: booking.id,
+        bookingId,
         userId: booking.renterId,
-        status: PaymentRecordStatus.PENDING,
+        kind: kind as PaymentRecordKind,
+        status: PaymentRecordStatus.REQUIRES_ACTION,
         provider: this.provider.name,
-        providerId: intent.providerId,
-        amount: intent.amount,
-        currency: intent.currency,
-        metadata: intent.metadata as Prisma.InputJsonValue,
+        providerId: intent.id,
+        stripePaymentIntentId: intent.id,
+        amount: amountMinor / 100,
+        amountMinor,
+        currency,
+        metadata: {
+          clientSecret: intent.clientSecret,
+          renterId: booking.renterId,
+          ownerId: booking.ownerId,
+        } as Prisma.InputJsonValue,
       },
     });
 
-    await this.prisma.booking.update({
-      where: { id: booking.id },
-      data: {
-        paymentStatus: PaymentStatus.PENDING,
-        paymentProvider: this.provider.name,
-        providerPaymentId: intent.providerId,
-      },
-    });
+    if (kind === "DEPOSIT_HOLD") {
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: { depositPaymentIntentId: intent.id },
+      });
+    }
 
     await this.auditLog.create({
-      actorId,
+      actorId: renterId,
       targetUserId: booking.ownerId,
-      action: "payment.mock.created",
+      action: `payment.${kind.toLowerCase()}.intent_created`,
       entityType: "Booking",
-      entityId: booking.id,
-      metadata: { providerId: intent.providerId },
-    });
-
-    return paymentRecord;
-  }
-
-  async getBookingPaymentStatus(userId: string, bookingId: string) {
-    const booking = await this.findBookingForParticipant(userId, bookingId);
-    const records = await this.prisma.paymentRecord.findMany({
-      where: { bookingId },
-      orderBy: { createdAt: "desc" },
+      entityId: bookingId,
+      metadata: { paymentIntentId: intent.id, amountMinor },
     });
 
     return {
       bookingId,
+      kind,
+      paymentIntentId: intent.id,
+      clientSecret: intent.clientSecret,
+      amountMinor,
+      currency,
+      status: record.status,
+      reused: false,
+    };
+  }
+
+  private amountForKind(booking: Booking, kind: PaymentRecordKindLike): number {
+    const map: Record<PaymentRecordKindLike, number | null> = {
+      SENA: booking.senaAmountSnapshot,
+      BALANCE: booking.balanceAmountSnapshot,
+      DEPOSIT_HOLD: booking.depositSnapshot,
+    };
+    const value = map[kind];
+    if (value == null) {
+      throw new BadRequestException(
+        "Booking is missing pricing snapshots; accept it first",
+      );
+    }
+    return Math.round(value * 100);
+  }
+
+  // ---- status -------------------------------------------------------------
+
+  async getStatus(userId: string, bookingId: string) {
+    const booking = await this.findBookingForParticipant(userId, bookingId);
+    const records = await this.prisma.paymentRecord.findMany({
+      where: { bookingId },
+      orderBy: { createdAt: "asc" },
+    });
+    return {
+      bookingId,
       paymentStatus: booking.paymentStatus,
-      provider: booking.paymentProvider,
-      providerPaymentId: booking.providerPaymentId,
+      currency: booking.currency,
+      total: booking.totalPriceSnapshot,
+      sena: booking.senaAmountSnapshot,
+      balance: booking.balanceAmountSnapshot,
+      deposit: booking.depositSnapshot,
+      commission: booking.platformFeeSnapshot,
+      insurance: booking.insuranceSnapshot,
+      ownerPayout: booking.ownerPayoutSnapshot,
+      ownerTransferId: booking.ownerTransferId,
       paidAt: booking.paidAt,
       refundedAt: booking.refundedAt,
       records,
     };
   }
 
-  confirmMockPayment(actorId: string | undefined, bookingId: string) {
-    return this.completeMockPayment(bookingId, {
-      status: PaymentRecordStatus.PAID,
-      paymentStatus: PaymentStatus.PAID,
-      auditAction: "payment.mock.confirmed",
-      actorId,
-      dateField: "paidAt",
-    });
-  }
+  // ---- webhook ------------------------------------------------------------
 
-  failMockPayment(actorId: string | undefined, bookingId: string) {
-    return this.completeMockPayment(bookingId, {
-      status: PaymentRecordStatus.FAILED,
-      paymentStatus: PaymentStatus.FAILED,
-      auditAction: "payment.mock.failed",
-      actorId,
-    });
-  }
-
-  refundMockPayment(actorId: string | undefined, bookingId: string) {
-    return this.completeMockPayment(bookingId, {
-      status: PaymentRecordStatus.REFUNDED,
-      paymentStatus: PaymentStatus.REFUNDED,
-      auditAction: "payment.mock.refunded",
-      actorId,
-      dateField: "refundedAt",
-    });
-  }
-
-  releaseMockPayment(actorId: string | undefined, bookingId: string) {
-    return this.appendMockPaymentEvent(bookingId, {
-      status: PaymentRecordStatus.PAID,
-      auditAction: "payment.mock.released",
-      actorId,
-      metadata: { released: true, releasedAt: new Date().toISOString() },
-    });
-  }
-
-  async handleMockWebhook(input: {
-    bookingId: string;
-    type: MockWebhookEventType;
-    providerId?: string;
-  }) {
-    if (input.type === MockWebhookEventType.CONFIRMED) {
-      return this.confirmMockPayment(undefined, input.bookingId);
+  async handleWebhook(rawBody: Buffer, signature: string | undefined) {
+    let event;
+    try {
+      event = this.provider.constructWebhookEvent(rawBody, signature);
+    } catch {
+      throw new BadRequestException("Invalid Stripe webhook signature");
     }
-    if (input.type === MockWebhookEventType.FAILED) {
-      return this.failMockPayment(undefined, input.bookingId);
+
+    const already = await this.prisma.stripeEvent.findUnique({
+      where: { eventId: event.id },
+    });
+    if (already?.processedAt) {
+      return { received: true, duplicate: true };
     }
-    return this.refundMockPayment(undefined, input.bookingId);
+    if (!already) {
+      await this.prisma.stripeEvent.create({
+        data: {
+          eventId: event.id,
+          type: event.type,
+          payload: event as unknown as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    await this.dispatchEvent(event.type, event.data.object);
+
+    await this.prisma.stripeEvent.update({
+      where: { eventId: event.id },
+      data: { processedAt: new Date() },
+    });
+
+    return { received: true, duplicate: false };
   }
 
-  private async completeMockPayment(
-    bookingId: string,
-    input: {
-      status: PaymentRecordStatus;
-      paymentStatus: PaymentStatus;
-      auditAction: string;
-      actorId?: string;
-      dateField?: "paidAt" | "refundedAt";
-    },
-  ) {
-    const booking = input.actorId
-      ? await this.findBookingForParticipant(input.actorId, bookingId)
-      : await this.findBooking(bookingId);
-    const record = await this.findLatestMockRecord(bookingId);
-    const now = new Date();
+  private async dispatchEvent(
+    type: string,
+    object: Record<string, unknown>,
+  ): Promise<void> {
+    const paymentIntentId = object.id as string | undefined;
+    if (!paymentIntentId) return;
 
-    const updatedRecord = await this.prisma.paymentRecord.update({
+    if (type === "payment_intent.succeeded") {
+      await this.onIntentSucceeded(
+        paymentIntentId,
+        object.latest_charge as string | undefined,
+      );
+    } else if (type === "payment_intent.amount_capturable_updated") {
+      await this.onHoldAuthorized(paymentIntentId);
+    } else if (type === "payment_intent.payment_failed") {
+      await this.onIntentFailed(paymentIntentId);
+    }
+  }
+
+  private async onIntentSucceeded(piId: string, chargeId?: string) {
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record?.bookingId) return;
+
+    await this.prisma.paymentRecord.update({
       where: { id: record.id },
       data: {
-        status: input.status,
-        ...(input.dateField ? { [input.dateField]: now } : {}),
-        metadata: {
-          ...(record.metadata as Record<string, unknown> | null),
-          mockStatus: input.status,
-        },
-      },
-    });
-
-    await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: {
-        paymentStatus: input.paymentStatus,
-        ...(input.dateField ? { [input.dateField]: now } : {}),
-      },
-    });
-
-    await this.auditLog.create({
-      actorId: input.actorId,
-      targetUserId: booking.ownerId,
-      action: input.auditAction,
-      entityType: "Booking",
-      entityId: bookingId,
-      metadata: { paymentRecordId: updatedRecord.id },
-    });
-
-    return updatedRecord;
-  }
-
-  private async appendMockPaymentEvent(
-    bookingId: string,
-    input: {
-      status: PaymentRecordStatus;
-      auditAction: string;
-      actorId?: string;
-      metadata: Record<string, unknown>;
-    },
-  ) {
-    const booking = input.actorId
-      ? await this.findBookingForParticipant(input.actorId, bookingId)
-      : await this.findBooking(bookingId);
-    const paidRecord = await this.findLatestMockRecord(bookingId);
-
-    if (paidRecord.status !== PaymentRecordStatus.PAID) {
-      throw new BadRequestException("Only paid bookings can be released");
-    }
-
-    const record = await this.prisma.paymentRecord.create({
-      data: {
-        bookingId,
-        userId: booking.renterId,
-        status: input.status,
-        provider: this.provider.name,
-        providerId: paidRecord.providerId,
-        amount: paidRecord.amount,
-        currency: paidRecord.currency,
-        metadata: input.metadata as Prisma.InputJsonValue,
+        status: PaymentRecordStatus.CAPTURED,
+        stripeChargeId: chargeId,
         paidAt: new Date(),
       },
     });
 
+    if (record.kind === PaymentRecordKind.SENA) {
+      await this.setBookingPaymentStatus(record.bookingId, {
+        from: [PaymentStatus.PENDING],
+        to: PaymentStatus.DEPOSIT_PAID,
+        paidAt: true,
+      });
+    } else if (record.kind === PaymentRecordKind.BALANCE) {
+      if (await this.isFullyCharged(record.bookingId)) {
+        await this.setBookingPaymentStatus(record.bookingId, {
+          to: PaymentStatus.FULLY_PAID,
+          paidAt: true,
+        });
+      }
+    }
+
     await this.auditLog.create({
-      actorId: input.actorId,
+      action: "payment.intent.succeeded",
+      entityType: "Booking",
+      entityId: record.bookingId,
+      metadata: { paymentIntentId: piId, kind: record.kind },
+    });
+  }
+
+  private async onHoldAuthorized(piId: string) {
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record) return;
+    await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: { status: PaymentRecordStatus.AUTHORIZED },
+    });
+  }
+
+  private async onIntentFailed(piId: string) {
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record?.bookingId) return;
+    await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: { status: PaymentRecordStatus.FAILED },
+    });
+    if (
+      record.kind === PaymentRecordKind.SENA ||
+      record.kind === PaymentRecordKind.BALANCE
+    ) {
+      await this.prisma.booking.update({
+        where: { id: record.bookingId },
+        data: { paymentStatus: PaymentStatus.FAILED },
+      });
+    }
+  }
+
+  private async isFullyCharged(bookingId: string): Promise<boolean> {
+    const charged = await this.prisma.paymentRecord.findMany({
+      where: {
+        bookingId,
+        kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
+        status: { in: PAID_RECORD_STATUSES },
+      },
+      select: { kind: true },
+    });
+    const kinds = new Set(charged.map((r) => r.kind));
+    return kinds.has(PaymentRecordKind.SENA) && kinds.has(PaymentRecordKind.BALANCE);
+  }
+
+  private async setBookingPaymentStatus(
+    bookingId: string,
+    opts: { from?: PaymentStatus[]; to: PaymentStatus; paidAt?: boolean },
+  ) {
+    if (opts.from) {
+      const booking = await this.prisma.booking.findUnique({
+        where: { id: bookingId },
+        select: { paymentStatus: true },
+      });
+      if (booking && !opts.from.includes(booking.paymentStatus)) {
+        // Already advanced past this state; don't regress.
+        if (booking.paymentStatus === PaymentStatus.FULLY_PAID) return;
+      }
+    }
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        paymentStatus: opts.to,
+        ...(opts.paidAt ? { paidAt: new Date() } : {}),
+      },
+    });
+  }
+
+  // ---- pickup gate --------------------------------------------------------
+
+  async assertReadyForPickup(bookingId: string): Promise<void> {
+    const booking = await this.findBooking(bookingId);
+    if (booking.paymentStatus !== PaymentStatus.FULLY_PAID) {
+      throw new BadRequestException(
+        "Full payment (seña + balance) is required before pickup",
+      );
+    }
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (!hold) {
+      throw new BadRequestException(
+        "The security deposit hold must be authorized before pickup",
+      );
+    }
+  }
+
+  // ---- settlement on return (release deposit + payout to owner) ------------
+
+  async settleOnReturn(actorId: string, bookingId: string) {
+    const booking = await this.findBookingWithUsers(bookingId);
+
+    // Release the (clean-return) deposit hold if still authorized.
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (hold?.stripePaymentIntentId) {
+      await this.provider.releaseHold({
+        paymentIntentId: hold.stripePaymentIntentId,
+        idempotencyKey: `booking_${bookingId}_deposit_release`,
+      });
+      await this.prisma.paymentRecord.update({
+        where: { id: hold.id },
+        data: { status: PaymentRecordStatus.RELEASED },
+      });
+    }
+
+    // Transfer the owner payout to their connected account.
+    const accountId = await this.ensureOwnerAccount(booking.owner);
+    const amountMinor = Math.round((booking.ownerPayoutSnapshot ?? 0) * 100);
+    if (amountMinor > 0) {
+      const transfer = await this.provider.transferToOwner({
+        amountMinor,
+        currency: booking.currency,
+        destination: accountId,
+        transferGroup: booking.transferGroup,
+        metadata: { bookingId },
+        idempotencyKey: `booking_${bookingId}_owner_transfer`,
+      });
+
+      await this.prisma.paymentRecord.create({
+        data: {
+          bookingId,
+          userId: booking.ownerId,
+          kind: PaymentRecordKind.OWNER_TRANSFER,
+          status: PaymentRecordStatus.PAID,
+          provider: this.provider.name,
+          providerId: transfer.id,
+          stripeTransferId: transfer.id,
+          amount: amountMinor / 100,
+          amountMinor,
+          currency: booking.currency,
+          paidAt: new Date(),
+        },
+      });
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: { ownerTransferId: transfer.id },
+      });
+    }
+
+    await this.auditLog.create({
+      actorId,
       targetUserId: booking.ownerId,
-      action: input.auditAction,
+      action: "payment.settled",
       entityType: "Booking",
       entityId: bookingId,
-      metadata: { paymentRecordId: record.id },
+      metadata: { ownerPayoutMinor: amountMinor },
+    });
+  }
+
+  // ---- refund on cancel ---------------------------------------------------
+
+  async refundOnCancel(actorId: string, bookingId: string) {
+    const booking = await this.findBooking(bookingId);
+    const charged = await this.prisma.paymentRecord.findMany({
+      where: {
+        bookingId,
+        kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
+        status: { in: PAID_RECORD_STATUSES },
+      },
     });
 
-    return record;
+    for (const record of charged) {
+      if (!record.stripePaymentIntentId) continue;
+      const refund = await this.provider.refund({
+        paymentIntentId: record.stripePaymentIntentId,
+        amountMinor: record.amountMinor ?? undefined,
+        idempotencyKey: `booking_${bookingId}_${record.kind}_refund`,
+      });
+      await this.prisma.paymentRecord.update({
+        where: { id: record.id },
+        data: { status: PaymentRecordStatus.REFUNDED, refundedAt: new Date() },
+      });
+      await this.prisma.paymentRecord.create({
+        data: {
+          bookingId,
+          userId: record.userId,
+          kind: PaymentRecordKind.REFUND,
+          status: PaymentRecordStatus.REFUNDED,
+          provider: this.provider.name,
+          providerId: refund.id,
+          stripeRefundId: refund.id,
+          amount: (record.amountMinor ?? 0) / 100,
+          amountMinor: record.amountMinor,
+          currency: record.currency,
+          refundedAt: new Date(),
+        },
+      });
+    }
+
+    // Release any authorized deposit hold.
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (hold?.stripePaymentIntentId) {
+      await this.provider.releaseHold({
+        paymentIntentId: hold.stripePaymentIntentId,
+        idempotencyKey: `booking_${bookingId}_deposit_release`,
+      });
+      await this.prisma.paymentRecord.update({
+        where: { id: hold.id },
+        data: { status: PaymentRecordStatus.RELEASED },
+      });
+    }
+
+    if (charged.length > 0) {
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: {
+          paymentStatus: PaymentStatus.REFUNDED,
+          refundedAt: new Date(),
+        },
+      });
+    }
+
+    await this.auditLog.create({
+      actorId,
+      targetUserId: booking.ownerId,
+      action: "payment.refunded",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: { refunded: charged.length },
+    });
+  }
+
+  // ---- connect onboarding (owner) -----------------------------------------
+
+  async createOwnerOnboarding(ownerId: string) {
+    const owner = await this.prisma.user.findUnique({ where: { id: ownerId } });
+    assertFound(owner, "User not found");
+
+    const frontend =
+      this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
+    const result = await this.provider.createConnectedAccount({
+      userId: owner.id,
+      email: owner.email,
+      refreshUrl: `${frontend}/connect/refresh`,
+      returnUrl: `${frontend}/connect/return`,
+    });
+
+    await this.prisma.user.update({
+      where: { id: owner.id },
+      data: {
+        stripeAccountId: result.accountId,
+        stripeAccountStatus: StripeAccountStatus.PENDING,
+      },
+    });
+
+    return { accountId: result.accountId, onboardingUrl: result.onboardingUrl };
+  }
+
+  // ---- helpers ------------------------------------------------------------
+
+  private async ensureRenterCustomer(renter: User): Promise<string> {
+    if (renter.stripeCustomerId) return renter.stripeCustomerId;
+    const customerId = await this.provider.ensureCustomer({
+      userId: renter.id,
+      email: renter.email,
+      name: renter.displayName ?? `${renter.firstName} ${renter.lastName}`,
+    });
+    await this.prisma.user.update({
+      where: { id: renter.id },
+      data: { stripeCustomerId: customerId },
+    });
+    return customerId;
+  }
+
+  private async ensureOwnerAccount(owner: User): Promise<string> {
+    if (owner.stripeAccountId) return owner.stripeAccountId;
+    const account = await this.provider.createConnectedAccount({
+      userId: owner.id,
+      email: owner.email,
+    });
+    await this.prisma.user.update({
+      where: { id: owner.id },
+      data: {
+        stripeAccountId: account.accountId,
+        stripeAccountStatus: StripeAccountStatus.ENABLED,
+      },
+    });
+    return account.accountId;
+  }
+
+  private async findBooking(bookingId: string) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+    });
+    assertFound(booking, "Booking not found");
+    return booking;
+  }
+
+  private async findBookingWithUsers(bookingId: string) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { owner: true, renter: true },
+    });
+    assertFound(booking, "Booking not found");
+    return booking;
   }
 
   private async findBookingForParticipant(userId: string, bookingId: string) {
@@ -280,32 +617,6 @@ export class PaymentsService {
       userId,
       "You cannot access this payment",
     );
-
     return booking;
-  }
-
-  private async findBooking(bookingId: string) {
-    const booking = await this.prisma.booking.findUnique({
-      where: { id: bookingId },
-    });
-    assertFound(booking, "Booking not found");
-
-    return booking;
-  }
-
-  private async findLatestMockRecord(bookingId: string) {
-    const record = await this.prisma.paymentRecord.findFirst({
-      where: {
-        bookingId,
-        provider: this.provider.name,
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (!record) {
-      throw new BadRequestException("Mock payment intent was not created");
-    }
-
-    return record;
   }
 }

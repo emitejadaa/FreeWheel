@@ -4,8 +4,10 @@ import { BookingStatus, ListingStatus, PaymentStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { ContractsService } from "../contracts/contracts.service";
 import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
+import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { BookingsService } from "./bookings.service";
 
@@ -13,6 +15,28 @@ jest.mock("bcryptjs", () => ({
   hash: jest.fn(),
   compare: jest.fn(),
 }));
+
+const PRICING = {
+  currency: "usd",
+  days: 2,
+  pricePerDay: 100,
+  rentalSubtotal: 200,
+  insurance: 20,
+  commission: 20,
+  total: 220,
+  sena: 66,
+  balance: 154,
+  deposit: 200,
+  ownerPayout: 180,
+  rentalSubtotalMinor: 20000,
+  insuranceMinor: 2000,
+  commissionMinor: 2000,
+  totalMinor: 22000,
+  senaMinor: 6600,
+  balanceMinor: 15400,
+  depositMinor: 20000,
+  ownerPayoutMinor: 18000,
+};
 
 describe("BookingsService", () => {
   let service: BookingsService;
@@ -31,10 +55,12 @@ describe("BookingsService", () => {
     calculateDays: jest.Mock;
   };
   let payments: {
-    createMockIntentForAcceptedBooking: jest.Mock;
-    refundMockPayment: jest.Mock;
-    releaseMockPayment: jest.Mock;
+    assertReadyForPickup: jest.Mock;
+    refundOnCancel: jest.Mock;
+    settleOnReturn: jest.Mock;
   };
+  let pricing: { computeBooking: jest.Mock };
+  let contracts: { createForBooking: jest.Mock };
 
   const listing = {
     id: "listing-1",
@@ -55,6 +81,7 @@ describe("BookingsService", () => {
     endDate: new Date("2099-01-03T00:00:00.000Z"),
     status: BookingStatus.REQUESTED,
     paymentStatus: PaymentStatus.PENDING,
+    pricePerDaySnapshot: 100,
     pickupTokenHash: "pickup-hash",
     returnTokenHash: "return-hash",
   };
@@ -75,10 +102,12 @@ describe("BookingsService", () => {
       calculateDays: jest.fn().mockReturnValue(2),
     };
     payments = {
-      createMockIntentForAcceptedBooking: jest.fn(),
-      refundMockPayment: jest.fn(),
-      releaseMockPayment: jest.fn(),
+      assertReadyForPickup: jest.fn().mockResolvedValue(undefined),
+      refundOnCancel: jest.fn(),
+      settleOnReturn: jest.fn(),
     };
+    pricing = { computeBooking: jest.fn().mockReturnValue(PRICING) };
+    contracts = { createForBooking: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -86,10 +115,9 @@ describe("BookingsService", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: AvailabilityService, useValue: availability },
         { provide: PaymentsService, useValue: payments },
-        {
-          provide: AuditLogService,
-          useValue: { create: jest.fn() },
-        },
+        { provide: PricingService, useValue: pricing },
+        { provide: ContractsService, useValue: contracts },
+        { provide: AuditLogService, useValue: { create: jest.fn() } },
         {
           provide: EmailService,
           useValue: {
@@ -159,7 +187,7 @@ describe("BookingsService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("accepts and generates QR tokens", async () => {
+  it("accepts, prices the booking, generates tokens and locks the contract", async () => {
     prisma.booking.findUnique.mockResolvedValue(booking);
     prisma.booking.update.mockResolvedValue({
       ...booking,
@@ -170,26 +198,40 @@ describe("BookingsService", () => {
 
     expect(result.pickupQrToken).toBeDefined();
     expect(result.returnQrToken).toBeDefined();
-    expect(payments.createMockIntentForAcceptedBooking).toHaveBeenCalled();
+    expect(pricing.computeBooking).toHaveBeenCalledWith({
+      pricePerDay: 100,
+      days: 2,
+    });
+    expect(prisma.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          senaAmountSnapshot: PRICING.sena,
+          balanceAmountSnapshot: PRICING.balance,
+          depositSnapshot: PRICING.deposit,
+          ownerPayoutSnapshot: PRICING.ownerPayout,
+          transferGroup: `booking_${booking.id}`,
+        }),
+      }),
+    );
+    expect(contracts.createForBooking).toHaveBeenCalledWith(booking.id);
   });
 
-  it("rejects ready for pickup without paid payment", async () => {
+  it("rejects ready for pickup when payment is not settled", async () => {
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
       status: BookingStatus.ACCEPTED,
-      paymentStatus: PaymentStatus.PENDING,
     });
+    payments.assertReadyForPickup.mockRejectedValue(new BadRequestException());
 
     await expect(
       service.readyForPickup("owner-1", booking.id),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("marks ready for pickup after paid payment", async () => {
+  it("marks ready for pickup once payment is settled", async () => {
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
       status: BookingStatus.ACCEPTED,
-      paymentStatus: PaymentStatus.PAID,
     });
     prisma.booking.update.mockResolvedValue({
       ...booking,
@@ -198,6 +240,7 @@ describe("BookingsService", () => {
 
     const result = await service.readyForPickup("owner-1", booking.id);
 
+    expect(payments.assertReadyForPickup).toHaveBeenCalledWith(booking.id);
     expect(result.status).toBe(BookingStatus.READY_FOR_PICKUP);
   });
 
@@ -240,7 +283,7 @@ describe("BookingsService", () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it("confirms return and releases mock payment", async () => {
+  it("confirms return and settles the payment", async () => {
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
       status: BookingStatus.IN_PROGRESS,
@@ -254,9 +297,6 @@ describe("BookingsService", () => {
     const result = await service.confirmReturn("renter-1", booking.id, "token");
 
     expect(result.status).toBe(BookingStatus.COMPLETED);
-    expect(payments.releaseMockPayment).toHaveBeenCalledWith(
-      "renter-1",
-      booking.id,
-    );
+    expect(payments.settleOnReturn).toHaveBeenCalledWith("renter-1", booking.id);
   });
 });

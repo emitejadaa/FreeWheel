@@ -13,8 +13,10 @@ import {
 import * as bcrypt from "bcryptjs";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { ContractsService } from "../contracts/contracts.service";
 import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
+import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
 import {
@@ -35,6 +37,8 @@ export class BookingsService {
     private readonly auditLog: AuditLogService,
     private readonly availability: AvailabilityService,
     private readonly payments: PaymentsService,
+    private readonly pricing: PricingService,
+    private readonly contracts: ContractsService,
     private readonly email: EmailService,
   ) {}
 
@@ -138,6 +142,15 @@ export class BookingsService {
       id,
     );
 
+    const days = this.availability.calculateDays(
+      booking.startDate,
+      booking.endDate,
+    );
+    const pricing = this.pricing.computeBooking({
+      pricePerDay: booking.pricePerDaySnapshot,
+      days,
+    });
+
     const pickupToken = generateOpaqueToken(24);
     const returnToken = generateOpaqueToken(24);
     const updated = await this.prisma.booking.update({
@@ -149,11 +162,22 @@ export class BookingsService {
         returnTokenHash: await bcrypt.hash(returnToken, 10),
         pickupTokenPreview: pickupToken,
         returnTokenPreview: returnToken,
+        currency: pricing.currency,
+        totalPriceSnapshot: pricing.total,
+        rentalSubtotalSnapshot: pricing.rentalSubtotal,
+        insuranceSnapshot: pricing.insurance,
+        platformFeeSnapshot: pricing.commission,
+        senaAmountSnapshot: pricing.sena,
+        balanceAmountSnapshot: pricing.balance,
+        depositSnapshot: pricing.deposit,
+        ownerPayoutSnapshot: pricing.ownerPayout,
+        transferGroup: `booking_${id}`,
       },
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
-    await this.payments.createMockIntentForAcceptedBooking(updated, ownerId);
+    // Lock the digital contract (PDF rendered on demand from these snapshots).
+    await this.contracts.createForBooking(id);
 
     await this.auditLog.create({
       actorId: ownerId,
@@ -254,8 +278,13 @@ export class BookingsService {
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
-    if (booking.paymentStatus === PaymentStatus.PAID) {
-      await this.payments.refundMockPayment(userId, id);
+    const refundable: PaymentStatus[] = [
+      PaymentStatus.DEPOSIT_PAID,
+      PaymentStatus.FULLY_PAID,
+      PaymentStatus.PARTIALLY_REFUNDED,
+    ];
+    if (refundable.includes(booking.paymentStatus)) {
+      await this.payments.refundOnCancel(userId, id);
     }
 
     await this.auditLog.create({
@@ -283,9 +312,8 @@ export class BookingsService {
       );
     }
 
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException("Payment must be confirmed before pickup");
-    }
+    // Requires seña + balance fully paid and the deposit hold authorized.
+    await this.payments.assertReadyForPickup(id);
 
     const updated = await this.prisma.booking.update({
       where: { id },
@@ -422,7 +450,8 @@ export class BookingsService {
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
-    await this.payments.releaseMockPayment(renterId, id);
+    // Release the deposit hold (clean return) and transfer the owner payout.
+    await this.payments.settleOnReturn(renterId, id);
 
     await this.auditLog.create({
       actorId: renterId,

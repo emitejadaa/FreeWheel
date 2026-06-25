@@ -14,6 +14,7 @@ import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
 import { BookingsModule } from "./bookings/bookings.module";
 import { PaymentsModule } from "./payments/payments.module";
+import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
 import { ConversationsModule } from "./conversations/conversations.module";
 
@@ -32,6 +33,7 @@ import { ConversationsModule } from "./conversations/conversations.module";
     AdminModule,
     BookingsModule,
     PaymentsModule,
+    ContractsModule,
     MediaModule,
     ConversationsModule,
     AiModule,

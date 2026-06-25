@@ -68,6 +68,14 @@ export function createServer(): Express {
       }),
     );
 
+    // El webhook de Stripe necesita el body crudo (Buffer) para verificar la
+    // firma. Se registra ANTES del JSON parser global y solo para esa ruta, así
+    // el resto de la API sigue recibiendo JSON parseado.
+    cachedServer.use(
+      "/payments/stripe/webhook",
+      express.raw({ type: "*/*", limit: "1mb" }),
+    );
+
     // Límite de body amplio para el proxy de visión (imagen en base64).
     cachedServer.use(express.json({ limit: "8mb" }));
     cachedServer.use(express.urlencoded({ extended: true, limit: "8mb" }));
