@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -85,6 +85,9 @@ enum PaymentStatus {
   PAID
   REFUNDED
   FAILED
+  DEPOSIT_PAID
+  FULLY_PAID
+  PARTIALLY_REFUNDED
 }
 
 enum PaymentRecordStatus {
@@ -93,6 +96,34 @@ enum PaymentRecordStatus {
   PAID
   REFUNDED
   FAILED
+  CANCELLED
+  REQUIRES_ACTION
+  AUTHORIZED
+  CAPTURED
+  RELEASED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentRecordKind {
+  SENA
+  BALANCE
+  DEPOSIT_HOLD
+  DEPOSIT_CAPTURE
+  OWNER_TRANSFER
+  REFUND
+  MOCK
+}
+
+enum StripeAccountStatus {
+  NONE
+  PENDING
+  ENABLED
+  RESTRICTED
+}
+
+enum ContractStatus {
+  PENDING_ACCEPTANCE
+  ACCEPTED
   CANCELLED
 }
 
@@ -116,38 +147,41 @@ enum MessageType {
 }
 
 model User {
-  id                 String             @id @default(uuid())
-  email              String             @unique
-  password           String
-  firstName          String
-  lastName           String
-  displayName        String?
-  phone              String?
-  profilePhotoUrl    String?
-  role               UserRole           @default(USER)
-  status             UserStatus         @default(ACTIVE)
-  verificationStatus VerificationStatus @default(UNVERIFIED)
-  emailVerifiedAt    DateTime?
-  acceptedTermsAt    DateTime?
-  googleId           String?            @unique
-  phoneVerifiedAt    DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  id                  String              @id @default(uuid())
+  email               String              @unique
+  password            String
+  firstName           String
+  lastName            String
+  displayName         String?
+  phone               String?
+  profilePhotoUrl     String?
+  role                UserRole            @default(USER)
+  status              UserStatus          @default(ACTIVE)
+  verificationStatus  VerificationStatus  @default(UNVERIFIED)
+  emailVerifiedAt     DateTime?
+  acceptedTermsAt     DateTime?
+  googleId            String?             @unique
+  phoneVerifiedAt     DateTime?
+  stripeCustomerId    String?             @unique
+  stripeAccountId     String?             @unique
+  stripeAccountStatus StripeAccountStatus @default(NONE)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
 
   vehicles                  Vehicle[]
   listings                  Listing[]
   listingAvailabilityBlocks ListingAvailabilityBlock[]
   verifications             UserVerification[]
   verificationCodes         VerificationCode[]
-  bookingsAsOwner           Booking[]                   @relation("BookingOwner")
-  bookingsAsRenter          Booking[]                   @relation("BookingRenter")
+  bookingsAsOwner           Booking[]                  @relation("BookingOwner")
+  bookingsAsRenter          Booking[]                  @relation("BookingRenter")
   paymentRecords            PaymentRecord[]
   mediaAssets               MediaAsset[]
-  auditLogsAsActor          AuditLog[]                  @relation("AuditActor")
-  auditLogsAsTarget         AuditLog[]                  @relation("AuditTargetUser")
-  conversationsAsRenter     Conversation[]              @relation("RenterConversations")
-  conversationsAsOwner      Conversation[]              @relation("OwnerConversations")
-  sentMessages              Message[]                   @relation("SentMessages")
+  auditLogsAsActor          AuditLog[]                 @relation("AuditActor")
+  auditLogsAsTarget         AuditLog[]                 @relation("AuditTargetUser")
+  conversationsAsRenter     Conversation[]             @relation("RenterConversations")
+  conversationsAsOwner      Conversation[]             @relation("OwnerConversations")
+  sentMessages              Message[]                  @relation("SentMessages")
 
   @@index([email])
   @@index([status])
@@ -270,40 +304,50 @@ model ListingAvailabilityBlock {
 }
 
 model Booking {
-  id                  String        @id @default(uuid())
-  listingId           String
-  vehicleId           String
-  ownerId             String
-  renterId            String
-  listing             Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
-  vehicle             Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  owner               User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  renter              User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
-  startDate           DateTime
-  endDate             DateTime
-  status              BookingStatus @default(REQUESTED)
-  pricePerDaySnapshot Float
-  totalPriceSnapshot  Float
-  currency            String        @default("ARS")
-  pickupTokenHash     String?
-  returnTokenHash     String?
-  pickupTokenPreview  String?
-  returnTokenPreview  String?
-  pickupConfirmedAt   DateTime?
-  returnConfirmedAt   DateTime?
-  cancelledAt         DateTime?
-  cancellationReason  String?
-  paymentStatus       PaymentStatus @default(NOT_REQUIRED)
-  paymentProvider     String?
-  providerPaymentId   String?
-  platformFeeSnapshot Float?
-  depositSnapshot     Float?
-  paidAt              DateTime?
-  refundedAt          DateTime?
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
+  id                     String        @id @default(uuid())
+  listingId              String
+  vehicleId              String
+  ownerId                String
+  renterId               String
+  listing                Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  vehicle                Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner                  User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  renter                 User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
+  startDate              DateTime
+  endDate                DateTime
+  status                 BookingStatus @default(REQUESTED)
+  pricePerDaySnapshot    Float
+  totalPriceSnapshot     Float
+  currency               String        @default("ARS")
+  pickupTokenHash        String?
+  returnTokenHash        String?
+  pickupTokenPreview     String?
+  returnTokenPreview     String?
+  pickupConfirmedAt      DateTime?
+  returnConfirmedAt      DateTime?
+  cancelledAt            DateTime?
+  cancellationReason     String?
+  paymentStatus          PaymentStatus @default(NOT_REQUIRED)
+  paymentProvider        String?
+  providerPaymentId      String?
+  platformFeeSnapshot    Float?
+  depositSnapshot        Float?
+  rentalSubtotalSnapshot Float?
+  insuranceSnapshot      Float?
+  senaAmountSnapshot     Float?
+  balanceAmountSnapshot  Float?
+  ownerPayoutSnapshot    Float?
+  transferGroup          String?
+  ownerTransferId        String?
+  depositPaymentIntentId String?
+  depositCapturedAmount  Float?
+  paidAt                 DateTime?
+  refundedAt             DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
 
   paymentRecords PaymentRecord[]
+  contract       Contract?
 
   @@index([listingId])
   @@index([vehicleId])
@@ -314,25 +358,33 @@ model Booking {
 }
 
 model PaymentRecord {
-  id         String              @id @default(uuid())
-  bookingId  String?
-  userId     String?
-  booking    Booking?            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  user       User?               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status     PaymentRecordStatus @default(MOCK)
-  provider   String?
-  providerId String?
-  amount     Float?
-  currency   String              @default("ARS")
-  metadata   Json?
-  paidAt     DateTime?
-  refundedAt DateTime?
-  createdAt  DateTime            @default(now())
-  updatedAt  DateTime            @updatedAt
+  id                    String              @id @default(uuid())
+  bookingId             String?
+  userId                String?
+  booking               Booking?            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  user                  User?               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status                PaymentRecordStatus @default(MOCK)
+  kind                  PaymentRecordKind?
+  provider              String?
+  providerId            String?
+  stripePaymentIntentId String?             @unique
+  stripeChargeId        String?
+  stripeTransferId      String?
+  stripeRefundId        String?
+  amount                Float?
+  amountMinor           Int?
+  applicationFeeMinor   Int?
+  currency              String              @default("ARS")
+  metadata              Json?
+  paidAt                DateTime?
+  refundedAt            DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
   @@index([bookingId])
   @@index([userId])
   @@index([status])
+  @@index([kind])
 }
 
 model MediaAsset {
@@ -408,4 +460,31 @@ model Message {
 
   @@index([conversationId])
   @@index([senderId])
+}
+
+model StripeEvent {
+  id          String    @id @default(uuid())
+  eventId     String    @unique
+  type        String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([type])
+}
+
+model Contract {
+  id               String         @id @default(uuid())
+  bookingId        String         @unique
+  booking          Booking        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  status           ContractStatus @default(PENDING_ACCEPTANCE)
+  terms            Json
+  pdfStorageKey    String?
+  pdfUrl           String?
+  renterAcceptedAt DateTime?
+  ownerAcceptedAt  DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([status])
 }
