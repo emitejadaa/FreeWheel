@@ -31,4 +31,18 @@ export class FakeEmailService {
   lastResetToken(email: string): string | undefined {
     return this.resetTokens.get(email);
   }
+
+  // Booking notifications — no-ops in tests (assertions don't need them, but
+  // the methods must exist so BookingsService.safeNotify stays quiet).
+  sendBookingRequestedToOwner(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  sendBookingAcceptedToRenter(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  sendBookingRejectedToRenter(): Promise<void> {
+    return Promise.resolve();
+  }
 }

@@ -10,6 +10,7 @@ import {
   futureDate,
   registerUser,
 } from "./helpers/factory";
+import { payBookingFully } from "./helpers/payments";
 
 describe("Bookings", () => {
   let app: INestApplication;
@@ -69,10 +70,7 @@ describe("Bookings", () => {
     expect(pickupToken).toEqual(expect.any(String));
     expect(returnToken).toEqual(expect.any(String));
 
-    await http()
-      .post(`/payments/bookings/${id}/mock-confirm`)
-      .set("Authorization", auth(renter.token))
-      .expect(201);
+    await payBookingFully(app, id, renter.token);
 
     const ready = await http()
       .patch(`/bookings/${id}/ready-for-pickup`)
@@ -195,10 +193,7 @@ describe("Bookings", () => {
       .patch(`/bookings/${id}/accept`)
       .set("Authorization", auth(owner.token))
       .expect(200);
-    await http()
-      .post(`/payments/bookings/${id}/mock-confirm`)
-      .set("Authorization", auth(renter.token))
-      .expect(201);
+    await payBookingFully(app, id, renter.token);
     await http()
       .patch(`/bookings/${id}/ready-for-pickup`)
       .set("Authorization", auth(owner.token))
@@ -236,10 +231,7 @@ describe("Bookings", () => {
       .patch(`/bookings/${id}/accept`)
       .set("Authorization", auth(owner.token))
       .expect(200);
-    await http()
-      .post(`/payments/bookings/${id}/mock-confirm`)
-      .set("Authorization", auth(renter.token))
-      .expect(201);
+    await payBookingFully(app, id, renter.token);
     const cancelled = await http()
       .patch(`/bookings/${id}/cancel`)
       .set("Authorization", auth(renter.token))
