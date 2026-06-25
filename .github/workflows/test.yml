@@ -26,9 +26,22 @@ jobs:
     env:
       # Disposable CI database — the suite truncates every table.
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/freewheel_test
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/freewheel_test
       JWT_SECRET: ci-test-secret
       NODE_ENV: test
       ALLOW_DB_RESET: "true"
+      # Stripe runs in test mode; e2e uses the offline mock provider. The dummy
+      # signing secret must match what the test helper signs webhooks with.
+      PAYMENTS_PROVIDER: mock
+      STRIPE_SECRET_KEY: sk_test_ci
+      STRIPE_PUBLISHABLE_KEY: pk_test_ci
+      STRIPE_WEBHOOK_SECRET: whsec_ci
+      DEFAULT_CURRENCY: usd
+      PLATFORM_FEE_PCT: "0.10"
+      INSURANCE_PCT: "0.10"
+      SENA_PCT: "0.30"
+      DEPOSIT_DEFAULT_USD: "200"
+      STRIPE_CONNECT_ENABLED: "true"
 
     steps:
       - uses: actions/checkout@v4

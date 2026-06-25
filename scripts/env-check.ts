@@ -20,6 +20,17 @@ const documentedOptionalVariables = [
   "GOOGLE_CLIENT_SECRET",
   "GMAIL_USER",
   "GMAIL_APP_PASSWORD",
+  "PAYMENTS_PROVIDER",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_PUBLISHABLE_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "STRIPE_API_VERSION",
+  "STRIPE_CONNECT_ENABLED",
+  "PLATFORM_FEE_PCT",
+  "INSURANCE_PCT",
+  "SENA_PCT",
+  "DEPOSIT_DEFAULT_USD",
+  "DEFAULT_CURRENCY",
 ];
 
 const examplePath = join(process.cwd(), ".env.example");
@@ -54,7 +65,16 @@ function main() {
     );
   }
 
-  if (missingRequired.length > 0 || missingFromExample.length > 0) {
+  const stripeKey = process.env.STRIPE_SECRET_KEY ?? "";
+  const isLiveKey = /^(sk|rk)_live_/.test(stripeKey);
+  if (isLiveKey) {
+    console.error(
+      "Refusing live Stripe key: STRIPE_SECRET_KEY must be a TEST key " +
+        "(sk_test_/rk_test_). This build is test-mode only.",
+    );
+  }
+
+  if (missingRequired.length > 0 || missingFromExample.length > 0 || isLiveKey) {
     process.exitCode = 1;
     return;
   }
