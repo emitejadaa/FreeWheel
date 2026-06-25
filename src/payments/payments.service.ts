@@ -48,7 +48,9 @@ export class PaymentsService {
   async createBalanceIntent(renterId: string, bookingId: string) {
     const booking = await this.findBooking(bookingId);
     if (booking.paymentStatus === PaymentStatus.PENDING) {
-      throw new BadRequestException("Pay the deposit (seña) before the balance");
+      throw new BadRequestException(
+        "Pay the deposit (seña) before the balance",
+      );
     }
     return this.createChargeIntent(renterId, bookingId, "BALANCE");
   }
@@ -338,7 +340,9 @@ export class PaymentsService {
       select: { kind: true },
     });
     const kinds = new Set(charged.map((r) => r.kind));
-    return kinds.has(PaymentRecordKind.SENA) && kinds.has(PaymentRecordKind.BALANCE);
+    return (
+      kinds.has(PaymentRecordKind.SENA) && kinds.has(PaymentRecordKind.BALANCE)
+    );
   }
 
   private async setBookingPaymentStatus(

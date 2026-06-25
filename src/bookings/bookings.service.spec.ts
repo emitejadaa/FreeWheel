@@ -297,6 +297,9 @@ describe("BookingsService", () => {
     const result = await service.confirmReturn("renter-1", booking.id, "token");
 
     expect(result.status).toBe(BookingStatus.COMPLETED);
-    expect(payments.settleOnReturn).toHaveBeenCalledWith("renter-1", booking.id);
+    expect(payments.settleOnReturn).toHaveBeenCalledWith(
+      "renter-1",
+      booking.id,
+    );
   });
 });

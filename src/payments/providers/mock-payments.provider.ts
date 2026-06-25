@@ -103,7 +103,9 @@ export class MockPaymentsProvider implements PaymentProvider {
   }
 
   ensureCustomer(input: EnsureCustomerInput): Promise<string> {
-    return Promise.resolve(`cus_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`);
+    return Promise.resolve(
+      `cus_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`,
+    );
   }
 
   createConnectedAccount(

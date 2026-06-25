@@ -2,6 +2,15 @@ import "dotenv/config";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import Stripe from "stripe";
+
+// Used only to SIGN test webhooks (pure crypto, no network). The target server
+// must share STRIPE_WEBHOOK_SECRET (e.g. local dev with PAYMENTS_PROVIDER=mock).
+const STRIPE_WEBHOOK_SECRET =
+  process.env.STRIPE_WEBHOOK_SECRET ?? "whsec_dummy_for_tests";
+const stripeForSigning = new Stripe(
+  process.env.STRIPE_SECRET_KEY ?? "sk_test_dummy",
+);
 
 type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE" | "OPTIONS";
 type ResultStatus = "PASS" | "FAIL" | "SKIP";
@@ -663,7 +672,10 @@ async function runBookingFlow(
     "POST /auth/register",
     "POST /bookings",
     "PATCH /bookings/:id/accept",
-    "POST /payments/bookings/:bookingId/mock-confirm",
+    "POST /payments/bookings/:bookingId/sena-intent",
+    "POST /payments/bookings/:bookingId/balance-intent",
+    "POST /payments/bookings/:bookingId/deposit-hold",
+    "POST /payments/stripe/webhook",
     "PATCH /bookings/:id/ready-for-pickup",
     "GET /bookings/:id/tokens",
     "POST /bookings/:id/confirm-pickup",
@@ -748,18 +760,54 @@ async function runBookingFlow(
 
   await record(
     results,
-    "Confirm mock payment",
+    "Drive Stripe payment (seña + saldo + depósito)",
     "POST",
-    "/payments/bookings/:bookingId/mock-confirm",
+    "/payments/bookings/:bookingId/sena-intent",
     async () => {
-      const response = await request(
-        baseUrl,
-        "POST",
-        `/payments/bookings/${bookingId}/mock-confirm`,
-        undefined,
-        { headers: renterHeaders },
+      const pay = async (
+        kind: string,
+        path: string,
+        eventType: string,
+      ): Promise<void> => {
+        const intent = await request(
+          baseUrl,
+          "POST",
+          `/payments/bookings/${bookingId}/${path}`,
+          undefined,
+          { headers: renterHeaders },
+        );
+        expectStatus(intent, [200, 201]);
+        const piId = (intent.body as { paymentIntentId?: string })
+          .paymentIntentId;
+        if (!piId) {
+          throw new Error(`No paymentIntentId returned for ${kind}`);
+        }
+        const event = {
+          id: `evt_func_${Date.now()}_${kind}`,
+          type: eventType,
+          data: { object: { id: piId, latest_charge: `ch_${kind}` } },
+        };
+        const signature = stripeForSigning.webhooks.generateTestHeaderString({
+          payload: JSON.stringify(event),
+          secret: STRIPE_WEBHOOK_SECRET,
+        });
+        const hook = await request(
+          baseUrl,
+          "POST",
+          "/payments/stripe/webhook",
+          event,
+          { headers: { "Stripe-Signature": signature } },
+        );
+        expectStatus(hook, [200, 201]);
+      };
+
+      await pay("sena", "sena-intent", "payment_intent.succeeded");
+      await pay("balance", "balance-intent", "payment_intent.succeeded");
+      await pay(
+        "deposit",
+        "deposit-hold",
+        "payment_intent.amount_capturable_updated",
       );
-      expectStatus(response, [200, 201]);
     },
   );
 

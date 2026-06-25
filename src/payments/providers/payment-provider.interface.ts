@@ -11,10 +11,7 @@
 
 export const PAYMENT_PROVIDER = Symbol("PAYMENT_PROVIDER");
 
-export type PaymentRecordKindLike =
-  | "SENA"
-  | "BALANCE"
-  | "DEPOSIT_HOLD";
+export type PaymentRecordKindLike = "SENA" | "BALANCE" | "DEPOSIT_HOLD";
 
 export interface CreateIntentInput {
   bookingId: string;
@@ -130,9 +127,7 @@ export interface PaymentProvider {
     input: CreateConnectedAccountInput,
   ): Promise<ConnectedAccountResult>;
 
-  getConnectedAccountStatus(
-    accountId: string,
-  ): Promise<ConnectedAccountStatus>;
+  getConnectedAccountStatus(accountId: string): Promise<ConnectedAccountStatus>;
 
   /** Verifies the signature and returns the parsed event. Throws if invalid. */
   constructWebhookEvent(

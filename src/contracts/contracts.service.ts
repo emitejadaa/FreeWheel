@@ -129,7 +129,9 @@ export class ContractsService {
     const doc = new PDFDocument({ size: "A4", margin: 50 });
     const buffer = this.toBuffer(doc);
 
-    doc.fontSize(20).text("FreeWheel — Contrato de alquiler", { align: "center" });
+    doc
+      .fontSize(20)
+      .text("FreeWheel — Contrato de alquiler", { align: "center" });
     doc.moveDown();
     doc.fontSize(10).fillColor("#555").text(`Contrato ${contract.id}`, {
       align: "center",
@@ -140,7 +142,9 @@ export class ContractsService {
     this.section(doc, "Partes");
     doc.fontSize(11);
     doc.text(`Propietario (owner): ${terms.owner.name} <${terms.owner.email}>`);
-    doc.text(`Arrendatario (renter): ${terms.renter.name} <${terms.renter.email}>`);
+    doc.text(
+      `Arrendatario (renter): ${terms.renter.name} <${terms.renter.email}>`,
+    );
     doc.moveDown();
 
     this.section(doc, "Vehículo y fechas");
