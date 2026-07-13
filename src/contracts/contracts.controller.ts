@@ -1,12 +1,14 @@
 import { Controller, Get, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
+import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { ContractsService } from "./contracts.service";
 
 @Controller("contracts")
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, VerifiedAccountGuard)
 export class ContractsController {
   constructor(private readonly contracts: ContractsService) {}
 
@@ -19,6 +21,7 @@ export class ContractsController {
   }
 
   @Post("bookings/:bookingId/accept")
+  @RequireVerifiedAccount()
   accept(
     @CurrentUser() user: CurrentUserPayload,
     @Param("bookingId") bookingId: string,

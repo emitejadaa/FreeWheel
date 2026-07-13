@@ -8,6 +8,8 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
+import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { BookingsService } from "./bookings.service";
@@ -15,12 +17,16 @@ import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { ConfirmTokenDto } from "./dto/confirm-token.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
+// Booking mutations are sensitive: only fully verified accounts (phone + DNI +
+// license) may move money or vehicles. Read-only routes stay open to any
+// authenticated user.
 @Controller("bookings")
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, VerifiedAccountGuard)
 export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) {}
 
   @Post()
+  @RequireVerifiedAccount()
   create(
     @CurrentUser() user: CurrentUserPayload,
     @Body() createBookingDto: CreateBookingDto,
@@ -39,16 +45,19 @@ export class BookingsController {
   }
 
   @Patch(":id/accept")
+  @RequireVerifiedAccount()
   accept(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.bookingsService.accept(user.id, id);
   }
 
   @Patch(":id/reject")
+  @RequireVerifiedAccount()
   reject(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.bookingsService.reject(user.id, id);
   }
 
   @Patch(":id/cancel")
+  @RequireVerifiedAccount()
   cancel(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -58,6 +67,7 @@ export class BookingsController {
   }
 
   @Patch(":id/ready-for-pickup")
+  @RequireVerifiedAccount()
   readyForPickup(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -71,6 +81,7 @@ export class BookingsController {
   }
 
   @Post(":id/confirm-pickup")
+  @RequireVerifiedAccount()
   confirmPickup(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -84,6 +95,7 @@ export class BookingsController {
   }
 
   @Post(":id/confirm-return")
+  @RequireVerifiedAccount()
   confirmReturn(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,

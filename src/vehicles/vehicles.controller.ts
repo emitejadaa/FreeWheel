@@ -11,16 +11,21 @@ import {
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
+import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { CreateVehicleDto } from "./dto/create-vehicle.dto";
 import { UpdateVehicleDto } from "./dto/update-vehicle.dto";
 import { VehiclesService } from "./vehicles.service";
 
+// Registering/altering a vehicle is the first step towards renting it out, so
+// vehicle mutations require a fully verified account. Reads stay open.
 @Controller("vehicles")
 export class VehiclesController {
   constructor(private readonly vehiclesService: VehiclesService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   create(
     @CurrentUser() user: CurrentUserPayload,
     @Body() createVehicleDto: CreateVehicleDto,
@@ -40,7 +45,8 @@ export class VehiclesController {
   }
 
   @Patch(":id")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   update(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -50,7 +56,8 @@ export class VehiclesController {
   }
 
   @Delete(":id")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   remove(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.vehiclesService.remove(user.id, id);
   }

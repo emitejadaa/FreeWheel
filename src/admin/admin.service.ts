@@ -110,17 +110,11 @@ export class AdminService {
       include: { user: { select: USER_SAFE_SELECT } },
     });
 
+    // The admin verdict is an explicit override: VERIFIED applies
+    // unconditionally, regardless of the derived checklist state.
     await this.prisma.user.update({
       where: { id: verification.userId },
-      data: {
-        verificationStatus:
-          status === VerificationStatus.VERIFIED
-            ? this.resolveApprovedUserStatus(
-                verification.user.emailVerifiedAt,
-                verification.user.phoneVerifiedAt,
-              )
-            : VerificationStatus.REJECTED,
-      },
+      data: { verificationStatus: status },
     });
 
     await this.auditLog.create({
@@ -335,21 +329,5 @@ export class AdminService {
     });
 
     return { deleted: true };
-  }
-
-  private resolveApprovedUserStatus(
-    emailVerifiedAt: Date | null,
-    phoneVerifiedAt: Date | null,
-  ) {
-    if (emailVerifiedAt && phoneVerifiedAt) {
-      return VerificationStatus.VERIFIED;
-    }
-    if (emailVerifiedAt) {
-      return VerificationStatus.EMAIL_VERIFIED;
-    }
-    if (phoneVerifiedAt) {
-      return VerificationStatus.PHONE_VERIFIED;
-    }
-    return VerificationStatus.ID_SUBMITTED;
   }
 }

@@ -12,8 +12,11 @@ import { ConfigService } from "@nestjs/config";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
+import { OnboardingAuthGuard } from "./guards/onboarding-auth.guard";
 import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
+import { RegisterStartDto } from "./dto/register-start.dto";
+import { RegisterCompleteDto } from "./dto/register-complete.dto";
+import { CompleteProfileDto } from "./dto/complete-profile.dto";
 import { VerifyEmailDto } from "./dto/verify-email.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
@@ -29,9 +32,16 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
-  @Post("register")
-  register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  /** Step 1: email only — sends the verification code. No account yet. */
+  @Post("register/start")
+  registerStart(@Body() dto: RegisterStartDto) {
+    return this.authService.registerStart(dto);
+  }
+
+  /** Step 2: code + full payload — creates the (email-verified) account. */
+  @Post("register/complete")
+  registerComplete(@Body() dto: RegisterCompleteDto) {
+    return this.authService.registerComplete(dto);
   }
 
   @Post("login")
@@ -39,7 +49,7 @@ export class AuthController {
     return this.authService.login(dto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(OnboardingAuthGuard)
   @Post("verify-email")
   verifyEmail(
     @CurrentUser() user: CurrentUserPayload,
@@ -48,10 +58,20 @@ export class AuthController {
     return this.authService.verifyEmail(user.id, dto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(OnboardingAuthGuard)
   @Post("resend-verification")
   resendVerification(@CurrentUser() user: CurrentUserPayload) {
     return this.authService.sendVerificationEmail(user.id, user.email);
+  }
+
+  /** Mandatory profile data (date of birth, 18+) for Google/legacy accounts. */
+  @UseGuards(OnboardingAuthGuard)
+  @Post("complete-profile")
+  completeProfile(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() dto: CompleteProfileDto,
+  ) {
+    return this.authService.completeProfile(user.id, dto);
   }
 
   @Post("forgot-password")
@@ -77,6 +97,14 @@ export class AuthController {
       req.user as GoogleProfilePayload,
     );
     const frontendUrl = getFrontendUrl(this.configService);
+    // Accounts without a date of birth only get an onboarding token; the
+    // frontend must show the complete-profile form before anything else.
+    if ("onboardingToken" in result) {
+      res.redirect(
+        `${frontendUrl}/auth/google/callback?token=${result.onboardingToken}&pending=complete_profile`,
+      );
+      return;
+    }
     res.redirect(
       `${frontendUrl}/auth/google/callback?token=${result.accessToken}`,
     );

@@ -12,6 +12,8 @@ import {
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
+import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { AvailabilityService } from "../availability/availability.service";
 import { AvailabilityQueryDto } from "../availability/dto/availability-query.dto";
 import { CreateAvailabilityBlockDto } from "../availability/dto/create-availability-block.dto";
@@ -27,8 +29,12 @@ export class ListingsController {
     private readonly availabilityService: AvailabilityService,
   ) {}
 
+  // Publishing (and managing) listings moves vehicles and money, so every
+  // listing mutation requires a fully verified account. Public browsing and
+  // the owner's read-only routes stay open.
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   create(
     @CurrentUser() user: CurrentUserPayload,
     @Body() createListingDto: CreateListingDto,
@@ -65,7 +71,8 @@ export class ListingsController {
   }
 
   @Post(":id/availability-blocks")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   createAvailabilityBlock(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -84,7 +91,8 @@ export class ListingsController {
   }
 
   @Delete(":id/availability-blocks/:blockId")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   deleteAvailabilityBlock(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -94,7 +102,8 @@ export class ListingsController {
   }
 
   @Patch(":id")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   update(
     @CurrentUser() user: CurrentUserPayload,
     @Param("id") id: string,
@@ -104,7 +113,8 @@ export class ListingsController {
   }
 
   @Delete(":id")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
   remove(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.listingsService.remove(user.id, id);
   }
