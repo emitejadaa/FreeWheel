@@ -29,8 +29,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload) {
     // Fail closed: scoped tokens (onboarding) are only valid on the endpoints
     // that explicitly accept them via OnboardingAuthGuard / JwtOnboardingStrategy.
+    // Return null (a passport "fail", not an "error") so that in the multi-strategy
+    // OnboardingAuthGuard passport falls through to the onboarding strategy; a
+    // standalone JwtAuthGuard still turns this into a 401.
     if (payload.scope !== undefined) {
-      throw new UnauthorizedException("Invalid token");
+      return null;
     }
 
     const user = await this.usersService.findById(payload.sub);
