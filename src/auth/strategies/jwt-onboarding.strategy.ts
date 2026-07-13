@@ -6,15 +6,24 @@ import { ExtractJwt, Strategy } from "passport-jwt";
 import { UsersService } from "../../users/users.service";
 import { getJwtSecret } from "../../config/jwt.config";
 
-interface JwtPayload {
+interface OnboardingJwtPayload {
   sub: string;
   email: string;
-  /** Scoped tokens (e.g. "onboarding") are rejected by this strategy. */
   scope?: string;
 }
 
+/**
+ * Accepts ONLY short-lived onboarding tokens (scope: "onboarding"), issued to
+ * users who still owe a pre-access step (verify email / provide date of birth).
+ * The mirror image of JwtStrategy, which rejects any scoped token — together
+ * they keep onboarding tokens usable exclusively on the endpoints that opt in
+ * via OnboardingAuthGuard.
+ */
 @Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
+export class JwtOnboardingStrategy extends PassportStrategy(
+  Strategy,
+  "jwt-onboarding",
+) {
   constructor(
     configService: ConfigService,
     private readonly usersService: UsersService,
@@ -26,10 +35,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload) {
-    // Fail closed: scoped tokens (onboarding) are only valid on the endpoints
-    // that explicitly accept them via OnboardingAuthGuard / JwtOnboardingStrategy.
-    if (payload.scope !== undefined) {
+  async validate(payload: OnboardingJwtPayload) {
+    if (payload.scope !== "onboarding") {
       throw new UnauthorizedException("Invalid token");
     }
 
@@ -50,6 +57,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       status: user.status,
       verificationStatus: user.verificationStatus,
       dateOfBirth: user.dateOfBirth,
+      tokenScope: "onboarding" as const,
     };
   }
 }

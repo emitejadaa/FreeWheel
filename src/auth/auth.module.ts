@@ -6,10 +6,12 @@ import type { SignOptions } from "jsonwebtoken";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { JwtStrategy } from "./strategies/jwt.strategy";
+import { JwtOnboardingStrategy } from "./strategies/jwt-onboarding.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
 import { UsersModule } from "../users/users.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { EmailModule } from "../email/email.module";
+import { VerificationModule } from "../verification/verification.module";
 import { getJwtSecret } from "../config/jwt.config";
 
 const googleStrategyProviders =
@@ -22,6 +24,7 @@ const googleStrategyProviders =
     UsersModule,
     PrismaModule,
     EmailModule,
+    VerificationModule,
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -39,7 +42,12 @@ const googleStrategyProviders =
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, ...googleStrategyProviders],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    JwtOnboardingStrategy,
+    ...googleStrategyProviders,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}

@@ -4,14 +4,21 @@ import {
   IsEmail,
   IsOptional,
   IsString,
+  Length,
   MaxLength,
   MinLength,
 } from "class-validator";
+import { IsAdultDate } from "../../common/validators/is-adult-date.validator";
 
-export class RegisterDto {
+export class RegisterCompleteDto {
   @IsEmail()
   @MaxLength(254)
   email!: string;
+
+  /** Six-digit code sent by POST /auth/register/start. */
+  @IsString()
+  @Length(6, 6)
+  code!: string;
 
   @IsString()
   @MinLength(6)
@@ -37,4 +44,8 @@ export class RegisterDto {
   @IsBoolean()
   @Equals(true, { message: "Debés aceptar los términos y condiciones" })
   acceptedTerms!: boolean;
+
+  /** Birth date as YYYY-MM-DD; only adults (18+) may register. */
+  @IsAdultDate()
+  dateOfBirth!: string;
 }

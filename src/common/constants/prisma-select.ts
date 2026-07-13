@@ -29,6 +29,7 @@ export const USER_SAFE_SELECT = {
   lastName: true,
   displayName: true,
   phone: true,
+  dateOfBirth: true,
   profilePhotoUrl: true,
   role: true,
   status: true,

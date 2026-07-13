@@ -154,6 +154,7 @@ model User {
   lastName            String
   displayName         String?
   phone               String?
+  dateOfBirth         DateTime?
   profilePhotoUrl     String?
   role                UserRole            @default(USER)
   status              UserStatus          @default(ACTIVE)
@@ -189,19 +190,41 @@ model User {
 }
 
 model UserVerification {
-  id          String             @id @default(uuid())
-  userId      String
-  user        User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status      VerificationStatus @default(ID_SUBMITTED)
-  documentUrl String?
-  selfieUrl   String?
-  notes       String?
-  reviewedAt  DateTime?
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  id              String             @id @default(uuid())
+  userId          String
+  user            User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status          VerificationStatus @default(ID_SUBMITTED)
+  documentUrl     String?
+  selfieUrl       String?
+  dniFrontUrl     String?
+  dniBackUrl      String?
+  licenseFrontUrl String?
+  licenseBackUrl  String?
+  notes           String?
+  reviewedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@index([userId])
   @@index([status])
+}
+
+// Pre-account email verification: holds the hashed code sent to an email that
+// has no User row yet (VerificationCode requires a userId FK). One live row per
+// email; re-requesting a code upserts (rotates hash, resets attempts). The row
+// is deleted in the same transaction that creates the User.
+model PendingRegistration {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  codeHash    String
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([expiresAt])
 }
 
 model VerificationCode {

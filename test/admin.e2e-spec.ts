@@ -86,13 +86,17 @@ describe("Admin", () => {
 
   it("reviews an identity verification", async () => {
     const admin = await createAdmin(app, prisma);
-    const user = await registerUser(app);
+    // Not fully verified (no phone) so the submission stays ID_SUBMITTED and
+    // waits for the admin verdict instead of being auto-approved.
+    const user = await registerUser(app, { verified: false });
     await http()
       .post("/verification/identity/submit")
       .set("Authorization", auth(user.token))
       .send({
-        documentUrl: "https://example.com/doc.png",
-        selfieUrl: "https://example.com/selfie.png",
+        dniFrontUrl: "https://example.com/dni-front.png",
+        dniBackUrl: "https://example.com/dni-back.png",
+        licenseFrontUrl: "https://example.com/license-front.png",
+        licenseBackUrl: "https://example.com/license-back.png",
       })
       .expect(201);
 

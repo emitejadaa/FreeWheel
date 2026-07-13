@@ -165,11 +165,12 @@ No usar migraciones destructivas ni `db push` contra produccion sin confirmacion
 
 ## Recursos Nest
 
-- `AuthModule`: register/login, JWT, email verification, password reset y Google OAuth opcional.
+- `AuthModule`: registro en dos pasos (email verificado antes de crear la cuenta), fecha de nacimiento 18+, login con onboarding token, JWT, password reset y Google OAuth opcional.
 - `UsersModule`: lectura y actualizacion de perfil propio.
 - `VehiclesModule`: alta, lectura, edicion y baja de vehiculos propios.
 - `ListingsModule`: publicaciones propias y catalogo publico activo.
-- `VerificationModule`: verificacion interna de email/phone e identidad por URLs/metadata.
+- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) e identidad (DNI + licencia por URL) con revision configurable; deja la cuenta `VERIFIED` para habilitar acciones sensibles.
+- `SmsModule`: envio de codigos por SMS con interfaz de proveedor (`SMS_PROVIDER`, solo `mock` implementado).
 - `BookingsModule`: solicitudes, aceptacion/rechazo/cancelacion y confirmaciones por token.
 - `AdminModule`: gestion protegida por `ADMIN` de usuarios, verificaciones, listings y bookings.
 - `MediaModule`: registro de assets por URL y metadata.
@@ -182,7 +183,8 @@ No usar migraciones destructivas ni `db push` contra produccion sin confirmacion
 Publicos o auth:
 
 - `GET /`
-- `POST /auth/register`
+- `POST /auth/register/start`
+- `POST /auth/register/complete`
 - `POST /auth/login`
 - `POST /auth/forgot-password`
 - `POST /auth/reset-password`

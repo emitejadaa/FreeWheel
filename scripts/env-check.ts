@@ -20,6 +20,9 @@ const documentedOptionalVariables = [
   "GOOGLE_CLIENT_SECRET",
   "GMAIL_USER",
   "GMAIL_APP_PASSWORD",
+  "SMS_PROVIDER",
+  "IDENTITY_REVIEW_MODE",
+  "ONBOARDING_JWT_EXPIRES_IN",
   "PAYMENTS_PROVIDER",
   "STRIPE_SECRET_KEY",
   "STRIPE_PUBLISHABLE_KEY",
@@ -74,7 +77,11 @@ function main() {
     );
   }
 
-  if (missingRequired.length > 0 || missingFromExample.length > 0 || isLiveKey) {
+  if (
+    missingRequired.length > 0 ||
+    missingFromExample.length > 0 ||
+    isLiveKey
+  ) {
     process.exitCode = 1;
     return;
   }

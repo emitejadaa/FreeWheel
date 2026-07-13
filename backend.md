@@ -206,19 +206,21 @@ Archivos principales:
 
 Responsabilidades:
 
-- Registro de usuarios.
-- Login email/password.
-- Emision de JWT.
-- Verificacion de email.
-- Reenvio de verificacion.
+- Registro de usuarios en dos pasos con email verificado ANTES de crear la cuenta: `register/start` (envia codigo, no crea usuario) y `register/complete` (valida codigo + payload y crea la cuenta ya email-verificada). No existe fila `User` hasta confirmar el codigo.
+- Fecha de nacimiento obligatoria (mayores de 18) validada en el servidor (`@IsAdultDate`). Para cuentas de Google/legacy sin fecha, `complete-profile` la completa.
+- Login email/password. Si el email no esta verificado o falta la fecha de nacimiento, no emite `accessToken`: devuelve un `onboardingToken` de alcance acotado y un flag (`emailVerificationRequired` / `profileCompletionRequired`).
+- Emision de JWT completo y de `onboardingToken` (scope `onboarding`, corto).
+- Verificacion de email de cuentas legacy y reenvio.
 - Solicitud y confirmacion de cambio de email.
 - Forgot/reset password.
-- Google OAuth opcional.
+- Google OAuth opcional (auto-verifica email; si falta la fecha de nacimiento redirige con `pending=complete_profile`).
 - Bloqueo de login para usuarios suspendidos o eliminados.
 
 DTOs:
 
-- `RegisterDto`
+- `RegisterStartDto`
+- `RegisterCompleteDto`
+- `CompleteProfileDto`
 - `LoginDto`
 - `VerifyEmailDto`
 - `ForgotPasswordDto`
@@ -226,8 +228,13 @@ DTOs:
 
 Estrategias:
 
-- `JwtStrategy`: usa `JWT_SECRET`.
+- `JwtStrategy`: usa `JWT_SECRET`. Rechaza tokens con `scope` (fail-closed) y expone `verificationStatus` y `dateOfBirth` en el request.
+- `JwtOnboardingStrategy` (`jwt-onboarding`): acepta solo tokens con `scope: "onboarding"`; habilita los endpoints de onboarding via `OnboardingAuthGuard`.
 - `GoogleStrategy`: se registra solo si existen `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`.
+
+Verificacion de cuenta para acciones sensibles:
+
+- `VerifiedAccountGuard` + `@RequireVerifiedAccount()` bloquean con 403 (`code: ACCOUNT_NOT_VERIFIED`) las mutaciones sensibles (reservas, pagos, aceptar contrato, crear/editar vehiculos y listings) salvo cuentas totalmente verificadas (`verificationStatus === VERIFIED`). Ver, mensajear y editar perfil quedan libres.
 
 ### UsersModule
 
@@ -421,21 +428,20 @@ Archivos:
 
 Responsabilidades:
 
-- Solicitar codigo de email.
-- Confirmar codigo de email.
-- Solicitar codigo de telefono.
-- Confirmar codigo de telefono.
-- Consultar estado de verificacion propio.
-- Enviar metadata de identidad.
+- Solicitar/confirmar codigo de email (entregado por `EmailService`).
+- Solicitar/confirmar codigo de telefono (entregado por `SmsService`).
+- Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `documentsSubmitted`, `dateOfBirthProvided`) y `fullyVerified`.
+- Enviar documentos de identidad: DNI (frente/dorso) y licencia (frente/dorso) por URL (subidos a Cloudinary desde el cliente).
 - Consultar identidad propia.
+- Tras cada evento dispara `IdentityReviewService.evaluate`: si el checklist esta completo, el revisor configurado decide y (si aprueba) deja la cuenta `VERIFIED`.
 
 Estado actual:
 
 - Verificaciones internas con codigos hasheados.
 - Codigos numericos con RNG criptografico y TTL de 10 minutos (constante compartida con la verificacion de email de `AuthModule`).
 - El codigo no se devuelve en la respuesta HTTP; en entornos no productivos se loguea para pruebas manuales.
-- No hay proveedor SMS real integrado.
-- Identidad se maneja por metadata/URLs, no por verificador externo.
+- SMS via `SmsModule` con interfaz de proveedor (`SMS_PROVIDER`); solo el provider `mock` (loguea el codigo) esta implementado. Un proveedor real (Twilio, etc.) se agrega sin tocar callers.
+- Revision de documentos via seam `IdentityReviewService` (`IDENTITY_REVIEW_MODE`): `auto_approve` (default) aprueba automaticamente; `manual` deja el caso al endpoint de admin. TODO: reemplazar por revision real (manual/AI/KYC) en `src/verification/review`.
 
 ### AdminModule
 
@@ -546,14 +552,16 @@ Estado actual:
 
 | Metodo | Ruta | Auth | Descripcion |
 | --- | --- | --- | --- |
-| POST | `/auth/register` | Publico | Registra usuario y devuelve token |
-| POST | `/auth/login` | Publico | Login email/password |
-| POST | `/auth/verify-email` | JWT | Confirma email con codigo |
-| POST | `/auth/resend-verification` | JWT | Reenvia codigo de verificacion |
+| POST | `/auth/register/start` | Publico | Paso 1: envia codigo al email (no crea usuario) |
+| POST | `/auth/register/complete` | Publico | Paso 2: valida codigo + payload (con `dateOfBirth`) y crea la cuenta |
+| POST | `/auth/login` | Publico | Login email/password; devuelve `onboardingToken` si falta verificar email o fecha de nacimiento |
+| POST | `/auth/complete-profile` | Onboarding/JWT | Completa la fecha de nacimiento (18+) y devuelve token completo |
+| POST | `/auth/verify-email` | Onboarding/JWT | Confirma email (cuentas legacy) |
+| POST | `/auth/resend-verification` | Onboarding/JWT | Reenvia codigo de verificacion |
 | POST | `/auth/forgot-password` | Publico | Solicita reset password |
 | POST | `/auth/reset-password` | Publico | Confirma reset password |
 | GET | `/auth/google` | Publico | Inicia OAuth Google |
-| GET | `/auth/google/callback` | Publico/OAuth | Callback OAuth Google |
+| GET | `/auth/google/callback` | Publico/OAuth | Callback OAuth Google (redirige a completar perfil si falta fecha de nacimiento) |
 | POST | `/auth/request-email-change` | JWT | Solicita cambio de email |
 | POST | `/auth/confirm-email-change` | JWT | Confirma cambio de email |
 
@@ -610,8 +618,8 @@ Query soportada en catalogo:
 | POST | `/verification/email/confirm` | JWT | Confirma codigo email |
 | POST | `/verification/phone/request` | JWT | Solicita codigo phone |
 | POST | `/verification/phone/confirm` | JWT | Confirma codigo phone |
-| GET | `/verification/me/status` | JWT | Estado propio de verificacion |
-| POST | `/verification/identity/submit` | JWT | Envia identidad por metadata |
+| GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`) |
+| POST | `/verification/identity/submit` | JWT | Envia DNI y licencia (frente/dorso) por URL |
 | GET | `/verification/identity/me` | JWT | Consulta identidad propia |
 
 ### Bookings

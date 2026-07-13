@@ -3,8 +3,11 @@ import { UserRole, UserStatus, VerificationStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import request from "supertest";
 import { PrismaService } from "../../src/prisma/prisma.service";
+import { EmailService } from "../../src/email/email.service";
+import type { FakeEmailService } from "./email.fake";
 
 export const TEST_PASSWORD = "TestPass123!";
+export const TEST_DATE_OF_BIRTH = "1990-01-01";
 
 let seq = 0;
 
@@ -32,7 +35,16 @@ export interface AuthedUser {
   password: string;
 }
 
-/** Registers a fresh user through the API and returns its token + identity. */
+/**
+ * Registers a fresh user through the two-step email-first flow
+ * (register/start → capture the emailed code from the fake → register/complete)
+ * and returns its token + identity.
+ *
+ * Defaults to a FULLY verified account (phone verified + VERIFIED status) so the
+ * many specs that exercise gated routes (vehicles, listings, bookings, payments,
+ * contracts) keep working. Pass `{ verified: false }` to get an account that has
+ * only its email verified — used by the verification and gate specs.
+ */
 export async function registerUser(
   app: INestApplication,
   overrides: Partial<{
@@ -40,23 +52,63 @@ export async function registerUser(
     password: string;
     firstName: string;
     lastName: string;
+    dateOfBirth: string;
+    verified: boolean;
   }> = {},
 ): Promise<AuthedUser> {
   const email = overrides.email ?? uniqueEmail();
   const password = overrides.password ?? TEST_PASSWORD;
+  const verified = overrides.verified ?? true;
+
+  // EmailService is overridden with the in-memory fake in createTestApp, so this
+  // is where the registration code lands.
+  const emailFake = app.get(EmailService) as unknown as FakeEmailService;
+
+  await request(app.getHttpServer())
+    .post("/auth/register/start")
+    .send({ email })
+    .expect(201);
+
+  const code = emailFake.lastCode(email);
+  if (!code) {
+    throw new Error(`registerUser: no verification code captured for ${email}`);
+  }
 
   const res = await request(app.getHttpServer())
-    .post("/auth/register")
+    .post("/auth/register/complete")
     .send({
       email,
+      code,
       password,
       firstName: overrides.firstName ?? "Test",
       lastName: overrides.lastName ?? "User",
       acceptedTerms: true,
+      dateOfBirth: overrides.dateOfBirth ?? TEST_DATE_OF_BIRTH,
     })
     .expect(201);
 
-  return { token: res.body.accessToken, id: res.body.user.id, email, password };
+  const authed: AuthedUser = {
+    token: res.body.accessToken,
+    id: res.body.user.id,
+    email,
+    password,
+  };
+
+  if (verified) {
+    // JwtStrategy reloads verificationStatus from the DB on every request, so
+    // bumping it here makes the already-minted token behave as fully verified.
+    const prisma = app.get(PrismaService);
+    await prisma.user.update({
+      where: { id: authed.id },
+      data: {
+        phone: "+5491100000000",
+        phoneVerifiedAt: new Date(),
+        verificationStatus: VerificationStatus.VERIFIED,
+      },
+    });
+  }
+
+  return authed;
 }
 
 /** Seeds an ADMIN directly (no public route grants it) and logs in for a token. */
@@ -77,6 +129,8 @@ export async function createAdmin(
       status: UserStatus.ACTIVE,
       verificationStatus: VerificationStatus.EMAIL_VERIFIED,
       emailVerifiedAt: new Date(),
+      // Login only issues a full token once a date of birth is present.
+      dateOfBirth: new Date(`${TEST_DATE_OF_BIRTH}T00:00:00.000Z`),
     },
   });
 
