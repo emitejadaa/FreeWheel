@@ -1,4 +1,9 @@
-import { DrivetrainType, FuelType, TransmissionType } from "@prisma/client";
+import {
+  DrivetrainType,
+  FuelType,
+  TransmissionType,
+  VehicleCategory,
+} from "@prisma/client";
 import {
   IsBoolean,
   IsEnum,
@@ -28,6 +33,11 @@ export class CreateVehicleDto {
   @Min(1900)
   @Max(2100)
   year!: number;
+
+  /** Segmento del vehículo: es el dato que usa el filtro por categoría. */
+  @IsOptional()
+  @IsEnum(VehicleCategory)
+  category?: VehicleCategory;
 
   @IsOptional()
   @IsString()

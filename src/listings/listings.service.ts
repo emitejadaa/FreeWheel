@@ -33,6 +33,7 @@ type PublicListing = Omit<Listing, "ownerId"> & {
   vehicle: Omit<Vehicle, "ownerId" | "plate">;
   owner: OwnerPublic;
 };
+type PublicListingWithPhotos = PublicListing & { photos: string[] };
 
 @Injectable()
 export class ListingsService {
@@ -72,15 +73,8 @@ export class ListingsService {
       }),
     ]);
 
-    const photosByVehicle = await this.getPhotosByVehicleIds(
-      listings.map((l) => l.vehicleId),
-    );
-
     return {
-      data: listings.map((listing) => ({
-        ...this.toPublicListing(listing),
-        photos: photosByVehicle[listing.vehicleId] ?? [],
-      })),
+      data: await this.withPhotos(listings),
       page,
       limit,
       total,
@@ -95,6 +89,16 @@ export class ListingsService {
       orderBy: { createdAt: "desc" },
     });
 
+    return this.withPhotos(listings);
+  }
+
+  /**
+   * Forma pública de un conjunto de publicaciones con sus fotos resueltas en
+   * una sola consulta. Lo usan la búsqueda, "mis autos" y los favoritos.
+   */
+  async withPhotos(
+    listings: ListingWithVehicleAndOwner[],
+  ): Promise<PublicListingWithPhotos[]> {
     const photosByVehicle = await this.getPhotosByVehicleIds(
       listings.map((l) => l.vehicleId),
     );
@@ -105,19 +109,30 @@ export class ListingsService {
     }));
   }
 
-  async findOne(id: string) {
+  /**
+   * Detalle público de una publicación. El dueño (viewerId) también puede ver
+   * las suyas cuando están en DRAFT o PAUSED: si no, "Mis autos" enlazaría a un
+   * 404 en cuanto pausa un aviso.
+   */
+  async findOne(id: string, viewerId?: string) {
     const listing = await this.prisma.listing.findUnique({
       where: { id },
       include: { vehicle: true, owner: { select: USER_PUBLIC_SELECT } },
     });
 
-    if (!listing || listing.status !== ListingStatus.ACTIVE) {
+    const visible =
+      listing &&
+      (listing.status === ListingStatus.ACTIVE ||
+        (listing.status !== ListingStatus.DELETED &&
+          listing.ownerId === viewerId));
+
+    if (!listing || !visible) {
       throw new NotFoundException("Listing not found");
     }
 
     const publicListing = this.toPublicListing(listing);
     const photos = await this.getPhotosByVehicleId(listing.vehicleId);
-    return { ...publicListing, photos };
+    return { ...publicListing, photos, isOwner: listing.ownerId === viewerId };
   }
 
   async update(ownerId: string, id: string, data: UpdateListingDto) {
@@ -190,7 +205,8 @@ export class ListingsService {
     return assets.map((a) => a.url);
   }
 
-  private async getPhotosByVehicleIds(
+  /** Público: lo reutiliza FavoritesService para devolver las fotos de cada auto. */
+  async getPhotosByVehicleIds(
     vehicleIds: string[],
   ): Promise<Record<string, string[]>> {
     if (vehicleIds.length === 0) return {};
@@ -233,15 +249,25 @@ export class ListingsService {
         ...(query.maxPrice !== undefined ? { lte: query.maxPrice } : {}),
       };
     }
-    if (query.brand || query.model) {
-      where.vehicle = {
-        ...(query.brand
-          ? { brand: { contains: query.brand, mode: "insensitive" } }
-          : {}),
-        ...(query.model
-          ? { model: { contains: query.model, mode: "insensitive" } }
-          : {}),
-      };
+    // Todos los filtros que viajan sobre el vehículo se acumulan en un único
+    // `where.vehicle`: si se armaran por separado, el último sobrescribiría a
+    // los anteriores y el buscador devolvería resultados de más.
+    const vehicleWhere: Prisma.VehicleWhereInput = {
+      ...(query.brand
+        ? { brand: { contains: query.brand, mode: "insensitive" } }
+        : {}),
+      ...(query.model
+        ? { model: { contains: query.model, mode: "insensitive" } }
+        : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.transmission ? { transmission: query.transmission } : {}),
+      ...(query.fuelType ? { fuelType: query.fuelType } : {}),
+      ...(query.minSeats !== undefined
+        ? { seats: { gte: query.minSeats } }
+        : {}),
+    };
+    if (Object.keys(vehicleWhere).length > 0) {
+      where.vehicle = vehicleWhere;
     }
     // When a date range is requested, drop listings that already have a blocking
     // booking or an owner availability block overlapping it. Overlap uses the

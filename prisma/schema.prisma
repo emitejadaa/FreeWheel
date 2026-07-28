@@ -56,6 +56,19 @@ enum DrivetrainType {
   AWD
 }
 
+// Carrocería / segmento del vehículo. Es el dato que alimenta el filtro por
+// categoría del buscador ("Explorá por categoría"), así que se guarda en el
+// vehículo en vez de derivarse en el front.
+enum VehicleCategory {
+  SEDAN
+  SUV
+  BERLINA
+  PICKUP
+  ELECTRIC
+  PREMIUM
+  OTHER
+}
+
 enum VerificationCodeTargetType {
   EMAIL
   PHONE
@@ -183,6 +196,7 @@ model User {
   conversationsAsRenter     Conversation[]             @relation("RenterConversations")
   conversationsAsOwner      Conversation[]             @relation("OwnerConversations")
   sentMessages              Message[]                  @relation("SentMessages")
+  favorites                 Favorite[]
 
   @@index([email])
   @@index([status])
@@ -253,6 +267,7 @@ model Vehicle {
   brand                         String
   model                         String
   year                          Int
+  category                      VehicleCategory?
   plate                         String?
   color                         String?
   seats                         Int?
@@ -280,6 +295,7 @@ model Vehicle {
 
   @@index([ownerId])
   @@index([brand, model])
+  @@index([category])
 }
 
 model Listing {
@@ -304,10 +320,26 @@ model Listing {
   bookings           Booking[]
   availabilityBlocks ListingAvailabilityBlock[]
   conversations      Conversation[]
+  favorites          Favorite[]
 
   @@index([ownerId])
   @@index([vehicleId])
   @@index([status, createdAt])
+}
+
+// "Me gusta" de un usuario sobre una publicación. Vive en la base (y no en el
+// navegador) para que los favoritos sigan estando al cambiar de dispositivo.
+model Favorite {
+  id        String   @id @default(uuid())
+  userId    String
+  listingId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([userId, createdAt])
+  @@index([listingId])
 }
 
 model ListingAvailabilityBlock {

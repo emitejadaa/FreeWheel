@@ -15,6 +15,47 @@ export const blockingBookingStatuses: BookingStatus[] = [
   BookingStatus.RETURN_PENDING,
 ];
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Fecha (UTC) como YYYY-MM-DD, sin la parte de hora. */
+function toDayKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** Medianoche UTC del día de una fecha. */
+function startOfUtcDay(date: Date): Date {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
+}
+
+/**
+ * Convierte rangos [startDate, endDate) en la lista de días ocupados que caen
+ * dentro de la ventana consultada. El día de devolución (endDate) cuenta como
+ * ocupado porque el auto todavía no volvió a estar libre esa jornada.
+ */
+function expandRangesToDays(
+  ranges: { startDate: Date; endDate: Date }[],
+  windowStart: Date,
+  windowEnd: Date,
+): string[] {
+  const days = new Set<string>();
+  const from = startOfUtcDay(windowStart).getTime();
+  const to = startOfUtcDay(windowEnd).getTime();
+
+  for (const range of ranges) {
+    let cursor = Math.max(startOfUtcDay(range.startDate).getTime(), from);
+    const last = Math.min(startOfUtcDay(range.endDate).getTime(), to);
+    // Tope de seguridad: una ventana de consulta no debería superar el año.
+    for (let guard = 0; cursor <= last && guard < 750; guard++) {
+      days.add(toDayKey(new Date(cursor)));
+      cursor += MS_PER_DAY;
+    }
+  }
+
+  return [...days].sort();
+}
+
 @Injectable()
 export class AvailabilityService {
   constructor(private readonly prisma: PrismaService) {}
@@ -61,6 +102,14 @@ export class AvailabilityService {
       listingStatus: listing.status,
       blockingBookings: bookings,
       manualBlocks,
+      // Mismos rangos, ya expandidos día por día (YYYY-MM-DD): es lo que el
+      // calendario del front necesita para pintar/bloquear fechas sin tener que
+      // recalcular solapamientos en el navegador.
+      unavailableDates: expandRangesToDays(
+        [...bookings, ...manualBlocks],
+        startDate,
+        endDate,
+      ),
     };
   }
 

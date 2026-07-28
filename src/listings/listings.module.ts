@@ -8,5 +8,6 @@ import { ListingsService } from "./listings.service";
   imports: [PrismaModule, AvailabilityModule],
   controllers: [ListingsController],
   providers: [ListingsService],
+  exports: [ListingsService],
 })
 export class ListingsModule {}

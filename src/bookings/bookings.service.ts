@@ -8,6 +8,8 @@ import {
   Booking,
   BookingStatus,
   ListingStatus,
+  MediaAssetKind,
+  MediaAssetStatus,
   PaymentStatus,
 } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
@@ -110,21 +112,64 @@ export class BookingsService {
     return created;
   }
 
-  findMine(userId: string) {
-    return this.prisma.booking.findMany({
+  async findMine(userId: string) {
+    const bookings = await this.prisma.booking.findMany({
       where: {
         OR: [{ renterId: userId }, { ownerId: userId }],
       },
       include: BOOKING_PARTICIPANT_INCLUDE,
       orderBy: { createdAt: "desc" },
     });
+
+    return this.withVehiclePhotos(bookings);
   }
 
   async findOneForParticipant(userId: string, id: string) {
     const booking = await this.findById(id);
     this.assertBookingParticipant(booking, userId);
 
-    return booking;
+    const [withPhotos] = await this.withVehiclePhotos([booking]);
+    return withPhotos;
+  }
+
+  /**
+   * Agrega a cada reserva las fotos del vehículo (`listing.photos`), que viven
+   * en MediaAsset y no en la relación. Sin esto las tarjetas de "Mis reservas"
+   * se ven siempre como "Sin foto".
+   */
+  private async withVehiclePhotos<T extends { vehicleId: string }>(
+    bookings: T[],
+  ): Promise<(T & { photos: string[] })[]> {
+    if (bookings.length === 0) return [];
+
+    const assets = await this.prisma.mediaAsset.findMany({
+      where: {
+        entityType: "vehicle",
+        entityId: { in: bookings.map((booking) => booking.vehicleId) },
+        kind: MediaAssetKind.VEHICLE_PHOTO,
+        status: MediaAssetStatus.ACTIVE,
+      },
+      select: { entityId: true, url: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const byVehicle = new Map<string, string[]>();
+    for (const asset of assets) {
+      if (!asset.entityId) continue;
+      const urls = byVehicle.get(asset.entityId) ?? [];
+      urls.push(asset.url);
+      byVehicle.set(asset.entityId, urls);
+    }
+
+    return bookings.map((booking) => {
+      const photos = byVehicle.get(booking.vehicleId) ?? [];
+      const listing = (booking as { listing?: object }).listing;
+      return {
+        ...booking,
+        photos,
+        ...(listing ? { listing: { ...listing, photos } } : {}),
+      };
+    });
   }
 
   async accept(ownerId: string, id: string) {

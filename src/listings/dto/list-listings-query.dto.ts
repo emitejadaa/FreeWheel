@@ -1,4 +1,5 @@
 import { Type } from "class-transformer";
+import { FuelType, TransmissionType, VehicleCategory } from "@prisma/client";
 import {
   IsDate,
   IsEnum,
@@ -53,6 +54,28 @@ export class ListListingsQueryDto {
   @IsOptional()
   @IsString()
   model?: string;
+
+  // ── Filtros sobre el vehículo publicado ────────────────────────────────
+  // Son los que usa el buscador del front (categoría, caja, combustible y
+  // capacidad). Se aplican sobre la relación `vehicle` del listing.
+  @IsOptional()
+  @IsEnum(VehicleCategory)
+  category?: VehicleCategory;
+
+  @IsOptional()
+  @IsEnum(TransmissionType)
+  transmission?: TransmissionType;
+
+  @IsOptional()
+  @IsEnum(FuelType)
+  fuelType?: FuelType;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  minSeats?: number;
 
   @IsOptional()
   @Type(() => Date)

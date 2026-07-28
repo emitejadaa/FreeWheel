@@ -12,6 +12,7 @@ import {
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { OptionalJwtAuthGuard } from "../auth/guards/optional-jwt-auth.guard";
 import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
 import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { AvailabilityService } from "../availability/availability.service";
@@ -53,9 +54,15 @@ export class ListingsController {
     return this.listingsService.findMine(user.id);
   }
 
+  // Pública, pero con autenticación opcional: el dueño ve además sus propios
+  // avisos en DRAFT/PAUSED (para poder abrirlos desde "Mis autos").
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.listingsService.findOne(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  findOne(
+    @CurrentUser() user: CurrentUserPayload | null,
+    @Param("id") id: string,
+  ) {
+    return this.listingsService.findOne(id, user?.id);
   }
 
   @Get(":id/availability")

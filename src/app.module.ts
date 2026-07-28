@@ -10,6 +10,7 @@ import { UsersModule } from "./users/users.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { VehiclesModule } from "./vehicles/vehicles.module";
 import { ListingsModule } from "./listings/listings.module";
+import { FavoritesModule } from "./favorites/favorites.module";
 import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
 import { BookingsModule } from "./bookings/bookings.module";
@@ -29,6 +30,7 @@ import { ConversationsModule } from "./conversations/conversations.module";
     UsersModule,
     VehiclesModule,
     ListingsModule,
+    FavoritesModule,
     VerificationModule,
     AdminModule,
     BookingsModule,
