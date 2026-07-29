@@ -12,6 +12,8 @@ export class ManualReviewer implements IdentityReviewer {
   readonly name = "manual";
 
   review(_input: IdentityReviewInput): Promise<IdentityReviewVerdict> {
-    return Promise.resolve({ approved: false });
+    // `pending` deja la solicitud en ID_SUBMITTED esperando al admin, en vez de
+    // marcarla como rechazada.
+    return Promise.resolve({ approved: false, pending: true });
   }
 }

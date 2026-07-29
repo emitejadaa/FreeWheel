@@ -19,9 +19,24 @@ export interface IdentityReviewInput {
   selfieUrl?: string | null;
 }
 
+/** Datos leídos del documento, para guardarlos junto a la verificación. */
+export interface ExtractedIdentityData {
+  documentNumber?: string | null;
+  fullName?: string | null;
+  licenseExpiresAt?: string | null;
+}
+
 export interface IdentityReviewVerdict {
   approved: boolean;
+  /**
+   * true = no hay decisión todavía (queda esperando a un admin). Distingue
+   * "pendiente" de "rechazado": sin esto, el modo manual marcaría como
+   * rechazadas todas las solicitudes que en realidad están esperando revisión.
+   */
+  pending?: boolean;
   notes?: string;
+  /** Lo que el revisor pudo leer del documento (si lo pudo leer). */
+  extracted?: ExtractedIdentityData;
 }
 
 export interface IdentityReviewer {

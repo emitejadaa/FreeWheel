@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { User, UserVerification, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { IDENTITY_REVIEWER } from "./identity-reviewer.interface";
@@ -27,6 +28,24 @@ export interface VerificationChecklist {
   phoneVerified: boolean;
   documentsSubmitted: boolean;
   dateOfBirthProvided: boolean;
+}
+
+/**
+ * ¿El teléfono confirmado es obligatorio para que la cuenta quede verificada?
+ *
+ * Se controla con REQUIRE_PHONE_VERIFICATION y por defecto es NO. Motivo: mandar
+ * un SMS a un número real es un servicio pago, así que exigirlo dejaba a todas
+ * las cuentas sin poder publicar ni reservar. El teléfono se sigue pudiendo
+ * verificar (el código llega por email) y queda registrado, pero no bloquea.
+ */
+export function isPhoneVerificationRequired(config: {
+  get: <T>(key: string) => T | undefined;
+}): boolean {
+  return (
+    (
+      config.get<string>("REQUIRE_PHONE_VERIFICATION") ?? "false"
+    ).toLowerCase() === "true"
+  );
 }
 
 /**
@@ -62,6 +81,7 @@ export class IdentityReviewService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(IDENTITY_REVIEWER) private readonly reviewer: IdentityReviewer,
+    private readonly config: ConfigService,
   ) {}
 
   /** Returns true when this call approved the account. */
@@ -86,9 +106,12 @@ export class IdentityReviewService {
     }
 
     const checklist = buildVerificationChecklist(user, submission);
+    const phonePending =
+      isPhoneVerificationRequired(this.config) && !checklist.phoneVerified;
+
     if (
       !checklist.emailVerified ||
-      !checklist.phoneVerified ||
+      phonePending ||
       !checklist.dateOfBirthProvided
     ) {
       return false;
@@ -104,7 +127,47 @@ export class IdentityReviewService {
       selfieUrl: submission.selfieUrl,
     });
 
-    if (!verdict.approved) return false;
+    // Datos leídos del documento: se guardan siempre, aprobado o rechazado.
+    const extractedData = {
+      ...(verdict.extracted?.documentNumber
+        ? { documentNumber: verdict.extracted.documentNumber }
+        : {}),
+      ...(verdict.extracted?.fullName
+        ? { fullNameOnDocument: verdict.extracted.fullName }
+        : {}),
+      ...(verdict.extracted?.licenseExpiresAt
+        ? {
+            licenseExpiresAt: new Date(
+              `${verdict.extracted.licenseExpiresAt}T00:00:00.000Z`,
+            ),
+          }
+        : {}),
+    };
+
+    // Sin decisión (modo manual): la solicitud queda como estaba, esperando que
+    // un admin la revise. No es un rechazo.
+    if (!verdict.approved && verdict.pending) {
+      return false;
+    }
+
+    // Rechazo: queda asentado con el motivo para que la persona pueda corregir
+    // las fotos y volver a enviarlas.
+    if (!verdict.approved) {
+      await this.prisma.userVerification.update({
+        where: { id: submission.id },
+        data: {
+          status: VerificationStatus.REJECTED,
+          reviewedAt: new Date(),
+          reviewedBy: this.reviewer.name,
+          notes: verdict.notes,
+          ...extractedData,
+        },
+      });
+      this.logger.log(
+        `Identity submission ${submission.id} rejected (reviewer: ${this.reviewer.name})`,
+      );
+      return false;
+    }
 
     await this.prisma.$transaction([
       this.prisma.userVerification.update({
@@ -112,7 +175,9 @@ export class IdentityReviewService {
         data: {
           status: VerificationStatus.VERIFIED,
           reviewedAt: new Date(),
+          reviewedBy: this.reviewer.name,
           notes: verdict.notes,
+          ...extractedData,
         },
       }),
       this.prisma.user.update({

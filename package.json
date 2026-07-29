@@ -26,7 +26,8 @@
     "check:prisma": "ts-node scripts/prisma-check.ts",
     "preflight": "ts-node scripts/preflight.ts",
     "commit:smart": "ts-node scripts/smart-commit.ts",
-    "postinstall": "prisma generate"
+    "db:migrate:prod": "node scripts/deploy-migrate.js --force",
+    "postinstall": "prisma generate && node scripts/deploy-migrate.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

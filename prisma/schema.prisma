@@ -215,6 +215,12 @@ model UserVerification {
   licenseFrontUrl String?
   licenseBackUrl  String?
   notes           String?
+  // Datos leídos de los documentos por la revisión automática. Quedan
+  // registrados acá y no se los pide al usuario, así no se pueden falsear.
+  documentNumber   String?
+  fullNameOnDocument String?
+  licenseExpiresAt DateTime?
+  reviewedBy       String?
   reviewedAt      DateTime?
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt

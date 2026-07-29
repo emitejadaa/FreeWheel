@@ -60,6 +60,41 @@ export class EmailService {
     await this.send(email, "Tu código de verificación - Freewheel", html);
   }
 
+  /**
+   * Código para verificar el TELÉFONO, enviado por email.
+   *
+   * Se usa cuando no hay una pasarela de SMS contratada (mandar un SMS a un
+   * número real es siempre un servicio pago). El código sigue siendo el mismo y
+   * queda igual de registrado en la base: lo único distinto es el canal por el
+   * que viaja, así la verificación del teléfono funciona sin costo.
+   */
+  async sendPhoneVerificationCode(email: string, phone: string, code: string) {
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">Verificá tu teléfono</h2>
+          <p style="color:#374151;margin:0 0 24px">
+            Código para confirmar el número <strong>${phone}</strong>:
+          </p>
+          <div style="font-size:42px;font-weight:800;letter-spacing:12px;color:#2563eb;background:#eff6ff;padding:20px;border-radius:10px;text-align:center">
+            ${code}
+          </div>
+          <p style="color:#6b7280;font-size:13px;margin-top:20px">
+            Te lo enviamos por email porque el envío por SMS todavía no está
+            habilitado. Expira en 10 minutos y no se comparte con nadie.
+          </p>
+        </div>
+      </div>`;
+    await this.send(
+      email,
+      "Código para verificar tu teléfono - Freewheel",
+      html,
+    );
+  }
+
   async sendPasswordReset(
     email: string,
     firstName: string,
@@ -121,11 +156,7 @@ export class EmailService {
           <p style="color:#6b7280;font-size:13px;margin-top:20px">Si no reconocés esta solicitud, podés ignorar este email.</p>
         </div>
       </div>`;
-    await this.send(
-      email,
-      "Nueva solicitud de reserva - Freewheel",
-      html,
-    );
+    await this.send(email, "Nueva solicitud de reserva - Freewheel", html);
   }
 
   async sendBookingAcceptedToRenter(

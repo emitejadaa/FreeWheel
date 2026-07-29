@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import { User, UserVerification, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
@@ -24,6 +25,18 @@ function makePrisma(): MockPrisma {
 
 function asPrisma(mock: MockPrisma): PrismaService {
   return mock as unknown as PrismaService;
+}
+
+/**
+ * ConfigService mínimo. `requirePhone` refleja REQUIRE_PHONE_VERIFICATION: por
+ * defecto el teléfono NO es obligatorio (mandar un SMS es un servicio pago), así
+ * que la cuenta se verifica sin él.
+ */
+function makeConfig(requirePhone = false): ConfigService {
+  return {
+    get: (key: string) =>
+      key === "REQUIRE_PHONE_VERIFICATION" ? String(requirePhone) : undefined,
+  } as unknown as ConfigService;
 }
 
 const submission = {
@@ -82,6 +95,7 @@ describe("IdentityReviewService.evaluate", () => {
     const service = new IdentityReviewService(
       asPrisma(prisma),
       new AutoApproveReviewer(),
+      makeConfig(),
     );
     const result = await service.evaluate("user-1");
 
@@ -93,7 +107,7 @@ describe("IdentityReviewService.evaluate", () => {
     });
   });
 
-  it("does nothing when the phone is not verified", async () => {
+  it("verifies the account without a confirmed phone (phone is optional)", async () => {
     const prisma = makePrisma();
     prisma.user.findUnique.mockResolvedValue({
       ...fullyReadyUser,
@@ -104,6 +118,23 @@ describe("IdentityReviewService.evaluate", () => {
     const service = new IdentityReviewService(
       asPrisma(prisma),
       new AutoApproveReviewer(),
+      makeConfig(false),
+    );
+    expect(await service.evaluate("user-1")).toBe(true);
+  });
+
+  it("requires the phone when REQUIRE_PHONE_VERIFICATION is on", async () => {
+    const prisma = makePrisma();
+    prisma.user.findUnique.mockResolvedValue({
+      ...fullyReadyUser,
+      phoneVerifiedAt: null,
+    });
+    prisma.userVerification.findFirst.mockResolvedValue(submission);
+
+    const service = new IdentityReviewService(
+      asPrisma(prisma),
+      new AutoApproveReviewer(),
+      makeConfig(true),
     );
     expect(await service.evaluate("user-1")).toBe(false);
     expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -119,6 +150,7 @@ describe("IdentityReviewService.evaluate", () => {
     const service = new IdentityReviewService(
       asPrisma(prisma),
       new AutoApproveReviewer(),
+      makeConfig(),
     );
     expect(await service.evaluate("user-1")).toBe(false);
     expect(prisma.userVerification.findFirst).not.toHaveBeenCalled();
@@ -135,12 +167,40 @@ describe("IdentityReviewService.evaluate", () => {
     const service = new IdentityReviewService(
       asPrisma(prisma),
       new AutoApproveReviewer(),
+      makeConfig(),
     );
     expect(await service.evaluate("user-1")).toBe(false);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it("leaves the case pending under the manual reviewer", async () => {
+  it("marks the submission as rejected when the reviewer says the photos are wrong", async () => {
+    const prisma = makePrisma();
+    prisma.user.findUnique.mockResolvedValue(fullyReadyUser);
+    prisma.userVerification.findFirst.mockResolvedValue(submission);
+
+    const rejectingReviewer = {
+      name: "test",
+      review: () => Promise.resolve({ approved: false, notes: "No es un DNI" }),
+    };
+
+    const service = new IdentityReviewService(
+      asPrisma(prisma),
+      rejectingReviewer,
+      makeConfig(),
+    );
+
+    expect(await service.evaluate("user-1")).toBe(false);
+
+    // La solicitud queda registrada como rechazada, con el motivo.
+    const [[updateArgs]] = prisma.userVerification.update.mock.calls as [
+      [{ data: { status: VerificationStatus; notes?: string } }],
+    ];
+    expect(updateArgs.data.status).toBe(VerificationStatus.REJECTED);
+    expect(updateArgs.data.notes).toBe("No es un DNI");
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it("leaves the case pending (not rejected) under the manual reviewer", async () => {
     const prisma = makePrisma();
     prisma.user.findUnique.mockResolvedValue(fullyReadyUser);
     prisma.userVerification.findFirst.mockResolvedValue(submission);
@@ -148,8 +208,11 @@ describe("IdentityReviewService.evaluate", () => {
     const service = new IdentityReviewService(
       asPrisma(prisma),
       new ManualReviewer(),
+      makeConfig(),
     );
     expect(await service.evaluate("user-1")).toBe(false);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    // Pendiente no es rechazado: la solicitud no se toca.
+    expect(prisma.userVerification.update).not.toHaveBeenCalled();
   });
 });
