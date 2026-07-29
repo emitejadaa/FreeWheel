@@ -18,6 +18,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
 import { ConversationsModule } from "./conversations/conversations.module";
+import { HealthModule } from "./health/health.module";
 
 @Module({
   controllers: [AppController],
@@ -26,6 +27,7 @@ import { ConversationsModule } from "./conversations/conversations.module";
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
+    HealthModule,
     AuthModule,
     UsersModule,
     VehiclesModule,

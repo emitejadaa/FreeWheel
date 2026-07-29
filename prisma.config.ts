@@ -3,6 +3,27 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+/**
+ * DIRECT_URL: conexión directa a la base, sin el pooler.
+ *
+ * El schema la declara (`directUrl = env("DIRECT_URL")`) porque los proveedores
+ * con pooler —Supabase, Neon— no admiten migraciones a través del pooler. El
+ * problema es que Prisma la exige para CUALQUIER comando: si la variable no está
+ * creada en el entorno, hasta `prisma generate` corta con
+ * "P1012 Environment variable not found: DIRECT_URL".
+ *
+ * En este proyecto la base la administra otra persona y esa variable no existe,
+ * así que acá se completa sola con DATABASE_URL. Es la misma base: si el
+ * proveedor no usa pooler funciona igual, y si lo usa, DIRECT_URL se puede
+ * definir de verdad más adelante y este valor por defecto deja de aplicarse.
+ *
+ * Va en este archivo porque Prisma lo carga ANTES de leer el schema, así que
+ * corrige todos los comandos (`generate`, `migrate deploy`, `db push`) de una vez.
+ */
+if (!process.env["DIRECT_URL"] && process.env["DATABASE_URL"]) {
+  process.env["DIRECT_URL"] = process.env["DATABASE_URL"];
+}
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {

@@ -1,14 +1,27 @@
+-- Categoría de vehículo (para que el filtro de la home funcione) y tabla de
+-- favoritos.
+--
+-- Todo está escrito para poder correrse dos veces sin romperse (IF NOT EXISTS y
+-- guardas). La base de este proyecto la administra otra persona y no se sabe con
+-- certeza si algún cambio ya se aplicó a mano o con `prisma db push`; así la
+-- migración funciona igual en cualquiera de los dos casos.
+
 -- CreateEnum
-CREATE TYPE "VehicleCategory" AS ENUM ('SEDAN', 'SUV', 'BERLINA', 'PICKUP', 'ELECTRIC', 'PREMIUM', 'OTHER');
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'VehicleCategory') THEN
+    CREATE TYPE "VehicleCategory" AS ENUM ('SEDAN', 'SUV', 'BERLINA', 'PICKUP', 'ELECTRIC', 'PREMIUM', 'OTHER');
+  END IF;
+END $$;
 
 -- AlterTable
-ALTER TABLE "Vehicle" ADD COLUMN     "category" "VehicleCategory";
+ALTER TABLE "Vehicle" ADD COLUMN IF NOT EXISTS "category" "VehicleCategory";
 
 -- CreateIndex
-CREATE INDEX "Vehicle_category_idx" ON "Vehicle"("category");
+CREATE INDEX IF NOT EXISTS "Vehicle_category_idx" ON "Vehicle"("category");
 
 -- CreateTable
-CREATE TABLE "Favorite" (
+CREATE TABLE IF NOT EXISTS "Favorite" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "listingId" TEXT NOT NULL,
@@ -18,19 +31,29 @@ CREATE TABLE "Favorite" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Favorite_userId_listingId_key" ON "Favorite"("userId", "listingId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Favorite_userId_listingId_key" ON "Favorite"("userId", "listingId");
 
 -- CreateIndex
-CREATE INDEX "Favorite_userId_createdAt_idx" ON "Favorite"("userId", "createdAt");
+CREATE INDEX IF NOT EXISTS "Favorite_userId_createdAt_idx" ON "Favorite"("userId", "createdAt");
 
 -- CreateIndex
-CREATE INDEX "Favorite_listingId_idx" ON "Favorite"("listingId");
+CREATE INDEX IF NOT EXISTS "Favorite_listingId_idx" ON "Favorite"("listingId");
 
 -- AddForeignKey
-ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Favorite_userId_fkey') THEN
+    ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "Listing"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Favorite_listingId_fkey') THEN
+    ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "Listing"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 -- Backfill: los vehículos que ya estaban publicados no tienen categoría. Se
 -- deduce de los datos que sí cargaron (eléctrico por combustible, pickup/SUV
