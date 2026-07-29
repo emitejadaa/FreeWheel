@@ -1,3 +1,4 @@
+import { Transform } from "class-transformer";
 import {
   IsOptional,
   IsString,
@@ -5,6 +6,10 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
+import {
+  IsArgentinePhone,
+  normalizeArgentinePhone,
+} from "../../common/validators/argentine-phone.validator";
 
 export class UpdateUserDto {
   @IsOptional()
@@ -25,9 +30,16 @@ export class UpdateUserDto {
   @MaxLength(120)
   displayName?: string;
 
+  /**
+   * Teléfono argentino completo con código de país (54 9 11 3289 5416). Se
+   * normaliza antes de validar, así queda guardado siempre en el mismo formato
+   * sin importar cómo lo haya escrito la persona.
+   */
   @IsOptional()
-  @IsString()
-  @MaxLength(32)
+  @Transform(
+    ({ value }: { value: unknown }) => normalizeArgentinePhone(value) ?? value,
+  )
+  @IsArgentinePhone()
   phone?: string;
 
   @IsOptional()

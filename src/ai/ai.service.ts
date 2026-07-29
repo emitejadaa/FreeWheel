@@ -34,10 +34,23 @@ const DOCUMENT_PROMPTS: Record<DocumentKind, string> = {
     "el DORSO de una licencia de conducir, con las categorías habilitadas y/o la fecha de vencimiento",
 };
 
+/**
+ * Por qué no se pudo revisar una imagen. Se devuelve al front para que pueda
+ * distinguir "el servicio no está configurado" (falta la GROQ_API_KEY en el
+ * servidor) de "el proveedor falló": son dos problemas muy distintos y antes los
+ * dos llegaban como un genérico "no se pudo revisar".
+ */
+export type AiUnavailableCode =
+  | "not_configured"
+  | "upstream_error"
+  | "unreadable";
+
 export interface DocumentInspection {
   /** true = corresponde, false = no corresponde, null = no se pudo revisar. */
   matches: boolean | null;
   reason: string;
+  /** Solo cuando matches es null: por qué no se pudo revisar. */
+  code?: AiUnavailableCode;
   detectedType?: string | null;
   documentNumber?: string | null;
   fullName?: string | null;
@@ -91,6 +104,81 @@ export class AiService {
       );
     }
     return key;
+  }
+
+  /** ¿Está cargada la clave? Sin ella no se puede llamar al proveedor. */
+  private get configured(): boolean {
+    return Boolean(this.config.get<string>("GROQ_API_KEY"));
+  }
+
+  /**
+   * Manda una imagen al modelo de visión y devuelve el texto de la respuesta.
+   *
+   * Centraliza el manejo de errores de las dos funciones que ven imágenes
+   * (revisar documentos y verificar que la foto sea un auto). Es importante que
+   * el motivo del fallo llegue con nombre propio: antes, si faltaba la
+   * GROQ_API_KEY, la excepción se comía el catch de más arriba y la pantalla
+   * mostraba "no se pudo revisar" sin decir que en realidad faltaba configurar
+   * el servidor. Además el error del proveedor se registra completo en el log,
+   * que es lo único que se puede leer desde el panel del deploy.
+   */
+  private async askVisionModel(
+    imageUrl: string,
+    prompt: string,
+    maxTokens: number,
+  ): Promise<
+    { ok: true; content: string } | { ok: false; code: AiUnavailableCode }
+  > {
+    if (!this.configured) {
+      this.logger.error(
+        "Falta GROQ_API_KEY: la revisión por IA queda deshabilitada. " +
+          "Cargala en las variables de entorno del backend.",
+      );
+      return { ok: false, code: "not_configured" };
+    }
+
+    try {
+      const res = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey()}`,
+        },
+        body: JSON.stringify({
+          model: VISION_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: imageUrl } },
+                { type: "text", text: prompt },
+              ],
+            },
+          ],
+          temperature: 0,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      if (!res.ok) {
+        // El cuerpo del error dice lo que hace falta para arreglarlo (clave
+        // inválida, modelo dado de baja, imagen demasiado grande).
+        const detail = await res.text().catch(() => "");
+        this.logger.error(
+          `Groq visión respondió ${res.status}: ${detail.slice(0, 500)}`,
+        );
+        return { ok: false, code: "upstream_error" };
+      }
+
+      const data = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      return { ok: true, content: data.choices?.[0]?.message?.content ?? "" };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Groq visión falló: ${message}`);
+      return { ok: false, code: "upstream_error" };
+    }
   }
 
   async chat(
@@ -192,135 +280,78 @@ export class AiService {
   ): Promise<DocumentInspection> {
     const expected = DOCUMENT_PROMPTS[kind];
 
-    try {
-      const res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey()}`,
-        },
-        body: JSON.stringify({
-          model: VISION_MODEL,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageUrl } },
-                {
-                  type: "text",
-                  text:
-                    `Analizá la imagen. Se espera ${expected}.\n` +
-                    "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
-                    '{"corresponde": true|false, "legible": true|false, ' +
-                    '"tipo_detectado": "texto corto", "numero": "solo dígitos o null", ' +
-                    '"nombre": "nombre completo o null", "vencimiento": "YYYY-MM-DD o null", ' +
-                    '"motivo": "una frase explicando la decisión"}\n' +
-                    "Si la imagen no es un documento de identidad (por ejemplo un paisaje, " +
-                    "una mascota, una captura de pantalla o una persona sin documento), " +
-                    '"corresponde" debe ser false.',
-                },
-              ],
-            },
-          ],
-          temperature: 0,
-          max_tokens: 400,
-        }),
-      });
+    const answer = await this.askVisionModel(
+      imageUrl,
+      `Analizá la imagen. Se espera ${expected}.\n` +
+        "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
+        '{"corresponde": true|false, "legible": true|false, ' +
+        '"tipo_detectado": "texto corto", "numero": "solo dígitos o null", ' +
+        '"nombre": "nombre completo o null", "vencimiento": "YYYY-MM-DD o null", ' +
+        '"motivo": "una frase explicando la decisión"}\n' +
+        "Si la imagen no es un documento de identidad (por ejemplo un paisaje, " +
+        "una mascota, una captura de pantalla o una persona sin documento), " +
+        '"corresponde" debe ser false.',
+      400,
+    );
 
-      if (!res.ok) {
-        this.logger.warn(`Groq document review error ${res.status}`);
-        return {
-          matches: null,
-          reason: "La revisión automática no está disponible.",
-        };
-      }
-
-      const data = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
-      };
-      const content = data.choices?.[0]?.message?.content ?? "";
-      const parsed = extractJson(content);
-
-      if (!parsed) {
-        return {
-          matches: null,
-          reason: "No se pudo interpretar la revisión automática.",
-        };
-      }
-
-      const matches = parsed.corresponde === true && parsed.legible !== false;
-      return {
-        matches,
-        reason:
-          typeof parsed.motivo === "string" && parsed.motivo
-            ? parsed.motivo
-            : matches
-              ? "El documento coincide con lo esperado."
-              : "La imagen no corresponde al documento pedido.",
-        detectedType: asText(parsed.tipo_detectado),
-        documentNumber: asDigits(parsed.numero),
-        fullName: asText(parsed.nombre),
-        expiresAt: asDate(parsed.vencimiento),
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Groq document review exception: ${message}`);
+    if (!answer.ok) {
       return {
         matches: null,
-        reason: "La revisión automática no está disponible.",
+        code: answer.code,
+        reason:
+          answer.code === "not_configured"
+            ? "La revisión automática no está configurada en el servidor."
+            : "La revisión automática no está disponible en este momento.",
       };
     }
+
+    const parsed = extractJson(answer.content);
+    if (!parsed) {
+      return {
+        matches: null,
+        code: "unreadable",
+        reason: "No se pudo interpretar la revisión automática.",
+      };
+    }
+
+    const matches = parsed.corresponde === true && parsed.legible !== false;
+    return {
+      matches,
+      reason:
+        typeof parsed.motivo === "string" && parsed.motivo
+          ? parsed.motivo
+          : matches
+            ? "El documento coincide con lo esperado."
+            : "La imagen no corresponde al documento pedido.",
+      detectedType: asText(parsed.tipo_detectado),
+      documentNumber: asDigits(parsed.numero),
+      fullName: asText(parsed.nombre),
+      expiresAt: asDate(parsed.vencimiento),
+    };
   }
 
-  async vision(imageDataUrl: string): Promise<{ isVehicle: boolean | null }> {
-    try {
-      const res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey()}`,
-        },
-        body: JSON.stringify({
-          model: VISION_MODEL,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageDataUrl } },
-                {
-                  type: "text",
-                  text: "¿Esta imagen muestra un automóvil, camioneta, SUV, moto u otro vehículo de motor? Respondé únicamente SI o NO.",
-                },
-              ],
-            },
-          ],
-          temperature: 0,
-          max_tokens: 5,
-        }),
-      });
+  /**
+   * ¿La foto muestra un vehículo? Se usa al publicar un auto para no dejar subir
+   * fotos que no correspondan.
+   *
+   * `isVehicle` en null significa "no se pudo verificar", y `code` dice por qué:
+   * así la pantalla puede avisar que falta configurar el servidor en vez de
+   * quedarse en un silencioso "no verificada".
+   */
+  async vision(
+    imageDataUrl: string,
+  ): Promise<{ isVehicle: boolean | null; code?: AiUnavailableCode }> {
+    const answer = await this.askVisionModel(
+      imageDataUrl,
+      "¿Esta imagen muestra un automóvil, camioneta, SUV, moto u otro vehículo de motor? Respondé únicamente SI o NO.",
+      5,
+    );
 
-      if (!res.ok) {
-        this.logger.warn(`Groq vision error ${res.status}`);
-        return { isVehicle: null };
-      }
+    if (!answer.ok) return { isVehicle: null, code: answer.code };
 
-      const data = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
-      };
-      const answer = (data.choices?.[0]?.message?.content || "")
-        .trim()
-        .toUpperCase();
-      return {
-        isVehicle: answer.startsWith("SI")
-          ? true
-          : answer.startsWith("NO")
-            ? false
-            : null,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Groq vision exception: ${message}`);
-      return { isVehicle: null };
-    }
+    const text = answer.content.trim().toUpperCase();
+    if (text.startsWith("SI")) return { isVehicle: true };
+    if (text.startsWith("NO")) return { isVehicle: false };
+    return { isVehicle: null, code: "unreadable" };
   }
 }

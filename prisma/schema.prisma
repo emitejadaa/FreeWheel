@@ -77,6 +77,27 @@ enum VerificationCodeTargetType {
 enum VerificationCodePurpose {
   EMAIL_VERIFICATION
   PASSWORD_RESET
+  // Confirmación por email para cambiar el precio de una publicación.
+  PRICE_CHANGE
+}
+
+/// A quién apunta un reporte hecho por una persona.
+enum ReportTargetType {
+  LISTING
+  USER
+}
+
+enum ReportStatus {
+  OPEN          // recién entrado, esperando que un admin lo mire
+  ACTION_TAKEN  // el admin actuó (pausó o eliminó la publicación, etc.)
+  DISMISSED     // el admin lo descartó
+}
+
+/// Qué dijo la IA al leer el reporte y compararlo con la publicación.
+enum ReportAiVerdict {
+  COHERENT     // lo que se denuncia se corresponde con la publicación
+  INCOHERENT   // no tiene relación con la publicación
+  UNCLEAR      // no alcanza para decidir
 }
 
 enum BookingStatus {
@@ -179,6 +200,10 @@ model User {
   stripeCustomerId    String?             @unique
   stripeAccountId     String?             @unique
   stripeAccountStatus StripeAccountStatus @default(NONE)
+  /// Promedio de las reseñas recibidas y cuántas son. Se guardan calculados para
+  /// no tener que recorrer todas las reseñas cada vez que se muestra un perfil.
+  ratingAverage       Float?
+  ratingCount         Int                 @default(0)
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -197,6 +222,11 @@ model User {
   conversationsAsOwner      Conversation[]             @relation("OwnerConversations")
   sentMessages              Message[]                  @relation("SentMessages")
   favorites                 Favorite[]
+  reviewsWritten            Review[]                   @relation("ReviewAuthor")
+  reviewsReceived           Review[]                   @relation("ReviewTarget")
+  reportsMade               Report[]                   @relation("Reporter")
+  reportsReceived           Report[]                   @relation("ReportedUser")
+  reportsResolved           Report[]                   @relation("ReportResolver")
 
   @@index([email])
   @@index([status])
@@ -320,6 +350,20 @@ model Listing {
   deliveryLongitude Float?
   deliveryRadiusKm  Float?
   status            ListingStatus @default(DRAFT)
+
+  /// Promedio de las reseñas de esta publicación y cuántas son. Calculados y
+  /// guardados: es el número que se muestra en el listado y en el detalle.
+  ratingAverage     Float?
+  ratingCount       Int           @default(0)
+
+  /// Cambio de precio pendiente de confirmar por email, y cuándo se pidió.
+  /// El precio no se toca hasta que la persona confirma con el código.
+  pendingPricePerDay      Float?
+  priceChangeRequestedAt  DateTime?
+  /// Última vez que el precio cambió de verdad. Se usa para el tiempo de espera
+  /// entre cambios.
+  priceUpdatedAt          DateTime?
+
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -327,6 +371,8 @@ model Listing {
   availabilityBlocks ListingAvailabilityBlock[]
   conversations      Conversation[]
   favorites          Favorite[]
+  reviews            Review[]
+  reports            Report[]
 
   @@index([ownerId])
   @@index([vehicleId])
@@ -409,6 +455,7 @@ model Booking {
 
   paymentRecords PaymentRecord[]
   contract       Contract?
+  reviews        Review[]
 
   @@index([listingId])
   @@index([vehicleId])
@@ -548,4 +595,75 @@ model Contract {
   updatedAt        DateTime       @updatedAt
 
   @@index([status])
+}
+
+/// Reseña de una reserva terminada.
+///
+/// Solo se puede escribir cuando la reserva llegó a COMPLETED y el pago se
+/// completó: es lo que hace que las puntuaciones signifiquen algo. Las dos partes
+/// pueden reseñarse una a la otra por la misma reserva, y cada una puede escribir
+/// una sola (de ahí el unique de reserva + autor).
+model Review {
+  id           String   @id @default(uuid())
+  bookingId    String
+  authorId     String
+  targetUserId String
+  /// La publicación que se está puntuando. Va cargada SOLO en la reseña que
+  /// escribe quien alquiló: es la que habla del auto y cuenta para el promedio de
+  /// la publicación. La que escribe el dueño es sobre la persona, así que queda
+  /// en null y no ensucia la puntuación del aviso.
+  listingId    String?
+  /// Puntuación de 1 a 5.
+  rating       Int
+  comment      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  author     User    @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  targetUser User    @relation("ReviewTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  listing    Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, authorId])
+  @@index([listingId, createdAt])
+  @@index([targetUserId, createdAt])
+  @@index([authorId])
+}
+
+/// Reporte de una persona sobre una publicación o sobre otra persona.
+///
+/// Antes el botón "Reportar" no guardaba nada en ninguna parte. Ahora queda
+/// registrado, lo lee la IA para decir si lo denunciado tiene relación con la
+/// publicación, y le llega a las cuentas administradoras para que puedan actuar.
+model Report {
+  id           String           @id @default(uuid())
+  reporterId   String
+  targetType   ReportTargetType
+  listingId    String?
+  targetUserId String?
+  reason       String
+  details      String?
+  status       ReportStatus     @default(OPEN)
+
+  /// Lectura automática del reporte contra el contenido de la publicación.
+  aiVerdict   ReportAiVerdict?
+  aiSummary   String?
+  aiCheckedAt DateTime?
+
+  /// Resolución del admin.
+  resolvedById   String?
+  resolvedAt     DateTime?
+  resolutionNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reporter     User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUser   User?    @relation("ReportedUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  listing      Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  resolvedBy   User?    @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([listingId])
+  @@index([reporterId])
 }

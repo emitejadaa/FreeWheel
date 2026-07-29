@@ -21,13 +21,19 @@ import { CreateAvailabilityBlockDto } from "../availability/dto/create-availabil
 import { CreateListingDto } from "./dto/create-listing.dto";
 import { ListListingsQueryDto } from "./dto/list-listings-query.dto";
 import { UpdateListingDto } from "./dto/update-listing.dto";
+import {
+  ConfirmPriceChangeDto,
+  RequestPriceChangeDto,
+} from "./dto/request-price-change.dto";
 import { ListingsService } from "./listings.service";
+import { PriceChangeService } from "./price-change.service";
 
 @Controller("listings")
 export class ListingsController {
   constructor(
     private readonly listingsService: ListingsService,
     private readonly availabilityService: AvailabilityService,
+    private readonly priceChangeService: PriceChangeService,
   ) {}
 
   // Publishing (and managing) listings moves vehicles and money, so every
@@ -106,6 +112,55 @@ export class ListingsController {
     @Param("blockId") blockId: string,
   ) {
     return this.availabilityService.deleteBlock(user.id, id, blockId);
+  }
+
+  // ── Cambio de precio ──────────────────────────────────────────────────────
+  // El precio no se toca con un PATCH común: hace falta confirmar con el código
+  // que llega por email, no puede haber reservas en curso y hay una espera entre
+  // cambios. Ver price-change.service.ts para el detalle del criterio.
+
+  /** Estado del precio: si se puede cambiar ahora y, si no, por qué. */
+  @Get(":id/price-change")
+  @UseGuards(JwtAuthGuard)
+  priceChangeStatus(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.priceChangeService.status(user.id, id);
+  }
+
+  /** Paso 1: se pide el cambio y sale el código al email. */
+  @Post(":id/price-change")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  requestPriceChange(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: RequestPriceChangeDto,
+  ) {
+    return this.priceChangeService.request(user.id, id, dto.pricePerDay);
+  }
+
+  /** Paso 2: con el código, el precio nuevo queda aplicado. */
+  @Post(":id/price-change/confirm")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  confirmPriceChange(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: ConfirmPriceChangeDto,
+  ) {
+    return this.priceChangeService.confirm(user.id, id, dto.code);
+  }
+
+  /** Se descarta el cambio pendiente. */
+  @Delete(":id/price-change")
+  @UseGuards(JwtAuthGuard)
+  cancelPriceChange(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.priceChangeService.cancel(user.id, id);
   }
 
   @Patch(":id")

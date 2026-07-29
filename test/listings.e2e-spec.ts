@@ -82,8 +82,23 @@ describe("Listings", () => {
       await request(app.getHttpServer())
         .patch(`/listings/${listing.id}`)
         .set("Authorization", `Bearer ${owner.token}`)
-        .send({ pricePerDay: 9999 })
+        .send({ title: "Updated title" })
         .expect(200);
+    });
+
+    it("does not let PATCH change the price (that needs the emailed code)", async () => {
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      // The price is the one field that moves money on its own, so it has its
+      // own confirmed flow. A plain PATCH must be refused, with an explanation.
+      const res = await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ pricePerDay: 9999 })
+        .expect(400);
+      expect(String(res.body.message)).toContain("Cambiar precio");
     });
   });
 

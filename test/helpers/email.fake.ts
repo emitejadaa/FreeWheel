@@ -6,6 +6,7 @@
 export class FakeEmailService {
   private readonly codes = new Map<string, string>();
   private readonly resetTokens = new Map<string, string>();
+  private readonly priceChangeCodes = new Map<string, string>();
 
   sendVerificationCode(email: string, code: string): Promise<void> {
     this.codes.set(email, code);
@@ -20,6 +21,26 @@ export class FakeEmailService {
   ): Promise<void> {
     this.resetTokens.set(email, token);
     return Promise.resolve();
+  }
+
+  /**
+   * Code emailed to confirm a listing price change. Changing the price is gated
+   * behind an emailed code, so the E2E flow needs to read it from here.
+   */
+  sendPriceChangeCode(
+    email: string,
+    _listingTitle: string,
+    _currentPrice: number,
+    _newPrice: number,
+    code: string,
+  ): Promise<void> {
+    this.priceChangeCodes.set(email, code);
+    return Promise.resolve();
+  }
+
+  /** The most recent price-change code emailed to this address. */
+  lastPriceChangeCode(email: string): string | undefined {
+    return this.priceChangeCodes.get(email);
   }
 
   /** The most recent verification code emailed to this address. */

@@ -19,6 +19,8 @@ import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
 import { ConversationsModule } from "./conversations/conversations.module";
 import { HealthModule } from "./health/health.module";
+import { ReviewsModule } from "./reviews/reviews.module";
+import { ReportsModule } from "./reports/reports.module";
 
 @Module({
   controllers: [AppController],
@@ -41,6 +43,8 @@ import { HealthModule } from "./health/health.module";
     MediaModule,
     ConversationsModule,
     AiModule,
+    ReviewsModule,
+    ReportsModule,
   ],
 })
 export class AppModule {}

@@ -1,3 +1,4 @@
+import { Transform } from "class-transformer";
 import {
   Equals,
   IsBoolean,
@@ -8,6 +9,10 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
+import {
+  IsArgentinePhone,
+  normalizeArgentinePhone,
+} from "../../common/validators/argentine-phone.validator";
 import { IsAdultDate } from "../../common/validators/is-adult-date.validator";
 
 export class RegisterCompleteDto {
@@ -47,8 +52,10 @@ export class RegisterCompleteDto {
    * número), así que se acepta desde el registro para no pedirlo dos veces.
    */
   @IsOptional()
-  @IsString()
-  @MaxLength(32)
+  @Transform(
+    ({ value }: { value: unknown }) => normalizeArgentinePhone(value) ?? value,
+  )
+  @IsArgentinePhone()
   phone?: string;
 
   @IsBoolean()

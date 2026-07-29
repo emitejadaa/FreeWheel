@@ -30,9 +30,46 @@ function startOfUtcDay(date: Date): Date {
 }
 
 /**
- * Convierte rangos [startDate, endDate) en la lista de días ocupados que caen
- * dentro de la ventana consultada. El día de devolución (endDate) cuenta como
- * ocupado porque el auto todavía no volvió a estar libre esa jornada.
+ * Ventana de días pedida, como intervalo semiabierto sobre días COMPLETOS:
+ * `[medianoche(desde), medianoche(hasta) + 1 día)`.
+ *
+ * Es la pieza que faltaba. Alquilar se piensa por días, no por horas: pedir "del
+ * 30 al 30" es pedir el día 30 entero. La consulta que se hacía antes comparaba
+ * las fechas tal cual venían, así que con desde = hasta el rango quedaba vacío y
+ * NINGUNA reserva daba solapamiento: un auto ocupado el 30 aparecía como libre si
+ * se buscaba del 30 al 30.
+ */
+function dayWindow(startDate: Date, endDate: Date): { from: Date; to: Date } {
+  return {
+    from: startOfUtcDay(startDate),
+    to: new Date(startOfUtcDay(endDate).getTime() + MS_PER_DAY),
+  };
+}
+
+/**
+ * Condición de solapamiento entre una ocupación guardada (reserva o bloqueo) y
+ * la ventana de días pedida.
+ *
+ * El día de devolución cuenta como ocupado: si el auto vuelve el 30, ese día no
+ * se puede volver a alquilar. Con eso, la condición sobre la ventana [desde,
+ * hasta+1día) es `guardada.startDate < hasta+1día` y `guardada.endDate >= desde`.
+ *
+ * Vale para las dos consultas —el detalle de disponibilidad y el filtro del
+ * listado— justamente para que no puedan volver a contestar cosas distintas: el
+ * panel del auto decía "30 jul ocupado" y el filtro lo mostraba como disponible.
+ */
+export function overlappingRangeWhere(
+  startDate: Date,
+  endDate: Date,
+): { startDate: { lt: Date }; endDate: { gte: Date } } {
+  const { from, to } = dayWindow(startDate, endDate);
+  return { startDate: { lt: to }, endDate: { gte: from } };
+}
+
+/**
+ * Convierte rangos de ocupación en la lista de días ocupados que caen dentro de
+ * la ventana consultada. El día de devolución (endDate) cuenta como ocupado
+ * porque el auto todavía no volvió a estar libre esa jornada.
  */
 function expandRangesToDays(
   ranges: { startDate: Date; endDate: Date }[],
@@ -259,8 +296,7 @@ export class AvailabilityService {
     return {
       listingId,
       status: { in: blockingBookingStatuses },
-      startDate: { lt: endDate },
-      endDate: { gt: startDate },
+      ...overlappingRangeWhere(startDate, endDate),
     };
   }
 
@@ -271,8 +307,7 @@ export class AvailabilityService {
   ) {
     return {
       listingId,
-      startDate: { lt: endDate },
-      endDate: { gt: startDate },
+      ...overlappingRangeWhere(startDate, endDate),
     };
   }
 
