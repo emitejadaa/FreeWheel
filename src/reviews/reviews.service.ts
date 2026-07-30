@@ -121,6 +121,50 @@ export class ReviewsService {
   }
 
   /**
+   * Reputación de una persona, separada por el papel que cumplió.
+   *
+   * Son dos reputaciones distintas y conviene no mezclarlas: alguien puede
+   * cuidar muy bien los autos que alquila (buen CONDUCTOR) y a la vez tener un
+   * auto que no está a la altura de lo que promete (mal DUEÑO). Al dueño que
+   * recibe una solicitud le interesa la primera; a quien va a alquilar, la
+   * segunda.
+   *
+   * Cómo se distingue: la reseña que escribió quien alquiló lleva `listingId`
+   * cargado (habla del auto y de su dueño); la que escribió el dueño lo tiene en
+   * null (habla de la persona que condujo).
+   */
+  async reputationFor(userId: string) {
+    const [asDriver, asOwner] = await Promise.all([
+      // Recibidas del dueño → la persona actuó como conductor.
+      this.prisma.review.aggregate({
+        where: { targetUserId: userId, listingId: null },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+      // Recibidas de quien alquiló → la persona actuó como dueño.
+      this.prisma.review.aggregate({
+        where: { targetUserId: userId, listingId: { not: null } },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+    ]);
+
+    const round = (value: number | null) =>
+      value === null ? null : Math.round(value * 10) / 10;
+
+    return {
+      asDriver: {
+        average: round(asDriver._avg.rating),
+        count: asDriver._count.rating,
+      },
+      asOwner: {
+        average: round(asOwner._avg.rating),
+        count: asOwner._count.rating,
+      },
+    };
+  }
+
+  /**
    * Para las pantallas de reservas: por cada reserva propia, si ya se puede
    * reseñar y si ya se reseñó. Evita que el front tenga que adivinar la regla.
    */

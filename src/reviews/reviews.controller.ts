@@ -22,6 +22,16 @@ export class ReviewsController {
   }
 
   /**
+   * Reputación de una persona separada por rol: cómo la calificaron como
+   * conductor y cómo la calificaron como dueño. Es lo que se muestra al lado de
+   * una solicitud de reserva y en el perfil que se abre desde el chat.
+   */
+  @Get("users/:userId/reputation")
+  reputation(@Param("userId") userId: string) {
+    return this.reviews.reputationFor(userId);
+  }
+
+  /**
    * Qué reservas propias se pueden reseñar y cuáles ya se reseñaron. El front lo
    * usa para mostrar el botón solo donde corresponde.
    */

@@ -234,8 +234,17 @@ export class AvailabilityService {
       throw new BadRequestException("Invalid endDate");
     }
 
-    if (!options.allowPast && startDate <= new Date()) {
-      throw new BadRequestException("startDate must be in the future");
+    // El día de hoy nunca cuenta para alquilar, sin importar la hora: no hay
+    // reservas del mismo día, el primer día posible es siempre mañana. Antes se
+    // comparaba contra el instante actual (`startDate <= new Date()`), así que
+    // a las 16:40 alguien podía reservar para las 20:00 de ese mismo día.
+    if (!options.allowPast) {
+      const today = startOfUtcDay(new Date());
+      if (startOfUtcDay(startDate).getTime() <= today.getTime()) {
+        throw new BadRequestException(
+          "startDate must be at least tomorrow (same-day bookings are not allowed)",
+        );
+      }
     }
 
     if (endDate <= startDate) {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, UseGuards } from "@nestjs/common";
 import { UsersService } from "./users.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
@@ -13,6 +13,19 @@ export class UsersController {
   @Get("me")
   me(@CurrentUser() user: CurrentUserPayload) {
     return this.usersService.getMe(user.id);
+  }
+
+  /**
+   * Perfil público de otra persona. Requiere sesión (como el resto del
+   * controlador) pero no ser nadie en particular: se usa para ver con quién se
+   * está tratando en una reserva o en el chat.
+   *
+   * Va DESPUÉS de "me" a propósito: si estuviera antes, ":id" se comería la ruta
+   * /users/me y "me" llegaría como si fuera un id.
+   */
+  @Get(":id")
+  publicProfile(@Param("id") id: string) {
+    return this.usersService.getPublicProfile(id);
   }
 
   @Patch("me")

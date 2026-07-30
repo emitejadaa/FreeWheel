@@ -1,4 +1,8 @@
-import { overlappingRangeWhere } from "./availability.service";
+import {
+  AvailabilityService,
+  overlappingRangeWhere,
+} from "./availability.service";
+import type { PrismaService } from "../prisma/prisma.service";
 
 /**
  * ¿Una ocupación guardada (reserva o bloqueo) cae dentro de la ventana pedida?
@@ -65,5 +69,71 @@ describe("overlappingRangeWhere", () => {
     const start = new Date(`${withTime.startDate}T00:00:00.000Z`);
     const end = new Date(`${withTime.endDate}T00:00:00.000Z`);
     expect(start < where.startDate.lt && end >= where.endDate.gte).toBe(true);
+  });
+});
+
+describe("assertDateRange", () => {
+  const service = new AvailabilityService({} as PrismaService);
+
+  // "Ahora" fijo en un punto avanzado del día, para probar justo el caso
+  // reportado: a las 16:40 del 29 de julio, ese mismo día no puede alquilarse.
+  const NOW = new Date("2026-07-29T16:40:00.000Z");
+
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("rechaza el día de hoy como inicio, sin importar la hora", () => {
+    // Antes esto pasaba: comparaba contra el instante actual, así que una
+    // reserva para más tarde el mismo día quedaba permitida.
+    expect(() =>
+      service.assertDateRange(
+        new Date("2026-07-29T20:00:00.000Z"),
+        new Date("2026-07-30T20:00:00.000Z"),
+      ),
+    ).toThrow(/at least tomorrow/);
+  });
+
+  it("rechaza el día de hoy incluso a primera hora de la madrugada", () => {
+    expect(() =>
+      service.assertDateRange(
+        new Date("2026-07-29T00:00:01.000Z"),
+        new Date("2026-07-30T00:00:00.000Z"),
+      ),
+    ).toThrow(/at least tomorrow/);
+  });
+
+  it("acepta mañana como el primer día posible", () => {
+    expect(() =>
+      service.assertDateRange(
+        new Date("2026-07-30T00:00:00.000Z"),
+        new Date("2026-07-31T00:00:00.000Z"),
+      ),
+    ).not.toThrow();
+  });
+
+  it("sigue rechazando fechas realmente pasadas", () => {
+    expect(() =>
+      service.assertDateRange(
+        new Date("2026-07-01T00:00:00.000Z"),
+        new Date("2026-07-02T00:00:00.000Z"),
+      ),
+    ).toThrow(/at least tomorrow/);
+  });
+
+  it("con allowPast permite consultar disponibilidad desde hoy", () => {
+    // La consulta de disponibilidad (no la creación de una reserva) sí puede
+    // mirar desde hoy: es de solo lectura, no reserva nada.
+    expect(() =>
+      service.assertDateRange(
+        new Date("2026-07-29T00:00:00.000Z"),
+        new Date("2026-08-01T00:00:00.000Z"),
+        { allowPast: true },
+      ),
+    ).not.toThrow();
   });
 });
