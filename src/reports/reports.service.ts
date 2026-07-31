@@ -58,6 +58,8 @@ export class ReportsService {
         targetUserId,
         reason: data.reason,
         details: data.details,
+        // Las pruebas que subió la persona. Obligatorias (ver el DTO).
+        evidenceUrls: data.evidenceUrls,
       },
     });
 
@@ -102,7 +104,8 @@ export class ReportsService {
             content:
               `PUBLICACIÓN REPORTADA\n${context}\n\n` +
               `MOTIVO: ${data.reason}\n` +
-              `DESCRIPCIÓN: ${data.details}`,
+              `DESCRIPCIÓN: ${data.details}\n` +
+              `PRUEBAS ADJUNTAS: ${data.evidenceUrls.length} archivo(s)`,
           },
         ],
         0,
@@ -160,7 +163,12 @@ export class ReportsService {
     });
   }
 
-  /** Bandeja del admin. Por defecto, los que están sin resolver primero. */
+  /**
+   * Bandeja del admin. Por defecto, los que están sin resolver primero.
+   *
+   * Trae las pruebas adjuntas (evidenceUrls) porque son justamente lo que el
+   * admin necesita mirar antes de pausar una publicación o suspender una cuenta.
+   */
   listForAdmin(status?: ReportStatus) {
     return this.prisma.report.findMany({
       where: status ? { status } : {},

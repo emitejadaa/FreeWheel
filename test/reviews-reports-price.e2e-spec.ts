@@ -254,6 +254,7 @@ describe("Reviews, reports and price change", () => {
           reason: "Información falsa en la publicación",
           details:
             "Las fotos son de otro auto y el año no coincide con el del título.",
+          evidenceUrls: ["https://res.cloudinary.com/demo/image/upload/prueba1.jpg"],
         })
         .expect(201);
       expect(created.body.status).toBe("OPEN");
@@ -299,7 +300,111 @@ describe("Reviews, reports and price change", () => {
       await http()
         .post("/reports")
         .set("Authorization", bearer(reporter.token))
-        .send({ targetType: "LISTING", reason: "Falsa", details: "corto" })
+        .send({
+          targetType: "LISTING",
+          reason: "Falsa",
+          details: "corto",
+          evidenceUrls: ["https://res.cloudinary.com/demo/image/upload/x.jpg"],
+        })
+        .expect(400);
+    });
+
+    it("refuses a report with no evidence attached", async () => {
+      const owner = await registerUser(app);
+      const reporter = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      // Sin pruebas es la palabra de uno contra la del otro: el admin no tiene
+      // con qué decidir si pausar la publicación.
+      const res = await http()
+        .post("/reports")
+        .set("Authorization", bearer(reporter.token))
+        .send({
+          targetType: "LISTING",
+          listingId: listing.id,
+          reason: "Información falsa en la publicación",
+          details: "Las fotos no corresponden al auto que figura en el título.",
+          evidenceUrls: [],
+        })
+        .expect(400);
+      expect(String(res.body.message)).toContain("al menos una foto");
+
+      // Y tampoco si el campo no viene.
+      await http()
+        .post("/reports")
+        .set("Authorization", bearer(reporter.token))
+        .send({
+          targetType: "LISTING",
+          listingId: listing.id,
+          reason: "Información falsa en la publicación",
+          details: "Las fotos no corresponden al auto que figura en el título.",
+        })
+        .expect(400);
+    });
+
+    it("stores the evidence and shows it to the admin", async () => {
+      const owner = await registerUser(app);
+      const reporter = await registerUser(app);
+      const admin = await createAdmin(app, prisma);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      const pruebas = [
+        "https://res.cloudinary.com/demo/image/upload/prueba1.jpg",
+        "https://res.cloudinary.com/demo/image/upload/prueba2.jpg",
+      ];
+
+      const created = await http()
+        .post("/reports")
+        .set("Authorization", bearer(reporter.token))
+        .send({
+          targetType: "LISTING",
+          listingId: listing.id,
+          reason: "Vehículo en mal estado no declarado",
+          details: "El parabrisas estaba rajado y no figuraba en la publicación.",
+          evidenceUrls: pruebas,
+        })
+        .expect(201);
+      expect(created.body.evidenceUrls).toEqual(pruebas);
+
+      // El admin las recibe: son lo que tiene que mirar antes de actuar.
+      const inbox = await http()
+        .get("/admin/reports")
+        .set("Authorization", bearer(admin.token))
+        .expect(200);
+      expect(inbox.body[0].evidenceUrls).toEqual(pruebas);
+    });
+
+    it("rejects more than 5 files and anything that is not a URL", async () => {
+      const owner = await registerUser(app);
+      const reporter = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      const base = {
+        targetType: "LISTING",
+        listingId: listing.id,
+        reason: "Intento de estafa o fraude",
+        details: "Me pidió transferir por fuera de la plataforma para reservar.",
+      };
+
+      await http()
+        .post("/reports")
+        .set("Authorization", bearer(reporter.token))
+        .send({
+          ...base,
+          evidenceUrls: Array.from(
+            { length: 6 },
+            (_, i) => `https://res.cloudinary.com/demo/image/upload/p${i}.jpg`,
+          ),
+        })
+        .expect(400);
+
+      await http()
+        .post("/reports")
+        .set("Authorization", bearer(reporter.token))
+        .send({ ...base, evidenceUrls: ["no-es-una-url"] })
         .expect(400);
     });
 
@@ -318,6 +423,7 @@ describe("Reviews, reports and price change", () => {
           listingId: listing.id,
           reason: "Vehículo en mal estado no declarado",
           details: "El auto tenía el parabrisas roto y no estaba informado.",
+          evidenceUrls: ["https://res.cloudinary.com/demo/image/upload/roto.jpg"],
         })
         .expect(201);
 

@@ -645,6 +645,13 @@ model Report {
   details      String?
   status       ReportStatus     @default(OPEN)
 
+  /// Fotos o documentos que la persona sube como PRUEBA de lo que denuncia
+  /// (URLs de Cloudinary). Sin al menos una, el reporte no se puede enviar: un
+  /// reporte sin evidencia es la palabra de uno contra la del otro, y deja al
+  /// admin sin nada con que decidir si pausar una publicación o suspender una
+  /// cuenta.
+  evidenceUrls String[]
+
   /// Lectura automática del reporte contra el contenido de la publicación.
   aiVerdict   ReportAiVerdict?
   aiSummary   String?
