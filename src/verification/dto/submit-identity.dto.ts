@@ -2,8 +2,10 @@ import { IsOptional, IsString, IsUrl, MaxLength } from "class-validator";
 
 /**
  * Identity documents for account verification: DNI and driver's license, both
- * sides. Files are uploaded client-side to Cloudinary via
- * POST /media/cloudinary-signature — the backend only receives URLs.
+ * sides. Each file is uploaded client-side to Cloudinary with a per-slot
+ * signature from POST /verification/identity/upload-signature — the backend
+ * only receives URLs, and validates that every one of them is an asset it
+ * signed for this user and this exact slot.
  */
 export class SubmitIdentityDto {
   @IsUrl({ require_protocol: true })
@@ -21,12 +23,6 @@ export class SubmitIdentityDto {
   @IsUrl({ require_protocol: true })
   @MaxLength(2048)
   licenseBackUrl!: string;
-
-  /** Optional selfie, reserved for a future face-match review step. */
-  @IsOptional()
-  @IsUrl({ require_protocol: true })
-  @MaxLength(2048)
-  selfieUrl?: string;
 
   @IsOptional()
   @IsString()

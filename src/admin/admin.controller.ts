@@ -63,6 +63,14 @@ export class AdminController {
     return this.adminService.getVerification(id);
   }
 
+  @Get("verifications/:id/documents")
+  getVerificationDocuments(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.adminService.getVerificationDocuments(user.id, id);
+  }
+
   @Patch("verifications/:id/review")
   reviewVerification(
     @CurrentUser() user: CurrentUserPayload,

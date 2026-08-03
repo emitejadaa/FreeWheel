@@ -51,16 +51,13 @@ describe("Verified-account gate", () => {
           .send({ brand: "Toyota", model: "Corolla", year: 2020 }),
       );
       expectGated(
-        await http()
-          .post("/listings")
-          .set("Authorization", t)
-          .send({
-            vehicleId: "00000000-0000-0000-0000-000000000000",
-            title: "x",
-            description: "y",
-            pricePerDay: 5000,
-            locationText: "CABA",
-          }),
+        await http().post("/listings").set("Authorization", t).send({
+          vehicleId: "00000000-0000-0000-0000-000000000000",
+          title: "x",
+          description: "y",
+          pricePerDay: 5000,
+          locationText: "CABA",
+        }),
       );
       expectGated(
         await http()
@@ -74,12 +71,16 @@ describe("Verified-account gate", () => {
       );
       expectGated(
         await http()
-          .post("/contracts/bookings/00000000-0000-0000-0000-000000000000/accept")
+          .post(
+            "/contracts/bookings/00000000-0000-0000-0000-000000000000/accept",
+          )
           .set("Authorization", t),
       );
       expectGated(
         await http()
-          .post("/payments/bookings/00000000-0000-0000-0000-000000000000/sena-intent")
+          .post(
+            "/payments/bookings/00000000-0000-0000-0000-000000000000/sena-intent",
+          )
           .set("Authorization", t),
       );
     });

@@ -12,6 +12,9 @@ export class ManualReviewer implements IdentityReviewer {
   readonly name = "manual";
 
   review(_input: IdentityReviewInput): Promise<IdentityReviewVerdict> {
-    return Promise.resolve({ approved: false });
+    return Promise.resolve({
+      outcome: "inconclusive" as const,
+      reasonCodes: ["MANUAL_REVIEW_REQUIRED"],
+    });
   }
 }

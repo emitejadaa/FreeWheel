@@ -4,17 +4,66 @@ import * as bcrypt from "bcryptjs";
 import request from "supertest";
 import { PrismaService } from "../../src/prisma/prisma.service";
 import { EmailService } from "../../src/email/email.service";
+import { cuilChecksumValid } from "../../src/common/utils/cuil.util";
 import type { FakeEmailService } from "./email.fake";
 
 export const TEST_PASSWORD = "TestPass123!";
 export const TEST_DATE_OF_BIRTH = "1990-01-01";
+export const TEST_ADDRESS = "Av. Siempre Viva 742, Springfield, CABA";
 
 let seq = 0;
+let dniSeq = 0;
 
 /** Unique, valid email per call so tests never collide on the unique constraint. */
 export function uniqueEmail(prefix = "user"): string {
   seq += 1;
   return `${prefix}-${Date.now()}-${seq}@test.local`;
+}
+
+/** Unique 8-digit DNI per call (User.dni has a unique index). */
+export function uniqueDni(): string {
+  dniSeq += 1;
+  return String(20000000 + dniSeq);
+}
+
+/**
+ * Valid person CUIL for a DNI. Starts from the prefix that matches the sex
+ * (20 = M, 27 = F) and falls back to the sex-neutral 23/24 when the mod-11
+ * check digit would not exist — exactly how real CUILs are assigned. Picking
+ * the opposite-sex prefix would (rightly) trip the CUIL_SEX_MISMATCH check.
+ */
+export function cuilFor(dni: string, sex: "M" | "F" = "M"): string {
+  for (const prefix of [sex === "M" ? "20" : "27", "23", "24"]) {
+    const base = `${prefix}${dni.padStart(8, "0")}`;
+    for (let digit = 0; digit <= 9; digit += 1) {
+      const candidate = `${base}${digit}`;
+      if (cuilChecksumValid(candidate)) return candidate;
+    }
+  }
+  throw new Error(`cuilFor: no valid CUIL exists for DNI ${dni}`);
+}
+
+/**
+ * Fills the manually-entered identity data (dni/cuil/address) via the public
+ * PATCH /users/me route; the verification checklist requires all three.
+ */
+export async function setIdentityProfile(
+  app: INestApplication,
+  token: string,
+  overrides: Partial<{ dni: string; cuil: string; address: string }> = {},
+): Promise<{ dni: string; cuil: string; address: string }> {
+  const dni = overrides.dni ?? uniqueDni();
+  const identity = {
+    dni,
+    cuil: overrides.cuil ?? cuilFor(dni),
+    address: overrides.address ?? TEST_ADDRESS,
+  };
+  await request(app.getHttpServer())
+    .patch("/users/me")
+    .set("Authorization", `Bearer ${token}`)
+    .send(identity)
+    .expect(200);
+  return identity;
 }
 
 /** A Date `days` in the future (booking dates must be in the future). */
@@ -97,12 +146,18 @@ export async function registerUser(
   if (verified) {
     // JwtStrategy reloads verificationStatus from the DB on every request, so
     // bumping it here makes the already-minted token behave as fully verified.
+    // Identity data is seeded too (unique per user) so VERIFIED accounts look
+    // like real post-verification accounts.
     const prisma = app.get(PrismaService);
+    const dni = uniqueDni();
     await prisma.user.update({
       where: { id: authed.id },
       data: {
         phone: "+5491100000000",
         phoneVerifiedAt: new Date(),
+        dni,
+        cuil: cuilFor(dni),
+        address: TEST_ADDRESS,
         verificationStatus: VerificationStatus.VERIFIED,
       },
     });

@@ -60,7 +60,9 @@ describe("Auth", () => {
         .expect(201);
       expect(start.body.expiresAt).toEqual(expect.any(String));
       // No user exists yet.
-      expect(await prisma.user.findUnique({ where: { email: addr } })).toBeNull();
+      expect(
+        await prisma.user.findUnique({ where: { email: addr } }),
+      ).toBeNull();
 
       const code = email.lastCode(addr);
       expect(code).toMatch(/^\d{6}$/);
@@ -75,7 +77,9 @@ describe("Auth", () => {
       expect(res.body.user.password).toBeUndefined();
 
       const created = await prisma.user.findUnique({ where: { email: addr } });
-      expect(created?.verificationStatus).toBe(VerificationStatus.EMAIL_VERIFIED);
+      expect(created?.verificationStatus).toBe(
+        VerificationStatus.EMAIL_VERIFIED,
+      );
       expect(created?.emailVerifiedAt).not.toBeNull();
     });
 
@@ -94,7 +98,9 @@ describe("Auth", () => {
         .post("/auth/register/complete")
         .send({ ...completeBody(addr, "000000") })
         .expect(400);
-      expect(await prisma.user.findUnique({ where: { email: addr } })).toBeNull();
+      expect(
+        await prisma.user.findUnique({ where: { email: addr } }),
+      ).toBeNull();
     });
 
     it("rejects register/complete for an under-18 date of birth (400)", async () => {
@@ -275,7 +281,10 @@ describe("Auth", () => {
     });
 
     it("requires authentication", async () => {
-      await http().post("/auth/verify-email").send({ code: "123456" }).expect(401);
+      await http()
+        .post("/auth/verify-email")
+        .send({ code: "123456" })
+        .expect(401);
     });
   });
 
@@ -326,7 +335,11 @@ describe("Auth", () => {
         .expect(201);
       await http()
         .post("/auth/reset-password")
-        .send({ token: "wrong-token", userId: user.id, newPassword: "Whatever123!" })
+        .send({
+          token: "wrong-token",
+          userId: user.id,
+          newPassword: "Whatever123!",
+        })
         .expect(400);
     });
   });

@@ -6,13 +6,12 @@ import {
 } from "./identity-reviewer.interface";
 
 /**
- * TODO: replace with a real review (manual back-office, AI document check, or
- * an external KYC provider). Until then every complete submission is approved
- * automatically so the verified-account flow works end to end. The admin
- * endpoint PATCH /admin/verifications/:id/review remains the manual override.
+ * Aprueba toda submission completa sin mirar los documentos. Solo sirve para
+ * desarrollo y tests: en producción se usa IDENTITY_REVIEW_MODE=document_ai
+ * (revisión real) o manual (cola de admin).
  *
- * Known consequence, intentional for now: a submission re-sent after an admin
- * REJECTED verdict is auto-approved again.
+ * Consecuencia conocida, intencional en este modo: una submission reenviada
+ * tras un rechazo del admin vuelve a aprobarse sola.
  */
 export class AutoApproveReviewer implements IdentityReviewer {
   readonly name = "auto_approve";
@@ -24,7 +23,8 @@ export class AutoApproveReviewer implements IdentityReviewer {
       `Auto-approving identity submission ${input.verificationId} for user ${input.userId}`,
     );
     return Promise.resolve({
-      approved: true,
+      outcome: "approved" as const,
+      reasonCodes: [],
       notes: "Auto-approved (IDENTITY_REVIEW_MODE=auto_approve)",
     });
   }

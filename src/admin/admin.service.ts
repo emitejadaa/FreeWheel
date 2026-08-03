@@ -9,12 +9,16 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AuditLogService } from "../common/services/audit-log.service";
 import { assertFound } from "../common/utils/entity.util";
 import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
+import { CloudinaryService } from "../media/cloudinary.service";
+import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
 
 @Injectable()
 export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly cloudinary: CloudinaryService,
+    private readonly identityDocuments: IdentityDocumentsService,
   ) {}
 
   listUsers() {
@@ -87,6 +91,47 @@ export class AdminService {
     return verification;
   }
 
+  /**
+   * Documentos de una solicitud para que un admin los revise a mano. Los
+   * assets son privados (type=authenticated): se generan URLs firmadas al
+   * momento, que nunca se persisten ni se exponen al titular. Cada acceso
+   * queda auditado porque implica ver datos personales sensibles.
+   */
+  async getVerificationDocuments(actorId: string, id: string) {
+    const verification = await this.getVerification(id);
+
+    const signedUrl = (url: string | null) => {
+      if (!url) return null;
+      const asset = this.identityDocuments.parsePersistedUrl(url);
+      if (!asset) return null;
+      return this.cloudinary.signedDeliveryUrl(asset.publicId, {
+        format: asset.format,
+      });
+    };
+
+    await this.auditLog.create({
+      actorId,
+      targetUserId: verification.userId,
+      action: "admin.verification.documents.view",
+      entityType: "UserVerification",
+      entityId: id,
+    });
+
+    return {
+      id: verification.id,
+      userId: verification.userId,
+      status: verification.status,
+      documents: {
+        dniFront: signedUrl(verification.dniFrontUrl),
+        dniBack: signedUrl(verification.dniBackUrl),
+        licenseFront: signedUrl(verification.licenseFrontUrl),
+        licenseBack: signedUrl(verification.licenseBackUrl),
+      },
+      extracted: verification.extracted,
+      matchReport: verification.matchReport,
+    };
+  }
+
   async reviewVerification(
     actorId: string,
     id: string,
@@ -106,7 +151,7 @@ export class AdminService {
 
     const updated = await this.prisma.userVerification.update({
       where: { id },
-      data: { status, notes, reviewedAt },
+      data: { status, notes, reviewedAt, reviewerName: "admin" },
       include: { user: { select: USER_SAFE_SELECT } },
     });
 

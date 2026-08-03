@@ -121,11 +121,7 @@ export class EmailService {
           <p style="color:#6b7280;font-size:13px;margin-top:20px">Si no reconocés esta solicitud, podés ignorar este email.</p>
         </div>
       </div>`;
-    await this.send(
-      email,
-      "Nueva solicitud de reserva - Freewheel",
-      html,
-    );
+    await this.send(email, "Nueva solicitud de reserva - Freewheel", html);
   }
 
   async sendBookingAcceptedToRenter(

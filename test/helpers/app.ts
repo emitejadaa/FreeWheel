@@ -1,40 +1,109 @@
 import type { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
+import { ThrottlerStorage } from "@nestjs/throttler";
 import { AppModule } from "../../src/app.module";
 import { configureApp } from "../../src/app.factory";
 import { EmailService } from "../../src/email/email.service";
 import { SmsService } from "../../src/sms/sms.service";
+import { CloudinaryService } from "../../src/media/cloudinary.service";
+import { BarcodeDecoderService } from "../../src/verification/extraction/barcode-decoder.service";
+import { DocumentOcrService } from "../../src/verification/extraction/document-ocr.service";
 import { PrismaService } from "../../src/prisma/prisma.service";
 import { FakeEmailService } from "./email.fake";
 import { FakeSmsService } from "./sms.fake";
+import { FakeCloudinaryService } from "./cloudinary.fake";
+import { FakeIdentityExtraction } from "./identity.fake";
 
 export interface TestContext {
   app: INestApplication;
   prisma: PrismaService;
   email: FakeEmailService;
   sms: FakeSmsService;
+  cloudinary: FakeCloudinaryService;
+  identity: FakeIdentityExtraction;
+}
+
+export interface TestAppOptions {
+  /**
+   * Modo de revisión de identidad. Por defecto queda el del entorno
+   * (auto_approve), que es lo que asumen las suites que solo necesitan una
+   * cuenta verificada. Pasar "document_ai" para ejercitar la revisión
+   * documental real con los puertos de extracción fakeados.
+   */
+  identityReviewMode?: "auto_approve" | "manual" | "document_ai";
 }
 
 /**
  * Boots the full Nest app for E2E tests: same global pipes/filter as production
- * (via configureApp), with EmailService and SmsService replaced by in-memory
- * fakes so emailed/texted codes and tokens can be asserted.
+ * (via configureApp), with the external-service adapters (email, SMS,
+ * Cloudinary, lector de códigos y OCR) replaced by in-memory fakes so codes,
+ * documents and verdicts can be driven and asserted without network access.
  */
-export async function createTestApp(): Promise<TestContext> {
+export async function createTestApp(
+  options: TestAppOptions = {},
+): Promise<TestContext> {
   const email = new FakeEmailService();
   const sms = new FakeSmsService();
+  const cloudinary = new FakeCloudinaryService();
+  const identity = new FakeIdentityExtraction();
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-    .overrideProvider(EmailService)
-    .useValue(email)
-    .overrideProvider(SmsService)
-    .useValue(sms)
-    .compile();
+  // El modo document_ai exige credenciales al arrancar; los adaptadores
+  // reales están fakeados, así que alcanzan valores dummy. Se asignan sin
+  // condición (el .env del repo trae estas claves vacías) y se restauran al
+  // salir para no contaminar otras suites.
+  const envOverrides: Record<string, string> = options.identityReviewMode
+    ? {
+        IDENTITY_REVIEW_MODE: options.identityReviewMode,
+        CLOUDINARY_CLOUD_NAME: "test-cloud",
+        CLOUDINARY_API_KEY: "test-key",
+        CLOUDINARY_API_SECRET: "test-secret",
+        GROQ_API_KEY: "test-groq-key",
+      }
+    : {};
+  const previousEnv = new Map(
+    Object.keys(envOverrides).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, envOverrides);
 
-  const app = moduleRef.createNestApplication();
-  configureApp(app);
-  await app.init();
+  try {
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(EmailService)
+      .useValue(email)
+      .overrideProvider(SmsService)
+      .useValue(sms)
+      .overrideProvider(CloudinaryService)
+      .useValue(cloudinary)
+      .overrideProvider(BarcodeDecoderService)
+      .useValue(identity.barcodes)
+      .overrideProvider(DocumentOcrService)
+      .useValue(identity.ocr)
+      // El suite corre decenas de requests desde la misma IP contra rutas con
+      // límites pensados para producción (p. ej. 5 submits de identidad cada 15
+      // minutos). El rate limiting es infraestructura, no comportamiento de
+      // dominio: con un storage que nunca acumula hits el guard sigue en la
+      // cadena pero jamás bloquea, y los tests quedan deterministas.
+      .overrideProvider(ThrottlerStorage)
+      .useValue({
+        increment: () =>
+          Promise.resolve({
+            totalHits: 0,
+            timeToExpire: 0,
+            isBlocked: false,
+            timeToBlockExpire: 0,
+          }),
+      })
+      .compile();
 
-  const prisma = app.get(PrismaService);
-  return { app, prisma, email, sms };
+    const app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
+
+    const prisma = app.get(PrismaService);
+    return { app, prisma, email, sms, cloudinary, identity };
+  } finally {
+    for (const [key, value] of previousEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }

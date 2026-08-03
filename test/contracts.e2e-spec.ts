@@ -44,7 +44,11 @@ describe("Contracts", () => {
     const created = await http()
       .post("/bookings")
       .set("Authorization", auth(renter.token))
-      .send({ listingId: listing.id, startDate: futureDate(5), endDate: futureDate(8) })
+      .send({
+        listingId: listing.id,
+        startDate: futureDate(5),
+        endDate: futureDate(8),
+      })
       .expect(201);
     await http()
       .patch(`/bookings/${created.body.id}/accept`)

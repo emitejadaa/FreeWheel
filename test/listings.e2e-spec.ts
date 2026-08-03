@@ -93,8 +93,15 @@ describe("Listings", () => {
       const v1 = await createVehicle(app, owner.token, { brand: "Ford" });
       await createListing(app, owner.token, v1.id, { pricePerDay: 3000 });
 
-      const res = await request(app.getHttpServer()).get("/listings").expect(200);
-      expect(res.body).toMatchObject({ page: 1, limit: 20, total: 1, totalPages: 1 });
+      const res = await request(app.getHttpServer())
+        .get("/listings")
+        .expect(200);
+      expect(res.body).toMatchObject({
+        page: 1,
+        limit: 20,
+        total: 1,
+        totalPages: 1,
+      });
       expect(res.body.data).toHaveLength(1);
     });
 
@@ -134,9 +141,13 @@ describe("Listings", () => {
         .set("Authorization", `Bearer ${owner.token}`)
         .expect(200);
 
-      const catalog = await request(app.getHttpServer()).get("/listings").expect(200);
+      const catalog = await request(app.getHttpServer())
+        .get("/listings")
+        .expect(200);
       expect(catalog.body.total).toBe(0);
-      await request(app.getHttpServer()).get(`/listings/${listing.id}`).expect(404);
+      await request(app.getHttpServer())
+        .get(`/listings/${listing.id}`)
+        .expect(404);
     });
   });
 
