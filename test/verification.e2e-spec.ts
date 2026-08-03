@@ -167,4 +167,5 @@ describe("Verification", () => {
   it("requires authentication", async () => {
     await http().post("/verification/email/request").expect(401);
   });
+
 });

@@ -79,6 +79,11 @@ enum VerificationCodePurpose {
   PASSWORD_RESET
   // Confirmación por email para cambiar el precio de una publicación.
   PRICE_CHANGE
+  /// Cambio de la dirección de email de la cuenta. El código se manda a la
+  /// dirección NUEVA (que queda guardada en targetValue) y el email de la cuenta
+  /// no se toca hasta que ese código se confirma: es la única forma de saber que
+  /// la dirección nueva existe y es de quien la está poniendo.
+  EMAIL_CHANGE
 }
 
 /// A quién apunta un reporte hecho por una persona.

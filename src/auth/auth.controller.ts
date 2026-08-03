@@ -18,6 +18,10 @@ import { RegisterStartDto } from "./dto/register-start.dto";
 import { RegisterCompleteDto } from "./dto/register-complete.dto";
 import { CompleteProfileDto } from "./dto/complete-profile.dto";
 import { VerifyEmailDto } from "./dto/verify-email.dto";
+import {
+  ConfirmEmailChangeDto,
+  RequestEmailChangeDto,
+} from "./dto/email-change.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { getFrontendUrl } from "../config/public-urls";
@@ -110,25 +114,27 @@ export class AuthController {
     );
   }
 
+  /**
+   * Cambiar el email de la cuenta, en dos pasos. El código va a la dirección
+   * NUEVA: es la única forma de comprobar que existe y es de quien la pone.
+   * Hasta confirmar, el email de la cuenta no se toca.
+   */
   @UseGuards(JwtAuthGuard)
   @Post("request-email-change")
-  requestEmailChange(@Req() req: Request, @Body() body: { newEmail: string }) {
+  requestEmailChange(@Req() req: Request, @Body() dto: RequestEmailChangeDto) {
     return this.authService.requestEmailChange(
       (req.user as CurrentUserPayload).id,
-      body.newEmail,
+      dto.newEmail,
     );
   }
 
   @UseGuards(JwtAuthGuard)
   @Post("confirm-email-change")
-  confirmEmailChange(
-    @Req() req: Request,
-    @Body() body: { code: string; newEmail: string },
-  ) {
+  confirmEmailChange(@Req() req: Request, @Body() dto: ConfirmEmailChangeDto) {
+    // La dirección sale del código guardado, no del cuerpo del pedido.
     return this.authService.confirmEmailChange(
       (req.user as CurrentUserPayload).id,
-      body.code,
-      body.newEmail,
+      dto.code,
     );
   }
 }

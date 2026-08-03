@@ -416,15 +416,42 @@ export class AuthService {
     };
   }
 
+  /**
+   * Primer paso para cambiar el email de la cuenta: se manda un código A LA
+   * DIRECCIÓN NUEVA.
+   *
+   * Va a la nueva y no a la vieja a propósito: lo que hay que probar es que esa
+   * dirección existe y es de quien la está poniendo. El email es la llave de la
+   * cuenta —por ahí llega el link para recuperar la contraseña—, así que dejarla
+   * apuntando a una dirección mal escrita sería perder el acceso.
+   *
+   * El email de la cuenta NO se toca acá: queda guardado en el código y se aplica
+   * al confirmar.
+   */
   async requestEmailChange(userId: string, newEmail: string) {
-    const existing = await this.usersService.findByEmail(newEmail);
-    if (existing) throw new ConflictException("This email is already in use.");
+    const user = await this.usersService.findById(userId);
+    if (user && user.email.toLowerCase() === newEmail.toLowerCase()) {
+      throw new BadRequestException(
+        "Ese ya es el email de tu cuenta. Poné una dirección distinta.",
+      );
+    }
 
+    const existing = await this.usersService.findByEmail(newEmail);
+    if (existing) {
+      throw new ConflictException(
+        "Ya hay una cuenta con ese email. Probá con otra dirección.",
+      );
+    }
+
+    // Se anulan los pedidos de cambio anteriores, y SOLO esos. Antes esto usaba
+    // el propósito EMAIL_VERIFICATION, el mismo que el código para confirmar el
+    // email actual: los dos trámites se pisaban, y confirmar la verificación
+    // agarraba el código del cambio (el más reciente) y contestaba "código
+    // inválido" por un código que estaba bien.
     await this.prisma.verificationCode.updateMany({
       where: {
         userId,
-        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
-        targetValue: newEmail,
+        purpose: VerificationCodePurpose.EMAIL_CHANGE,
         consumedAt: null,
       },
       data: { consumedAt: new Date() },
@@ -436,7 +463,7 @@ export class AuthService {
     await this.prisma.verificationCode.create({
       data: {
         userId,
-        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
+        purpose: VerificationCodePurpose.EMAIL_CHANGE,
         targetType: "EMAIL",
         targetValue: newEmail,
         codeHash,
@@ -445,34 +472,57 @@ export class AuthService {
     });
 
     await this.emailService.sendVerificationCode(newEmail, code);
-    return { message: "Code sent to the new email." };
+    this.logger.log(`Email change requested for user ${userId}`);
+    return { message: "Code sent to the new email.", sentTo: newEmail };
   }
 
-  async confirmEmailChange(userId: string, code: string, newEmail: string) {
-    const existing = await this.usersService.findByEmail(newEmail);
-    if (existing) throw new ConflictException("This email is already in use.");
-
-    await consumeVerificationCode(this.prisma, {
+  /**
+   * Segundo paso: con el código que llegó a la dirección nueva, se aplica el
+   * cambio.
+   *
+   * La dirección se toma DEL CÓDIGO GUARDADO, no de lo que manda el cliente: así
+   * no hay forma de confirmar con un código válido y colar otra dirección.
+   */
+  async confirmEmailChange(userId: string, code: string) {
+    const record = await consumeVerificationCode(this.prisma, {
       where: {
         userId,
-        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
-        targetValue: newEmail,
+        purpose: VerificationCodePurpose.EMAIL_CHANGE,
       },
       plaintext: code,
       errors: {
         missing: () =>
-          new BadRequestException("Code expired. Request a new one."),
+          new BadRequestException(
+            "No hay ningún cambio de email pendiente. Volvé a pedir el código.",
+          ),
         expired: () =>
-          new BadRequestException("Code expired. Request a new one."),
+          new BadRequestException("El código venció. Pedí uno nuevo."),
         tooManyAttempts: () =>
-          new BadRequestException("Too many attempts. Request a new code."),
-        invalid: () => new BadRequestException("Incorrect code"),
+          new BadRequestException("Demasiados intentos. Pedí un código nuevo."),
+        invalid: () => new BadRequestException("El código no es correcto."),
       },
     });
 
+    const newEmail = record.targetValue;
+
+    // Se vuelve a chequear: entre el pedido y la confirmación pasan minutos y
+    // alguien podría haber registrado esa dirección.
+    const existing = await this.usersService.findByEmail(newEmail);
+    if (existing && existing.id !== userId) {
+      throw new ConflictException(
+        "Mientras confirmabas, alguien registró ese email. Probá con otra dirección.",
+      );
+    }
+
     await this.prisma.user.update({
       where: { id: userId },
-      data: { email: newEmail },
+      data: {
+        email: newEmail,
+        // Se acaba de comprobar que recibe el correo ahí, así que la dirección
+        // nueva queda verificada. Antes no se tocaba, y la cuenta se quedaba con
+        // la marca de verificación de la dirección ANTERIOR.
+        emailVerifiedAt: new Date(),
+      },
     });
 
     this.logger.log(`Email changed for user ${userId}`);

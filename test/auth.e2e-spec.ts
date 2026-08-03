@@ -332,7 +332,7 @@ describe("Auth", () => {
   });
 
   describe("Email change", () => {
-    it("changes the email after confirming the emailed code", async () => {
+    it("changes the email after confirming the code sent to the NEW address", async () => {
       const user = await registerUser(app);
       const newEmail = uniqueEmail("changed");
 
@@ -342,13 +342,15 @@ describe("Auth", () => {
         .send({ newEmail })
         .expect(201);
 
+      // El código sale a la dirección NUEVA: es lo que prueba que existe y que
+      // es de quien la está poniendo.
       const code = email.lastCode(newEmail);
       expect(code).toMatch(/^\d{6}$/);
 
       await http()
         .post("/auth/confirm-email-change")
         .set("Authorization", `Bearer ${user.token}`)
-        .send({ code, newEmail })
+        .send({ code })
         .expect(201);
 
       const me = await http()
@@ -356,6 +358,104 @@ describe("Auth", () => {
         .set("Authorization", `Bearer ${user.token}`)
         .expect(200);
       expect(me.body.email).toBe(newEmail);
+      // La dirección nueva queda verificada: se acaba de comprobar que recibe
+      // el correo ahí. Antes se quedaba con la marca de la dirección anterior.
+      expect(me.body.emailVerifiedAt).toBeTruthy();
+    });
+
+    it("does not touch the email until the code is confirmed", async () => {
+      const user = await registerUser(app);
+      const newEmail = uniqueEmail("pendiente");
+
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail })
+        .expect(201);
+
+      const me = await http()
+        .get("/users/me")
+        .set("Authorization", `Bearer ${user.token}`)
+        .expect(200);
+      expect(me.body.email).toBe(user.email);
+    });
+
+    it("rejects a wrong code and leaves the email untouched", async () => {
+      const user = await registerUser(app);
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail: uniqueEmail("otra") })
+        .expect(201);
+
+      await http()
+        .post("/auth/confirm-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ code: "000000" })
+        .expect(400);
+
+      const me = await http()
+        .get("/users/me")
+        .set("Authorization", `Bearer ${user.token}`)
+        .expect(200);
+      expect(me.body.email).toBe(user.email);
+    });
+
+    it("refuses an address that already belongs to another account", async () => {
+      const user = await registerUser(app);
+      const otro = await registerUser(app);
+
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail: otro.email })
+        .expect(409);
+    });
+
+    it("refuses the address the account already has", async () => {
+      const user = await registerUser(app);
+
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail: user.email })
+        .expect(400);
+    });
+
+    it("refuses something that is not an email address", async () => {
+      // El controller recibía el cuerpo sin DTO, así que cualquier texto entraba
+      // y quedaba guardado como email de la cuenta.
+      const user = await registerUser(app);
+
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail: "esto-no-es-un-email" })
+        .expect(400);
+    });
+
+    it("does not cancel the pending code that verifies the CURRENT email", async () => {
+      // Los dos trámites conviven. Antes los dos usaban el propósito
+      // EMAIL_VERIFICATION, así que pedir el cambio hacía que confirmar la
+      // verificación del email actual devolviera "código inválido".
+      const user = await registerUser(app);
+      await http()
+        .post("/verification/email/request")
+        .set("Authorization", `Bearer ${user.token}`)
+        .expect(201);
+      const codigoDeVerificacion = email.lastCode(user.email);
+
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail: uniqueEmail("tercera") })
+        .expect(201);
+
+      await http()
+        .post("/verification/email/confirm")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ code: codigoDeVerificacion })
+        .expect(201);
     });
   });
 });

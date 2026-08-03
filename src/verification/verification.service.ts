@@ -8,6 +8,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import {
   User,
+  VerificationCodePurpose,
   VerificationCodeTargetType,
   VerificationStatus,
 } from "@prisma/client";
@@ -265,7 +266,15 @@ export class VerificationService {
     code: string,
   ) {
     await consumeVerificationCode(this.prisma, {
-      where: { userId, targetType },
+      // El propósito importa además del canal: el cambio de dirección de email
+      // también guarda su código con targetType EMAIL, así que filtrando solo por
+      // canal esta confirmación agarraba el código del cambio (el más reciente),
+      // no coincidía, y devolvía "código inválido" por un código que estaba bien.
+      where: {
+        userId,
+        targetType,
+        purpose: VerificationCodePurpose.EMAIL_VERIFICATION,
+      },
       plaintext: code,
       errors: {
         missing: () => new NotFoundException("Verification code not found"),
