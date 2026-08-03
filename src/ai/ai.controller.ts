@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AiChatDto } from "./dto/ai-chat.dto";
 import { AiDocumentDto } from "./dto/ai-document.dto";
@@ -14,6 +14,19 @@ import { AiService } from "./ai.service";
 @Controller("ai")
 export class AiController {
   constructor(private readonly ai: AiService) {}
+
+  /**
+   * ¿Está funcionando la revisión por IA? Dice si falta la clave, qué contestó
+   * Groq la última vez que falló, y qué modelos de visión ofrece hoy.
+   *
+   * Es de lectura y no expone la clave ni datos de nadie, así que queda pública:
+   * cuando la verificación de documentos se rompe hay que poder mirarlo desde el
+   * navegador sin depender de los logs del deploy.
+   */
+  @Get("health")
+  health() {
+    return this.ai.health();
+  }
 
   // Pública: el chatbot de ayuda funciona también para visitantes sin cuenta.
   @Post("chat")

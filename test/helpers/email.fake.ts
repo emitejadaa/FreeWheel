@@ -4,6 +4,14 @@
  * capture them here to drive the verify-email / reset-password flows.
  */
 export class FakeEmailService {
+  /**
+   * En los tests el envío "funciona" siempre. El servicio real expone esto para
+   * poder cortar antes los flujos que dependen de que el mail llegue (registro,
+   * recuperar contraseña): sin GMAIL_USER/GMAIL_APP_PASSWORD el mail se perdía en
+   * silencio y la persona quedaba esperando un código que nunca salió.
+   */
+  readonly configured = true;
+
   private readonly codes = new Map<string, string>();
   private readonly resetTokens = new Map<string, string>();
   private readonly priceChangeCodes = new Map<string, string>();

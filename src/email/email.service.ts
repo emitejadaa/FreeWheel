@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
 import { getFrontendUrl } from "../config/public-urls";
@@ -22,6 +26,45 @@ export class EmailService {
       service: "gmail",
       auth: { user, pass },
     });
+  }
+
+  /**
+   * ¿Está configurado el envío de mails? Sin GMAIL_USER y GMAIL_APP_PASSWORD no
+   * sale ningún mail.
+   */
+  get configured(): boolean {
+    return Boolean(
+      this.configService.get<string>("GMAIL_USER") &&
+        this.configService.get<string>("GMAIL_APP_PASSWORD"),
+    );
+  }
+
+  /**
+   * Manda un mail que la persona ESTÁ ESPERANDO para poder seguir (un código de
+   * verificación, un link para recuperar la contraseña) y falla si no se puede
+   * mandar.
+   *
+   * Existe por un problema concreto: send() se va sin hacer nada cuando el mail no
+   * está configurado, así que /auth/register/start contestaba "código enviado" con
+   * un 201 y el mail no salía nunca. La persona se quedaba esperando un código que
+   * no existía, escribía cualquier cosa y recibía un "Incorrect code" 400 que no
+   * tenía nada que ver con el problema real. Los avisos que no bloquean a nadie
+   * (una reserva pedida, una aceptada) siguen usando send() y se pierden en
+   * silencio, que para eso está bien.
+   */
+  private async sendOrThrow(to: string, subject: string, html: string) {
+    if (!this.configured) {
+      this.logger.error(
+        `No se pudo mandar "${subject}" a ${to}: falta configurar el envío de ` +
+          "mails (GMAIL_USER y GMAIL_APP_PASSWORD en las variables de entorno).",
+      );
+      throw new ServiceUnavailableException(
+        "No podemos enviar mails en este momento, así que no te llegaría el " +
+          "código. Avisale a quien administra el servidor que falta configurar " +
+          "el envío de mails.",
+      );
+    }
+    await this.send(to, subject, html);
   }
 
   private async send(to: string, subject: string, html: string) {
@@ -57,7 +100,7 @@ export class EmailService {
           <p style="color:#6b7280;font-size:13px;margin-top:20px">Expira en 10 minutos. No lo compartas con nadie.</p>
         </div>
       </div>`;
-    await this.send(email, "Tu código de verificación - Freewheel", html);
+    await this.sendOrThrow(email, "Tu código de verificación - Freewheel", html);
   }
 
   /**
@@ -88,7 +131,7 @@ export class EmailService {
           </p>
         </div>
       </div>`;
-    await this.send(
+    await this.sendOrThrow(
       email,
       "Código para verificar tu teléfono - Freewheel",
       html,
@@ -137,7 +180,7 @@ export class EmailService {
           </p>
         </div>
       </div>`;
-    await this.send(email, "Confirmá el cambio de precio - Freewheel", html);
+    await this.sendOrThrow(email, "Confirmá el cambio de precio - Freewheel", html);
   }
 
   async sendPasswordReset(
@@ -165,7 +208,7 @@ export class EmailService {
           </p>
         </div>
       </div>`;
-    await this.send(email, "Restablecer tu contraseña - Freewheel", html);
+    await this.sendOrThrow(email, "Restablecer tu contraseña - Freewheel", html);
   }
   async sendBookingRequestedToOwner(
     email: string,

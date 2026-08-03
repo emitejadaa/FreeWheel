@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -288,6 +289,18 @@ export class AuthService {
 
   async forgotPassword(dto: ForgotPasswordDto) {
     this.logger.log(`Password reset requested for ${dto.email}`);
+
+    // Se corta ACÁ, antes de buscar el usuario, y no cuando se manda el mail: si
+    // el corte quedara más abajo, un email registrado daría 503 y uno inexistente
+    // daría el mensaje genérico, y comparando las dos respuestas se podría
+    // averiguar qué direcciones tienen cuenta.
+    if (!this.emailService.configured) {
+      throw new ServiceUnavailableException(
+        "No podemos enviar mails en este momento, así que no te llegaría el " +
+          "link para recuperar la contraseña. Avisale a quien administra el " +
+          "servidor que falta configurar el envío de mails.",
+      );
+    }
 
     const user = await this.usersService.findByEmail(dto.email);
     if (!user) return { message: PASSWORD_RESET_REPLY };

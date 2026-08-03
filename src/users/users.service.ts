@@ -30,6 +30,14 @@ export class UsersService {
    * Solo nombre, foto, promedio de reseñas y desde cuándo está en la plataforma.
    * Nada de email, teléfono, documento ni fecha de nacimiento: eso no es
    * información pública aunque las dos personas tengan una reserva en curso.
+   *
+   * Del documento se devuelve ÚNICAMENTE los últimos cuatro dígitos, y solo si la
+   * cuenta está verificada. Alcanza para lo que sirve —darle a la otra persona
+   * algo concreto que mirar, y poder cotejarlo si alguna vez hay un problema— sin
+   * poner el número entero ni las fotos del DNI a la vista de cualquiera, que es
+   * material con el que se suplanta una identidad. Las fotos completas las ven el
+   * propio dueño de la cuenta (GET /verification/identity/me) y el panel de
+   * administración (GET /admin/verifications), y nadie más.
    */
   async getPublicProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -48,10 +56,26 @@ export class UsersService {
     });
     assertFound(user, "User not found");
 
+    const verified = user.verificationStatus === "VERIFIED";
+
+    // Los últimos cuatro dígitos del documento con el que se verificó. Se lee de
+    // la última solicitud aprobada, no de lo que la persona haya escrito.
+    let documentLast4: string | null = null;
+    if (verified) {
+      const approved = await this.prisma.userVerification.findFirst({
+        where: { userId, status: "VERIFIED", documentNumber: { not: null } },
+        orderBy: { reviewedAt: "desc" },
+        select: { documentNumber: true },
+      });
+      const digits = (approved?.documentNumber ?? "").replace(/\D/g, "");
+      if (digits.length >= 4) documentLast4 = digits.slice(-4);
+    }
+
     return {
       ...user,
       // Interesa si está verificada o no, no en qué paso del trámite está.
-      verified: user.verificationStatus === "VERIFIED",
+      verified,
+      documentLast4,
       verificationStatus: undefined,
     };
   }

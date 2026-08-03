@@ -76,7 +76,7 @@ describe("AiIdentityReviewer", () => {
     });
   });
 
-  it("does not block the account when the AI service is unavailable", async () => {
+  it("leaves the submission pending — never approved — when the AI is unavailable", async () => {
     const unavailable: DocumentInspection = {
       matches: null,
       reason: "La revisión automática no está disponible.",
@@ -87,9 +87,83 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    // Que falte un servicio externo no puede dejar a todas las cuentas sin
-    // verificar: se aprueba y queda anotado que no se revisó.
+    // Antes esto aprobaba "para no dejar cuentas sin verificar", y así una foto
+    // de un perro quedó aprobada como DNI el día que el modelo de Groq se cayó.
+    // Ahora espera a un admin: pendiente no es lo mismo que rechazado.
+    expect(verdict.approved).toBe(false);
+    expect(verdict.pending).toBe(true);
+    expect(verdict.notes).toContain("no está disponible");
+  });
+
+  it("rejects a licence issued to somebody other than the DNI holder", async () => {
+    const reviewer = new AiIdentityReviewer(
+      makeAi([
+        good({ documentNumber: "40123456", fullName: "Ignacio Britos" }),
+        good(),
+        good({ documentNumber: "38999111", fullName: "Carmen Vega" }),
+        good({ expiresAt: "2030-05-20" }),
+      ]),
+    );
+
+    const verdict = await reviewer.review(input);
+
+    expect(verdict.approved).toBe(false);
+    expect(verdict.notes).toContain("no coincide con el del DNI");
+  });
+
+  it("accepts the same person even when one document adds a middle name", async () => {
+    // El DNI dice "PÉREZ, Juan Carlos" y la licencia "JUAN PEREZ": misma persona.
+    const reviewer = new AiIdentityReviewer(
+      makeAi([
+        good({ documentNumber: "40123456", fullName: "PÉREZ, Juan Carlos" }),
+        good(),
+        good({ documentNumber: "40123456", fullName: "JUAN PEREZ" }),
+        good({ expiresAt: "2030-05-20" }),
+      ]),
+    );
+
+    const verdict = await reviewer.review(input);
+
     expect(verdict.approved).toBe(true);
-    expect(verdict.notes).toContain("no disponible");
+  });
+
+  it("rejects a licence whose number is not the DNI number", async () => {
+    const reviewer = new AiIdentityReviewer(
+      makeAi([
+        good({ documentNumber: "40123456" }),
+        good(),
+        good({ documentNumber: "11222333" }),
+        good(),
+      ]),
+    );
+
+    const verdict = await reviewer.review(input);
+
+    expect(verdict.approved).toBe(false);
+    expect(verdict.notes).toContain("no coincide con el del");
+  });
+
+  it("rejects an expired licence", async () => {
+    const reviewer = new AiIdentityReviewer(
+      makeAi([good(), good(), good(), good({ expiresAt: "2020-01-31" })]),
+    );
+
+    const verdict = await reviewer.review(input);
+
+    expect(verdict.approved).toBe(false);
+    expect(verdict.notes).toContain("vencida");
+  });
+
+  it("does not invent a rejection when a name could not be read", async () => {
+    // Las cuatro fotos son los documentos pedidos, pero la IA no pudo leer el
+    // nombre de la licencia. Rechazar por un dato ilegible dejaría afuera a
+    // gente con documentos válidos.
+    const reviewer = new AiIdentityReviewer(
+      makeAi([good({ fullName: "Ignacio Britos" }), good(), good(), good()]),
+    );
+
+    const verdict = await reviewer.review(input);
+
+    expect(verdict.approved).toBe(true);
   });
 });

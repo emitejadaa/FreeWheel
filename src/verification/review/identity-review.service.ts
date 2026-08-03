@@ -144,9 +144,18 @@ export class IdentityReviewService {
         : {}),
     };
 
-    // Sin decisión (modo manual): la solicitud queda como estaba, esperando que
-    // un admin la revise. No es un rechazo.
+    // Sin decisión (modo manual, o la IA no pudo revisar): la solicitud queda
+    // esperando que un admin la mire. No es un rechazo, así que no se le cambia
+    // el estado, pero sí se guardan la nota y lo que se haya podido leer: sin la
+    // nota el admin abre el panel y ve una solicitud pendiente sin ninguna pista
+    // de por qué nadie la decidió.
     if (!verdict.approved && verdict.pending) {
+      if (verdict.notes || Object.keys(extractedData).length > 0) {
+        await this.prisma.userVerification.update({
+          where: { id: submission.id },
+          data: { notes: verdict.notes, ...extractedData },
+        });
+      }
       return false;
     }
 

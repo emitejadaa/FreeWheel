@@ -9,9 +9,34 @@ import { ConfigService } from "@nestjs/config";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+const MODELS_URL = "https://api.groq.com/openai/v1/models";
 const MODEL = "llama-3.3-70b-versatile";
-const VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
+
+/**
+ * Modelos de visión, en orden de preferencia.
+ *
+ * POR QUÉ ES UNA LISTA Y NO UNO SOLO: Groq da de baja modelos seguido, y cuando
+ * eso pasa la llamada vuelve con un error de "modelo inexistente". Antes había un
+ * único nombre escrito acá, así que el día que Groq lo retiró la revisión de
+ * documentos dejó de funcionar entera: la pantalla decía "no se pudo revisar" y
+ * el DNI se subía sin revisar, que es como una foto de un perro llegó a pasar por
+ * documento.
+ *
+ * Ahora se prueban en orden hasta que uno contesta. Y si el error NO es por el
+ * modelo (clave inválida, imagen demasiado grande), se corta enseguida: reintentar
+ * con otro modelo no arregla nada y solo hace esperar a la persona.
+ *
+ * Con GROQ_VISION_MODEL se puede forzar uno (o varios separados por coma) sin
+ * tocar el código, para el día que Groq saque un modelo nuevo.
+ */
+const DEFAULT_VISION_MODELS = [
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
+];
+
+/** Errores de Groq que significan "ese modelo ya no existe": probar el siguiente. */
+const MODEL_GONE = /model_not_found|decommission|does not exist|not found/i;
 
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -111,6 +136,19 @@ export class AiService {
     return Boolean(this.config.get<string>("GROQ_API_KEY"));
   }
 
+  /** Lo último que contestó Groq cuando falló, para poder mirarlo en /ai/health. */
+  private lastVisionError: string | null = null;
+
+  /** Los modelos de visión a probar, en orden. GROQ_VISION_MODEL manda. */
+  private visionModels(): string[] {
+    const configured = (this.config.get<string>("GROQ_VISION_MODEL") ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    // Los configurados primero, y los de siempre atrás como respaldo.
+    return [...new Set([...configured, ...DEFAULT_VISION_MODELS])];
+  }
+
   /**
    * Manda una imagen al modelo de visión y devuelve el texto de la respuesta.
    *
@@ -137,47 +175,132 @@ export class AiService {
       return { ok: false, code: "not_configured" };
     }
 
-    try {
-      const res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey()}`,
-        },
-        body: JSON.stringify({
-          model: VISION_MODEL,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageUrl } },
-                { type: "text", text: prompt },
-              ],
-            },
-          ],
-          temperature: 0,
-          max_tokens: maxTokens,
-        }),
-      });
+    for (const model of this.visionModels()) {
+      try {
+        const res = await fetch(GROQ_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey()}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "image_url", image_url: { url: imageUrl } },
+                  { type: "text", text: prompt },
+                ],
+              },
+            ],
+            temperature: 0,
+            max_tokens: maxTokens,
+          }),
+        });
 
-      if (!res.ok) {
+        if (res.ok) {
+          const data = (await res.json()) as {
+            choices?: { message?: { content?: string } }[];
+          };
+          this.lastVisionError = null;
+          return {
+            ok: true,
+            content: data.choices?.[0]?.message?.content ?? "",
+          };
+        }
+
         // El cuerpo del error dice lo que hace falta para arreglarlo (clave
         // inválida, modelo dado de baja, imagen demasiado grande).
-        const detail = await res.text().catch(() => "");
-        this.logger.error(
-          `Groq visión respondió ${res.status}: ${detail.slice(0, 500)}`,
-        );
+        const detail = (await res.text().catch(() => "")).slice(0, 500);
+        this.lastVisionError = `${model} → ${res.status}: ${detail}`;
+        this.logger.error(`Groq visión (${model}) respondió ${res.status}: ${detail}`);
+
+        // Si el modelo ya no existe, se prueba el siguiente de la lista. Con
+        // cualquier otro error no tiene sentido: el problema no es el modelo.
+        if (res.status === 404 || MODEL_GONE.test(detail)) continue;
+        return { ok: false, code: "upstream_error" };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.lastVisionError = `${model} → ${message}`;
+        this.logger.error(`Groq visión (${model}) falló: ${message}`);
         return { ok: false, code: "upstream_error" };
       }
+    }
 
-      const data = (await res.json()) as {
-        choices?: { message?: { content?: string } }[];
+    // Se agotó la lista: todos los modelos dieron "no existe".
+    this.logger.error(
+      "Ningún modelo de visión de la lista está disponible en Groq. " +
+        "Mirá GET /ai/health para ver los que ofrece hoy y cargá uno en GROQ_VISION_MODEL.",
+    );
+    return { ok: false, code: "upstream_error" };
+  }
+
+  /**
+   * Diagnóstico de la revisión por IA. Existe porque cuando esto se rompe, lo
+   * único que se veía desde la app era un genérico "no se pudo revisar", y para
+   * saber el motivo real había que entrar al panel del deploy a leer los logs
+   * —que no siempre está a mano—. Acá se ve de una: si falta la clave, qué
+   * contestó Groq la última vez, y qué modelos ofrece hoy.
+   */
+  async health(): Promise<{
+    configured: boolean;
+    visionModels: string[];
+    lastVisionError: string | null;
+    availableVisionModels?: string[];
+    problem?: string;
+  }> {
+    const visionModels = this.visionModels();
+    if (!this.configured) {
+      return {
+        configured: false,
+        visionModels,
+        lastVisionError: this.lastVisionError,
+        problem:
+          "Falta GROQ_API_KEY en las variables de entorno del backend. " +
+          "Sin esa clave no se puede revisar ninguna foto.",
       };
-      return { ok: true, content: data.choices?.[0]?.message?.content ?? "" };
+    }
+
+    try {
+      const res = await fetch(MODELS_URL, {
+        headers: { Authorization: `Bearer ${this.apiKey()}` },
+      });
+      if (!res.ok) {
+        return {
+          configured: true,
+          visionModels,
+          lastVisionError: this.lastVisionError,
+          problem: `Groq respondió ${res.status} al pedirle la lista de modelos. Si es 401, la GROQ_API_KEY no sirve.`,
+        };
+      }
+      const data = (await res.json()) as { data?: { id?: string }[] };
+      const ids = (data.data ?? [])
+        .map((m) => m.id)
+        .filter((id): id is string => Boolean(id));
+      // Los que sirven para mirar imágenes: Groq no marca esto en la respuesta,
+      // así que se filtra por nombre, que es lo que se puede hacer.
+      const withVision = ids.filter((id) => /vision|llama-4|scout|maverick/i.test(id));
+      const usable = visionModels.filter((m) => ids.includes(m));
+
+      return {
+        configured: true,
+        visionModels,
+        lastVisionError: this.lastVisionError,
+        availableVisionModels: withVision,
+        problem:
+          usable.length === 0
+            ? "Ninguno de los modelos configurados existe hoy en Groq. " +
+              "Cargá uno de availableVisionModels en GROQ_VISION_MODEL."
+            : undefined,
+      };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Groq visión falló: ${message}`);
-      return { ok: false, code: "upstream_error" };
+      return {
+        configured: true,
+        visionModels,
+        lastVisionError: this.lastVisionError,
+        problem: `No se pudo hablar con Groq: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 
