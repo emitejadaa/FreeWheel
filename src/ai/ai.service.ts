@@ -454,27 +454,89 @@ export class AiService {
   }
 
   /**
-   * ¿La foto muestra un vehículo? Se usa al publicar un auto para no dejar subir
-   * fotos que no correspondan.
+   * ¿La foto muestra un vehículo REAL, de los que se pueden alquilar?
+   *
+   * Antes la pregunta era "¿esta imagen muestra un automóvil, camioneta, SUV,
+   * moto u otro vehículo de motor? SI o NO". Con esa pregunta un auto de juguete
+   * contesta SI —porque es, efectivamente, la imagen de un automóvil— y también
+   * contestan SI un dibujo, una maqueta, una captura de un videojuego y el auto
+   * de un afiche. O sea que el control existía pero no filtraba lo que hay que
+   * filtrar: que la foto sea del auto de verdad que se está publicando.
+   *
+   * Ahora se pregunta por separado si es un vehículo Y si es uno real de tamaño
+   * real, con la lista de casos a rechazar escrita explícitamente, y se pide el
+   * motivo para poder mostrárselo a la persona en vez de un "no válido" pelado.
    *
    * `isVehicle` en null significa "no se pudo verificar", y `code` dice por qué:
    * así la pantalla puede avisar que falta configurar el servidor en vez de
    * quedarse en un silencioso "no verificada".
    */
-  async vision(
-    imageDataUrl: string,
-  ): Promise<{ isVehicle: boolean | null; code?: AiUnavailableCode }> {
+  async vision(imageDataUrl: string): Promise<{
+    isVehicle: boolean | null;
+    /** Qué se vio en la foto, para explicarle a la persona por qué no sirve. */
+    reason?: string;
+    detected?: string | null;
+    code?: AiUnavailableCode;
+  }> {
     const answer = await this.askVisionModel(
       imageDataUrl,
-      "¿Esta imagen muestra un automóvil, camioneta, SUV, moto u otro vehículo de motor? Respondé únicamente SI o NO.",
-      5,
+      "Mirá la imagen. Tiene que ser la foto de un vehículo REAL, de tamaño real, " +
+        "de los que una persona puede conducir y alquilar (auto, camioneta, SUV, " +
+        "pickup, van o moto).\n\n" +
+        "RECHAZALA si es cualquiera de estas cosas, aunque tenga forma de auto:\n" +
+        "- un juguete, un auto a escala, una maqueta o un auto a batería para chicos\n" +
+        "- un dibujo, una ilustración, un render 3D o una captura de un videojuego\n" +
+        "- la foto de un afiche, una pantalla, un catálogo o una publicidad\n" +
+        "- un vehículo que no se alquila así (tren, avión, barco, bicicleta, monopatín)\n" +
+        "- cualquier otra cosa (una persona, un animal, un paisaje, comida, una captura de pantalla)\n\n" +
+        "Pistas para darte cuenta de que NO es real: proporciones de juguete, " +
+        "plástico brillante, ruedas lisas sin dibujo, asiento de plástico, " +
+        "tamaño chico comparado con lo que está alrededor, fondo de estudio blanco " +
+        "tipo foto de producto, o que no tenga patente ni espejos ni picaportes reales.\n\n" +
+        "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
+        '{"es_vehiculo": true|false, "es_real": true|false, ' +
+        '"que_es": "en 2 o 3 palabras qué se ve", ' +
+        '"motivo": "una frase corta explicando la decisión"}',
+      220,
     );
 
     if (!answer.ok) return { isVehicle: null, code: answer.code };
 
-    const text = answer.content.trim().toUpperCase();
-    if (text.startsWith("SI")) return { isVehicle: true };
-    if (text.startsWith("NO")) return { isVehicle: false };
-    return { isVehicle: null, code: "unreadable" };
+    const parsed = extractJson(answer.content);
+    if (!parsed) {
+      // Respaldo para el modelo que contesta SI/NO en vez del JSON pedido. No
+      // distingue un juguete, así que solo sirve para descartar lo evidente.
+      const text = answer.content.trim().toUpperCase();
+      if (text.startsWith("SI")) return { isVehicle: true };
+      if (text.startsWith("NO")) {
+        return { isVehicle: false, reason: "La imagen no muestra un vehículo." };
+      }
+      return { isVehicle: null, code: "unreadable" };
+    }
+
+    const esVehiculo = parsed.es_vehiculo === true;
+    // `es_real` solo cuenta como negativo si el modelo dijo false explícitamente:
+    // si no contestó ese campo, no se rechaza una foto buena por un dato faltante.
+    const esReal = parsed.es_real !== false;
+    const detected = asText(parsed.que_es);
+    const motivo = asText(parsed.motivo);
+
+    if (esVehiculo && esReal) {
+      return {
+        isVehicle: true,
+        reason: motivo ?? "Es la foto de un vehículo real.",
+        detected,
+      };
+    }
+
+    return {
+      isVehicle: false,
+      reason:
+        motivo ??
+        (esVehiculo
+          ? `Parece ${detected ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`
+          : `No es un vehículo${detected ? `: se ve ${detected}` : ""}.`),
+      detected,
+    };
   }
 }
