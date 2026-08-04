@@ -1,3 +1,4 @@
+import { Transform } from "class-transformer";
 import {
   Equals,
   IsBoolean,
@@ -8,6 +9,10 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
+import {
+  IsArgentinePhone,
+  normalizeArgentinePhone,
+} from "../../common/validators/argentine-phone.validator";
 import { IsAdultDate } from "../../common/validators/is-adult-date.validator";
 
 export class RegisterCompleteDto {
@@ -40,6 +45,18 @@ export class RegisterCompleteDto {
   @MinLength(1)
   @MaxLength(120)
   displayName?: string;
+
+  /**
+   * Teléfono de contacto. Opcional acá, pero es un dato que la cuenta necesita
+   * para llegar a estar verificada (el código de verificación se manda a este
+   * número), así que se acepta desde el registro para no pedirlo dos veces.
+   */
+  @IsOptional()
+  @Transform(
+    ({ value }: { value: unknown }) => normalizeArgentinePhone(value) ?? value,
+  )
+  @IsArgentinePhone()
+  phone?: string;
 
   @IsBoolean()
   @Equals(true, { message: "Debés aceptar los términos y condiciones" })

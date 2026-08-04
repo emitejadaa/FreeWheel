@@ -463,9 +463,10 @@ Estado actual:
 Diseno reemplazable:
 
 - Seam `IdentityReviewer` (`IDENTITY_REVIEWER`) elegido por `IDENTITY_REVIEW_MODE`:
-  - `document_ai`: revision real (produccion). Falla al arrancar si faltan `CLOUDINARY_*` o `GROQ_API_KEY`.
+  - `document_ai` (default): revision documental completa. Si se pide a mano sin `CLOUDINARY_*`/`GROQ_API_KEY` falla al arrancar; si es solo el default y faltan, cae a `manual` avisando.
   - `manual`: nada se aprueba solo; decide un admin.
-  - `auto_approve` (default): aprueba todo. Solo desarrollo y tests.
+  - `ai`: revision liviana; un modelo de vision confirma que cada foto sea el documento pedido y extrae los datos visibles. Si la IA no responde, el caso NO se aprueba: queda para el admin.
+  - `auto_approve`: aprueba todo. Solo desarrollo y tests.
 - Puertos de extraccion inyectables y fakeables: `BarcodeDecoderService` (determinista, zxing-wasm) y `DocumentOcrService` (probabilistico, Groq). Cambiar de proveedor de OCR (Claude, Google Vision) toca un solo archivo.
 - `IdentityMatchService` es puro (sin IO): toda la politica de decision vive ahi y se testea con una matriz de casos.
 

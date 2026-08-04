@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import {
   Listing,
   ListingStatus,
@@ -8,7 +12,10 @@ import {
   Vehicle,
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { blockingBookingStatuses } from "../availability/availability.service";
+import {
+  blockingBookingStatuses,
+  overlappingRangeWhere,
+} from "../availability/availability.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertOwner } from "../common/utils/authorization.util";
 import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
@@ -29,10 +36,16 @@ type ListingWithVehicleAndOwner = Listing & {
   vehicle: Vehicle;
   owner: OwnerPublic;
 };
-type PublicListing = Omit<Listing, "ownerId"> & {
+// El precio pendiente de confirmar es información del dueño, no del aviso: si
+// se publicara, cualquiera vería el precio nuevo antes de que se aplique.
+type PublicListing = Omit<
+  Listing,
+  "ownerId" | "pendingPricePerDay" | "priceChangeRequestedAt"
+> & {
   vehicle: Omit<Vehicle, "ownerId" | "plate">;
   owner: OwnerPublic;
 };
+type PublicListingWithPhotos = PublicListing & { photos: string[] };
 
 @Injectable()
 export class ListingsService {
@@ -72,15 +85,8 @@ export class ListingsService {
       }),
     ]);
 
-    const photosByVehicle = await this.getPhotosByVehicleIds(
-      listings.map((l) => l.vehicleId),
-    );
-
     return {
-      data: listings.map((listing) => ({
-        ...this.toPublicListing(listing),
-        photos: photosByVehicle[listing.vehicleId] ?? [],
-      })),
+      data: await this.withPhotos(listings),
       page,
       limit,
       total,
@@ -95,6 +101,16 @@ export class ListingsService {
       orderBy: { createdAt: "desc" },
     });
 
+    return this.withPhotos(listings);
+  }
+
+  /**
+   * Forma pública de un conjunto de publicaciones con sus fotos resueltas en
+   * una sola consulta. Lo usan la búsqueda, "mis autos" y los favoritos.
+   */
+  async withPhotos(
+    listings: ListingWithVehicleAndOwner[],
+  ): Promise<PublicListingWithPhotos[]> {
     const photosByVehicle = await this.getPhotosByVehicleIds(
       listings.map((l) => l.vehicleId),
     );
@@ -105,24 +121,50 @@ export class ListingsService {
     }));
   }
 
-  async findOne(id: string) {
+  /**
+   * Detalle público de una publicación. El dueño (viewerId) también puede ver
+   * las suyas cuando están en DRAFT o PAUSED: si no, "Mis autos" enlazaría a un
+   * 404 en cuanto pausa un aviso.
+   */
+  async findOne(id: string, viewerId?: string) {
     const listing = await this.prisma.listing.findUnique({
       where: { id },
       include: { vehicle: true, owner: { select: USER_PUBLIC_SELECT } },
     });
 
-    if (!listing || listing.status !== ListingStatus.ACTIVE) {
+    const visible =
+      listing &&
+      (listing.status === ListingStatus.ACTIVE ||
+        (listing.status !== ListingStatus.DELETED &&
+          listing.ownerId === viewerId));
+
+    if (!listing || !visible) {
       throw new NotFoundException("Listing not found");
     }
 
     const publicListing = this.toPublicListing(listing);
     const photos = await this.getPhotosByVehicleId(listing.vehicleId);
-    return { ...publicListing, photos };
+    return { ...publicListing, photos, isOwner: listing.ownerId === viewerId };
   }
 
   async update(ownerId: string, id: string, data: UpdateListingDto) {
     const listing = await this.findEditable(id);
     assertOwner(listing.ownerId, ownerId, "You cannot update this listing");
+
+    // El precio NO se cambia por acá. Es el único dato que mueve plata sin que
+    // intervenga nadie más, así que pasa por su propio circuito con confirmación
+    // por email y tiempo de espera entre cambios (PriceChangeService). Antes se
+    // podía cambiar con un PATCH cualquiera, igual que una coma en el título.
+    if (
+      data.pricePerDay !== undefined &&
+      Math.round(data.pricePerDay) !== Math.round(listing.pricePerDay)
+    ) {
+      throw new BadRequestException(
+        "El precio se cambia desde 'Cambiar precio': pedimos una confirmación " +
+          "por email antes de aplicarlo.",
+      );
+    }
+    const { pricePerDay: _ignoredPrice, ...editable } = data;
 
     if (data.vehicleId) {
       const vehicle = await this.prisma.vehicle.findUnique({
@@ -138,7 +180,7 @@ export class ListingsService {
 
     return this.prisma.listing.update({
       where: { id },
-      data,
+      data: editable,
       include: { vehicle: true },
     });
   }
@@ -167,7 +209,14 @@ export class ListingsService {
   }
 
   private toPublicListing(listing: ListingWithVehicleAndOwner): PublicListing {
-    const { ownerId: _ownerId, vehicle, owner, ...publicListing } = listing;
+    const {
+      ownerId: _ownerId,
+      pendingPricePerDay: _pendingPrice,
+      priceChangeRequestedAt: _priceRequestedAt,
+      vehicle,
+      owner,
+      ...publicListing
+    } = listing;
     const {
       ownerId: _vehicleOwnerId,
       plate: _plate,
@@ -190,7 +239,8 @@ export class ListingsService {
     return assets.map((a) => a.url);
   }
 
-  private async getPhotosByVehicleIds(
+  /** Público: lo reutiliza FavoritesService para devolver las fotos de cada auto. */
+  async getPhotosByVehicleIds(
     vehicleIds: string[],
   ): Promise<Record<string, string[]>> {
     if (vehicleIds.length === 0) return {};
@@ -233,40 +283,44 @@ export class ListingsService {
         ...(query.maxPrice !== undefined ? { lte: query.maxPrice } : {}),
       };
     }
-    if (query.brand || query.model) {
-      where.vehicle = {
-        ...(query.brand
-          ? { brand: { contains: query.brand, mode: "insensitive" } }
-          : {}),
-        ...(query.model
-          ? { model: { contains: query.model, mode: "insensitive" } }
-          : {}),
-      };
+    // Todos los filtros que viajan sobre el vehículo se acumulan en un único
+    // `where.vehicle`: si se armaran por separado, el último sobrescribiría a
+    // los anteriores y el buscador devolvería resultados de más.
+    const vehicleWhere: Prisma.VehicleWhereInput = {
+      ...(query.brand
+        ? { brand: { contains: query.brand, mode: "insensitive" } }
+        : {}),
+      ...(query.model
+        ? { model: { contains: query.model, mode: "insensitive" } }
+        : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.transmission ? { transmission: query.transmission } : {}),
+      ...(query.fuelType ? { fuelType: query.fuelType } : {}),
+      ...(query.minSeats !== undefined
+        ? { seats: { gte: query.minSeats } }
+        : {}),
+    };
+    if (Object.keys(vehicleWhere).length > 0) {
+      where.vehicle = vehicleWhere;
     }
-    // When a date range is requested, drop listings that already have a blocking
-    // booking or an owner availability block overlapping it. Overlap uses the
-    // standard half-open test: existing.start < requestedEnd && existing.end >
-    // requestedStart.
+    // Con un rango de fechas pedido, se descartan las publicaciones que ya
+    // tengan una reserva o un bloqueo del dueño encima de esos días.
+    //
+    // El solapamiento lo calcula overlappingRangeWhere(), la MISMA función que
+    // usa el detalle de disponibilidad del auto. Antes cada lado tenía su propia
+    // comparación y no coincidían: el panel del auto avisaba "30 jul ocupado" y
+    // este filtro devolvía ese mismo auto como disponible si se buscaba del 30
+    // al 30.
     if (query.startDate && query.endDate) {
+      const overlap = overlappingRangeWhere(query.startDate, query.endDate);
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : []),
         {
           bookings: {
-            none: {
-              status: { in: blockingBookingStatuses },
-              startDate: { lt: query.endDate },
-              endDate: { gt: query.startDate },
-            },
+            none: { status: { in: blockingBookingStatuses }, ...overlap },
           },
         },
-        {
-          availabilityBlocks: {
-            none: {
-              startDate: { lt: query.endDate },
-              endDate: { gt: query.startDate },
-            },
-          },
-        },
+        { availabilityBlocks: { none: overlap } },
       ];
     }
     return where;

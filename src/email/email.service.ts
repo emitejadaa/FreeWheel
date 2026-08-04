@@ -60,6 +60,86 @@ export class EmailService {
     await this.send(email, "Tu código de verificación - Freewheel", html);
   }
 
+  /**
+   * Código para verificar el TELÉFONO, enviado por email.
+   *
+   * Se usa cuando no hay una pasarela de SMS contratada (mandar un SMS a un
+   * número real es siempre un servicio pago). El código sigue siendo el mismo y
+   * queda igual de registrado en la base: lo único distinto es el canal por el
+   * que viaja, así la verificación del teléfono funciona sin costo.
+   */
+  async sendPhoneVerificationCode(email: string, phone: string, code: string) {
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">Verificá tu teléfono</h2>
+          <p style="color:#374151;margin:0 0 24px">
+            Código para confirmar el número <strong>${phone}</strong>:
+          </p>
+          <div style="font-size:42px;font-weight:800;letter-spacing:12px;color:#2563eb;background:#eff6ff;padding:20px;border-radius:10px;text-align:center">
+            ${code}
+          </div>
+          <p style="color:#6b7280;font-size:13px;margin-top:20px">
+            Te lo enviamos por email porque el envío por SMS todavía no está
+            habilitado. Expira en 10 minutos y no se comparte con nadie.
+          </p>
+        </div>
+      </div>`;
+    await this.send(
+      email,
+      "Código para verificar tu teléfono - Freewheel",
+      html,
+    );
+  }
+
+  /**
+   * Código para confirmar un CAMBIO DE PRECIO de una publicación.
+   *
+   * El precio es lo único que mueve plata sin intervención de nadie más, así que
+   * cambiarlo pide una confirmación por un segundo canal: la persona tiene que
+   * tener acceso al mail, no solo a la sesión abierta. El mail muestra el precio
+   * viejo y el nuevo para que se pueda frenar un cambio que no se pidió.
+   */
+  async sendPriceChangeCode(
+    email: string,
+    listingTitle: string,
+    currentPrice: number,
+    newPrice: number,
+    code: string,
+  ) {
+    const money = (value: number) =>
+      `$${Math.round(value).toLocaleString("es-AR")}`;
+    const html = `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 8px">Confirmá el cambio de precio</h2>
+          <p style="color:#374151;margin:0 0 16px">
+            Se pidió cambiar el precio por día de <strong>${listingTitle}</strong>:
+          </p>
+          <p style="color:#111827;margin:0 0 24px;font-size:18px">
+            <span style="color:#6b7280;text-decoration:line-through">${money(currentPrice)}</span>
+            &nbsp;→&nbsp;
+            <strong style="color:#2563eb">${money(newPrice)}</strong>
+          </p>
+          <div style="font-size:42px;font-weight:800;letter-spacing:12px;color:#2563eb;background:#eff6ff;padding:20px;border-radius:10px;text-align:center">
+            ${code}
+          </div>
+          <p style="color:#6b7280;font-size:13px;margin-top:20px">
+            Expira en 10 minutos. Hasta que ingreses el código, el precio sigue
+            siendo el anterior. <strong>Si no pediste este cambio, no ingreses el
+            código y cambiá tu contraseña.</strong>
+          </p>
+        </div>
+      </div>`;
+    await this.send(email, "Confirmá el cambio de precio - Freewheel", html);
+  }
+
   async sendPasswordReset(
     email: string,
     firstName: string,

@@ -1,10 +1,19 @@
-import { Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from "@nestjs/common";
 import type { Request } from "express";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
 import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
+import { SimulatePaymentDto } from "./dto/simulate-payment.dto";
 import { PaymentsService } from "./payments.service";
 
 // Every payment action requires a fully verified account (phone + DNI +
@@ -41,6 +50,42 @@ export class PaymentsController {
     @Param("bookingId") bookingId: string,
   ) {
     return this.paymentsService.createDepositHold(user.id, bookingId);
+  }
+
+  /**
+   * Simulación de pago para la demo (solo con PAYMENTS_PROVIDER=mock): cobra
+   * seña + saldo y autoriza el depósito en un solo paso, de modo que el dueño
+   * pueda seguir con "listo para retiro". Sin esto, en modo mock nadie firma el
+   * webhook y la reserva nunca llega a estar paga.
+   */
+  @Post("bookings/:bookingId/mock-confirm")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  mockConfirm(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+    @Body() dto: SimulatePaymentDto,
+  ) {
+    return this.paymentsService.simulatePaymentSuccess(
+      user.id,
+      bookingId,
+      dto.kind,
+    );
+  }
+
+  @Post("bookings/:bookingId/mock-fail")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  mockFail(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+    @Body() dto: SimulatePaymentDto,
+  ) {
+    return this.paymentsService.simulatePaymentFailure(
+      user.id,
+      bookingId,
+      dto.kind,
+    );
   }
 
   @Get("bookings/:bookingId/status")

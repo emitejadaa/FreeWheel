@@ -56,6 +56,19 @@ enum DrivetrainType {
   AWD
 }
 
+// Carrocería / segmento del vehículo. Es el dato que alimenta el filtro por
+// categoría del buscador ("Explorá por categoría"), así que se guarda en el
+// vehículo en vez de derivarse en el front.
+enum VehicleCategory {
+  SEDAN
+  SUV
+  BERLINA
+  PICKUP
+  ELECTRIC
+  PREMIUM
+  OTHER
+}
+
 enum VerificationCodeTargetType {
   EMAIL
   PHONE
@@ -64,6 +77,27 @@ enum VerificationCodeTargetType {
 enum VerificationCodePurpose {
   EMAIL_VERIFICATION
   PASSWORD_RESET
+  // Confirmación por email para cambiar el precio de una publicación.
+  PRICE_CHANGE
+}
+
+/// A quién apunta un reporte hecho por una persona.
+enum ReportTargetType {
+  LISTING
+  USER
+}
+
+enum ReportStatus {
+  OPEN // recién entrado, esperando que un admin lo mire
+  ACTION_TAKEN // el admin actuó (pausó o eliminó la publicación, etc.)
+  DISMISSED // el admin lo descartó
+}
+
+/// Qué dijo la IA al leer el reporte y compararlo con la publicación.
+enum ReportAiVerdict {
+  COHERENT // lo que se denuncia se corresponde con la publicación
+  INCOHERENT // no tiene relación con la publicación
+  UNCLEAR // no alcanza para decidir
 }
 
 enum BookingStatus {
@@ -155,10 +189,10 @@ model User {
   displayName         String?
   phone               String?
   dateOfBirth         DateTime?
-  // Datos de identidad cargados manualmente en el panel; deben coincidir con
-  // los documentos para verificar la cuenta y quedan inmutables una vez
-  // VERIFIED. Unicidad nullable: una misma identidad no puede respaldar dos
-  // cuentas (antifraude a nivel DB; multiples NULL permitidos en Postgres).
+  // Datos de identidad cargados a mano en el panel; la revisión documental
+  // los cruza contra el DNI y la licencia. Quedan inmutables una vez que la
+  // cuenta es VERIFIED. Unicidad nullable: una misma identidad no puede
+  // respaldar dos cuentas (antifraude a nivel base).
   dni                 String?             @unique
   cuil                String?             @unique
   address             String?
@@ -173,6 +207,10 @@ model User {
   stripeCustomerId    String?             @unique
   stripeAccountId     String?             @unique
   stripeAccountStatus StripeAccountStatus @default(NONE)
+  /// Promedio de las reseñas recibidas y cuántas son. Se guardan calculados para
+  /// no tener que recorrer todas las reseñas cada vez que se muestra un perfil.
+  ratingAverage       Float?
+  ratingCount         Int                 @default(0)
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -190,6 +228,12 @@ model User {
   conversationsAsRenter     Conversation[]             @relation("RenterConversations")
   conversationsAsOwner      Conversation[]             @relation("OwnerConversations")
   sentMessages              Message[]                  @relation("SentMessages")
+  favorites                 Favorite[]
+  reviewsWritten            Review[]                   @relation("ReviewAuthor")
+  reviewsReceived           Review[]                   @relation("ReviewTarget")
+  reportsMade               Report[]                   @relation("Reporter")
+  reportsReceived           Report[]                   @relation("ReportedUser")
+  reportsResolved           Report[]                   @relation("ReportResolver")
 
   @@index([email])
   @@index([status])
@@ -197,33 +241,35 @@ model User {
 }
 
 model UserVerification {
-  id              String             @id @default(uuid())
-  userId          String
-  user            User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status          VerificationStatus @default(ID_SUBMITTED)
-  documentUrl     String?
-  selfieUrl       String?
-  dniFrontUrl     String?
-  dniBackUrl      String?
-  licenseFrontUrl String?
-  licenseBackUrl  String?
-  notes           String?
-  reviewedAt      DateTime?
-  // Resultado de la revision documental automatica (reviewer document_ai):
-  // extraccion por fuente (barcode/MRZ/OCR), reporte de cruces check por
-  // check, y escalares promovidos para consultas/antifraude. Contienen PII:
-  // solo se exponen a admins, nunca en respuestas del propio usuario.
-  extracted        Json?
-  matchReport      Json?
-  dniNumber        String?
-  licenseExpiresAt DateTime?
-  reviewerName     String?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  id                 String             @id @default(uuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status             VerificationStatus @default(ID_SUBMITTED)
+  documentUrl        String?
+  selfieUrl          String?
+  dniFrontUrl        String?
+  dniBackUrl         String?
+  licenseFrontUrl    String?
+  licenseBackUrl     String?
+  notes              String?
+  // Datos leídos de los documentos por la revisión automática. Quedan
+  // registrados acá y no se los pide al usuario, así no se pueden falsear.
+  documentNumber     String?
+  fullNameOnDocument String?
+  licenseExpiresAt   DateTime?
+  reviewedBy         String?
+  // Extracción por fuente (código PDF417/QR, MRZ, OCR de cada lado) y reporte
+  // de cruces check por check. Contienen datos personales: solo se exponen a
+  // admins, nunca en las respuestas del propio usuario.
+  extracted          Json?
+  matchReport        Json?
+  reviewedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   @@index([userId])
   @@index([status])
-  @@index([dniNumber])
+  @@index([documentNumber])
 }
 
 // Pre-account email verification: holds the hashed code sent to an email that
@@ -270,6 +316,7 @@ model Vehicle {
   brand                         String
   model                         String
   year                          Int
+  category                      VehicleCategory?
   plate                         String?
   color                         String?
   seats                         Int?
@@ -297,6 +344,7 @@ model Vehicle {
 
   @@index([ownerId])
   @@index([brand, model])
+  @@index([category])
 }
 
 model Listing {
@@ -315,16 +363,48 @@ model Listing {
   deliveryLongitude Float?
   deliveryRadiusKm  Float?
   status            ListingStatus @default(DRAFT)
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+
+  /// Promedio de las reseñas de esta publicación y cuántas son. Calculados y
+  /// guardados: es el número que se muestra en el listado y en el detalle.
+  ratingAverage Float?
+  ratingCount   Int    @default(0)
+
+  /// Cambio de precio pendiente de confirmar por email, y cuándo se pidió.
+  /// El precio no se toca hasta que la persona confirma con el código.
+  pendingPricePerDay     Float?
+  priceChangeRequestedAt DateTime?
+  /// Última vez que el precio cambió de verdad. Se usa para el tiempo de espera
+  /// entre cambios.
+  priceUpdatedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   bookings           Booking[]
   availabilityBlocks ListingAvailabilityBlock[]
   conversations      Conversation[]
+  favorites          Favorite[]
+  reviews            Review[]
+  reports            Report[]
 
   @@index([ownerId])
   @@index([vehicleId])
   @@index([status, createdAt])
+}
+
+// "Me gusta" de un usuario sobre una publicación. Vive en la base (y no en el
+// navegador) para que los favoritos sigan estando al cambiar de dispositivo.
+model Favorite {
+  id        String   @id @default(uuid())
+  userId    String
+  listingId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([userId, createdAt])
+  @@index([listingId])
 }
 
 model ListingAvailabilityBlock {
@@ -388,6 +468,7 @@ model Booking {
 
   paymentRecords PaymentRecord[]
   contract       Contract?
+  reviews        Review[]
 
   @@index([listingId])
   @@index([vehicleId])
@@ -527,4 +608,82 @@ model Contract {
   updatedAt        DateTime       @updatedAt
 
   @@index([status])
+}
+
+/// Reseña de una reserva terminada.
+///
+/// Solo se puede escribir cuando la reserva llegó a COMPLETED y el pago se
+/// completó: es lo que hace que las puntuaciones signifiquen algo. Las dos partes
+/// pueden reseñarse una a la otra por la misma reserva, y cada una puede escribir
+/// una sola (de ahí el unique de reserva + autor).
+model Review {
+  id           String   @id @default(uuid())
+  bookingId    String
+  authorId     String
+  targetUserId String
+  /// La publicación que se está puntuando. Va cargada SOLO en la reseña que
+  /// escribe quien alquiló: es la que habla del auto y cuenta para el promedio de
+  /// la publicación. La que escribe el dueño es sobre la persona, así que queda
+  /// en null y no ensucia la puntuación del aviso.
+  listingId    String?
+  /// Puntuación de 1 a 5.
+  rating       Int
+  comment      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  author     User     @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  targetUser User     @relation("ReviewTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  listing    Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, authorId])
+  @@index([listingId, createdAt])
+  @@index([targetUserId, createdAt])
+  @@index([authorId])
+}
+
+/// Reporte de una persona sobre una publicación o sobre otra persona.
+///
+/// Antes el botón "Reportar" no guardaba nada en ninguna parte. Ahora queda
+/// registrado, lo lee la IA para decir si lo denunciado tiene relación con la
+/// publicación, y le llega a las cuentas administradoras para que puedan actuar.
+model Report {
+  id           String           @id @default(uuid())
+  reporterId   String
+  targetType   ReportTargetType
+  listingId    String?
+  targetUserId String?
+  reason       String
+  details      String?
+  status       ReportStatus     @default(OPEN)
+
+  /// Fotos o documentos que la persona sube como PRUEBA de lo que denuncia
+  /// (URLs de Cloudinary). Sin al menos una, el reporte no se puede enviar: un
+  /// reporte sin evidencia es la palabra de uno contra la del otro, y deja al
+  /// admin sin nada con que decidir si pausar una publicación o suspender una
+  /// cuenta.
+  evidenceUrls String[]
+
+  /// Lectura automática del reporte contra el contenido de la publicación.
+  aiVerdict   ReportAiVerdict?
+  aiSummary   String?
+  aiCheckedAt DateTime?
+
+  /// Resolución del admin.
+  resolvedById   String?
+  resolvedAt     DateTime?
+  resolutionNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reporter   User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUser User?    @relation("ReportedUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  listing    Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([listingId])
+  @@index([reporterId])
 }

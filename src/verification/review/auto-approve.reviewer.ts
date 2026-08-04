@@ -8,7 +8,7 @@ import {
 /**
  * Aprueba toda submission completa sin mirar los documentos. Solo sirve para
  * desarrollo y tests: en producción se usa IDENTITY_REVIEW_MODE=document_ai
- * (revisión real) o manual (cola de admin).
+ * (revisión real), "ai" (revisión liviana por visión) o "manual".
  *
  * Consecuencia conocida, intencional en este modo: una submission reenviada
  * tras un rechazo del admin vuelve a aprobarse sola.

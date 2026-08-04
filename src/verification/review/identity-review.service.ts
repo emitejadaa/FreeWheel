@@ -42,6 +42,24 @@ export interface VerificationChecklist {
 }
 
 /**
+ * ¿El teléfono confirmado es obligatorio para que la cuenta quede verificada?
+ *
+ * Se controla con REQUIRE_PHONE_VERIFICATION y por defecto es NO. Motivo: mandar
+ * un SMS a un número real es un servicio pago, así que exigirlo dejaba a todas
+ * las cuentas sin poder publicar ni reservar. El teléfono se sigue pudiendo
+ * verificar (el código llega por email) y queda registrado, pero no bloquea.
+ */
+export function isPhoneVerificationRequired(config: {
+  get: <T>(key: string) => T | undefined;
+}): boolean {
+  return (
+    (
+      config.get<string>("REQUIRE_PHONE_VERIFICATION") ?? "false"
+    ).toLowerCase() === "true"
+  );
+}
+
+/**
  * The single derived source of truth for "what is still missing". The
  * VerificationStatus enum stays a coarse milestone marker because it is
  * single-valued while these items complete independently and in any order.
@@ -58,8 +76,8 @@ export function buildVerificationChecklist(
       hasCompleteDocuments(latestSubmission) &&
       latestSubmission.status !== VerificationStatus.REJECTED,
     dateOfBirthProvided: Boolean(user.dateOfBirth),
-    // Manually entered identity data (profile) that the document review
-    // cross-matches against; without it there is nothing to compare.
+    // Datos de identidad cargados a mano contra los que la revisión documental
+    // cruza lo que dicen el DNI y la licencia; sin ellos no hay qué comparar.
     identityDataProvided: Boolean(user.dni && user.cuil && user.address),
   };
 }
@@ -105,9 +123,13 @@ export class IdentityReviewService {
     }
 
     const checklist = buildVerificationChecklist(user, submission);
+    // El teléfono solo bloquea si está configurado como obligatorio.
+    const phonePending =
+      isPhoneVerificationRequired(this.config) && !checklist.phoneVerified;
+
     if (
       !checklist.emailVerified ||
-      !checklist.phoneVerified ||
+      phonePending ||
       !checklist.dateOfBirthProvided ||
       !checklist.identityDataProvided
     ) {
@@ -154,6 +176,7 @@ export class IdentityReviewService {
       dniBackUrl: submission.dniBackUrl,
       licenseFrontUrl: submission.licenseFrontUrl,
       licenseBackUrl: submission.licenseBackUrl,
+      selfieUrl: submission.selfieUrl,
       profile: {
         firstName: user.firstName,
         lastName: user.lastName,
@@ -196,16 +219,16 @@ export class IdentityReviewService {
     submission: UserVerification,
     verdict: IdentityReviewVerdict,
   ): Promise<boolean> {
-    const dniNumber = verdict.dniNumber ?? null;
+    const documentNumber = verdict.documentNumber ?? null;
 
     const approved = await this.prisma.$transaction(async (tx) => {
       // Antifraude: una misma identidad no puede verificar dos cuentas. El
       // índice único de User.dni cubre el dato declarado; esto cubre el dato
       // realmente extraído del documento.
-      if (dniNumber) {
+      if (documentNumber) {
         const clash = await tx.userVerification.findFirst({
           where: {
-            dniNumber,
+            documentNumber,
             status: VerificationStatus.VERIFIED,
             userId: { not: user.id },
           },
@@ -291,13 +314,19 @@ export class IdentityReviewService {
 
   private reviewColumns(verdict: IdentityReviewVerdict) {
     const data: Prisma.UserVerificationUpdateInput = {
-      reviewerName: this.reviewer.name,
+      reviewedBy: this.reviewer.name,
       notes: verdict.notes,
     };
     if (verdict.extracted !== undefined) data.extracted = verdict.extracted;
-    if (verdict.matchReport !== undefined)
+    if (verdict.matchReport !== undefined) {
       data.matchReport = verdict.matchReport;
-    if (verdict.dniNumber !== undefined) data.dniNumber = verdict.dniNumber;
+    }
+    if (verdict.documentNumber !== undefined) {
+      data.documentNumber = verdict.documentNumber;
+    }
+    if (verdict.fullNameOnDocument !== undefined) {
+      data.fullNameOnDocument = verdict.fullNameOnDocument;
+    }
     if (verdict.licenseExpiresAt !== undefined) {
       data.licenseExpiresAt = verdict.licenseExpiresAt;
     }

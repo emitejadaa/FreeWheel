@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   User,
   VerificationCodeTargetType,
@@ -24,6 +25,7 @@ import {
 import {
   buildVerificationChecklist,
   IdentityReviewService,
+  isPhoneVerificationRequired,
 } from "./review/identity-review.service";
 import {
   consumeVerificationCode,
@@ -34,6 +36,17 @@ import {
 type SafeVerificationResponse = {
   requested: true;
   expiresAt: Date;
+  /** Canal por el que salió el código: "sms" o "email". */
+  channel: "sms" | "email";
+  /** A dónde se envió (número o dirección), para mostrarlo en pantalla. */
+  sentTo: string;
+  /**
+   * El código, SOLO en modo demostración (sin pasarela de SMS contratada y con
+   * VERIFICATION_CODE_IN_RESPONSE=true). Sirve para poder probar el circuito
+   * completo sin depender de que llegue el mail. Con una pasarela real nunca se
+   * devuelve.
+   */
+  code?: string;
 };
 
 /** Estado de la última revisión en términos que entiende el front. */
@@ -57,6 +70,7 @@ export class VerificationService {
     private readonly smsService: SmsService,
     private readonly identityDocuments: IdentityDocumentsService,
     private readonly identityReview: IdentityReviewService,
+    private readonly config: ConfigService,
   ) {}
 
   async requestEmailCode(userId: string): Promise<SafeVerificationResponse> {
@@ -128,8 +142,12 @@ export class VerificationService {
       checklist,
       emailVerifiedAt: user.emailVerifiedAt,
       phoneVerifiedAt: user.phoneVerifiedAt,
-      // Motivos en códigos estables: el detalle de la extracción es PII y solo
-      // lo ve un admin.
+      // El front necesita saber si el teléfono bloquea o es opcional, y por qué
+      // canal va a llegar el código, para explicarlo en pantalla.
+      phoneRequired: isPhoneVerificationRequired(this.config),
+      phoneCodeChannel: this.smsService.isMock ? "email" : "sms",
+      // Motivos en códigos estables: el detalle de la extracción es un dato
+      // personal y solo lo ve un admin.
       lastReview: {
         outcome: describeOutcome(latestSubmission?.status ?? null),
         reasonCodes: readReasonCodes(latestSubmission?.matchReport),
@@ -241,24 +259,63 @@ export class VerificationService {
       },
     });
 
-    // Deliver through the channel-appropriate provider. The SMS provider is a
-    // logging mock until a real gateway is configured (SMS_PROVIDER env var).
+    // ── Entrega del código ──────────────────────────────────────────────
+    // El email va por email. El teléfono iría por SMS, pero mandar un SMS a un
+    // número real es siempre un servicio pago: mientras no haya una pasarela
+    // contratada (SMS_PROVIDER=mock) el código se manda al EMAIL de la persona.
+    // Así la verificación del teléfono funciona de verdad y sin costo, y el
+    // número queda igual de registrado y confirmado en la base.
+    let channel: "sms" | "email" = "email";
+    let sentTo = targetValue;
+
     if (targetType === VerificationCodeTargetType.PHONE) {
-      await this.smsService.sendVerificationCode(targetValue, code);
+      if (this.smsService.isMock) {
+        await this.emailService.sendPhoneVerificationCode(
+          user.email,
+          targetValue,
+          code,
+        );
+        channel = "email";
+        sentTo = user.email;
+      } else {
+        await this.smsService.sendVerificationCode(targetValue, code);
+        channel = "sms";
+      }
     } else {
       await this.emailService.sendVerificationCode(targetValue, code);
     }
 
-    // In non-production, log the code so it can be used for manual testing. It is
-    // never returned in the HTTP response and never logged in production, so it
-    // cannot leak to clients.
+    // Fuera de producción se registra en el log para poder probar a mano.
     if (process.env.NODE_ENV !== "production") {
       this.logger.debug(
         `Verification code for ${targetType} ${targetValue}: ${code}`,
       );
     }
 
-    return { requested: true, expiresAt };
+    return {
+      requested: true,
+      expiresAt,
+      channel,
+      sentTo,
+      // Modo demostración: se devuelve el código para poder completar el
+      // circuito sin depender del mail. Requiere no tener pasarela de SMS y
+      // VERIFICATION_CODE_IN_RESPONSE=true; con una real, nunca se devuelve.
+      ...(this.exposeCodeInResponse ? { code } : {}),
+    };
+  }
+
+  /**
+   * ¿Se puede devolver el código en la respuesta HTTP? Solo con la pasarela de
+   * SMS en modo mock y la variable activada a mano. Es una comodidad para la
+   * demo, no para una app en producción.
+   */
+  private get exposeCodeInResponse(): boolean {
+    return (
+      this.smsService.isMock &&
+      (
+        this.config.get<string>("VERIFICATION_CODE_IN_RESPONSE") ?? "false"
+      ).toLowerCase() === "true"
+    );
   }
 
   private async confirmCode(

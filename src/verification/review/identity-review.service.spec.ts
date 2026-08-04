@@ -151,7 +151,8 @@ describe("IdentityReviewService.evaluate — gating", () => {
     return prisma;
   };
 
-  it("does nothing when the phone is not verified", async () => {
+  it("verifies without a confirmed phone (el teléfono es opcional por defecto)", async () => {
+    // Mandar un SMS es un servicio pago: por defecto el teléfono no bloquea.
     const prisma = readyPrisma();
     prisma.user.findUnique.mockResolvedValue({
       ...fullyReadyUser,
@@ -159,6 +160,25 @@ describe("IdentityReviewService.evaluate — gating", () => {
     });
 
     const service = makeService(prisma, new AutoApproveReviewer());
+    expect(await service.evaluate("user-1")).toBe(true);
+  });
+
+  it("does nothing when the phone is required and not verified", async () => {
+    const prisma = readyPrisma();
+    prisma.user.findUnique.mockResolvedValue({
+      ...fullyReadyUser,
+      phoneVerifiedAt: null,
+    });
+
+    const service = new IdentityReviewService(
+      prisma as unknown as PrismaService,
+      new AutoApproveReviewer(),
+      auditLog().service,
+      {
+        get: (key: string) =>
+          key === "REQUIRE_PHONE_VERIFICATION" ? "true" : undefined,
+      } as unknown as ConfigService,
+    );
     expect(await service.evaluate("user-1")).toBe(false);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -227,14 +247,14 @@ describe("IdentityReviewService.evaluate — verdicts", () => {
       fixedReviewer({
         outcome: "rejected",
         reasonCodes: ["DOB_MISMATCH"],
-        dniNumber: "12345678",
+        documentNumber: "12345678",
       }),
     );
 
     expect(await service.evaluate("user-1")).toBe(false);
     expect(firstCallArg(prisma.userVerification.update).data).toMatchObject({
       status: VerificationStatus.REJECTED,
-      dniNumber: "12345678",
+      documentNumber: "12345678",
     });
     expect(prisma.user.update).toHaveBeenCalledWith({
       where: { id: "user-1" },
@@ -281,7 +301,7 @@ describe("IdentityReviewService.evaluate — verdicts", () => {
       fixedReviewer({
         outcome: "approved",
         reasonCodes: [],
-        dniNumber: "12345678",
+        documentNumber: "12345678",
       }),
     );
 
@@ -338,7 +358,7 @@ describe("IdentityReviewService.evaluate — verdicts", () => {
       fixedReviewer({
         outcome: "approved",
         reasonCodes: [],
-        dniNumber: "12345678",
+        documentNumber: "12345678",
         extracted: { ocr: { nombre: "JUAN CARLOS" } },
       }),
       audit,

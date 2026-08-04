@@ -139,8 +139,9 @@ describe("Identity review (document_ai)", () => {
     const stored = await prisma.userVerification.findFirst({
       where: { userId: user.id },
     });
-    expect(stored?.reviewerName).toBe("document_ai");
-    expect(stored?.dniNumber).toBeTruthy();
+    expect(stored?.reviewedBy).toBe("document_ai");
+    expect(stored?.fullNameOnDocument).toBeTruthy();
+    expect(stored?.documentNumber).toBeTruthy();
     expect(stored?.licenseExpiresAt).toBeInstanceOf(Date);
     expect(stored?.matchReport).toBeTruthy();
 
@@ -149,7 +150,9 @@ describe("Identity review (document_ai)", () => {
     });
     expect(audit).toBeTruthy();
     // Minimización de datos: la auditoría no guarda lo extraído del documento.
-    expect(JSON.stringify(audit?.metadata)).not.toContain(stored?.dniNumber);
+    expect(JSON.stringify(audit?.metadata)).not.toContain(
+      stored?.documentNumber,
+    );
   });
 
   it("rechaza cuando la fecha de nacimiento declarada no es la del documento", async () => {

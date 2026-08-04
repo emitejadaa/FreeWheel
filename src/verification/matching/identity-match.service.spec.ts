@@ -103,7 +103,7 @@ describe("IdentityMatchService", () => {
       const report = run();
       expect(report.outcome).toBe("approved");
       expect(report.reasonCodes).toEqual([]);
-      expect(report.dniNumber).toBe("12345678");
+      expect(report.documentNumber).toBe("12345678");
       expect(report.licenseExpiresAt).toBe("2031-05-20");
     });
 

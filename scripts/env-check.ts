@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 const requiredVariables = ["DATABASE_URL", "JWT_SECRET"];
 const documentedOptionalVariables = [
+  "DIRECT_URL",
   "JWT_EXPIRES_IN",
   "PORT",
   "LOCAL_API_URL",
@@ -21,6 +22,8 @@ const documentedOptionalVariables = [
   "GMAIL_USER",
   "GMAIL_APP_PASSWORD",
   "SMS_PROVIDER",
+  "REQUIRE_PHONE_VERIFICATION",
+  "VERIFICATION_CODE_IN_RESPONSE",
   "IDENTITY_REVIEW_MODE",
   "IDENTITY_REVIEW_TIMEOUT_MS",
   "ONBOARDING_JWT_EXPIRES_IN",
@@ -39,6 +42,7 @@ const documentedOptionalVariables = [
   "SENA_PCT",
   "DEPOSIT_DEFAULT_USD",
   "DEFAULT_CURRENCY",
+  "PRICE_CHANGE_COOLDOWN_HOURS",
 ];
 
 const examplePath = join(process.cwd(), ".env.example");

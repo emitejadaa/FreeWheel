@@ -180,6 +180,90 @@ export class PaymentsService {
     return Math.round(value * 100);
   }
 
+  // ---- simulación de pago (solo provider mock) ----------------------------
+
+  /**
+   * Completa el pago de una reserva sin pasar por Stripe: crea los intents que
+   * falten y los marca como cobrados/autorizados aplicando exactamente la misma
+   * transición que el webhook real.
+   *
+   * Existe porque con PAYMENTS_PROVIDER=mock nadie envía el webhook, y sin él la
+   * reserva se queda en PENDING para siempre: el dueño nunca puede marcarla
+   * lista para retiro y el circuito entre los dos usuarios queda cortado.
+   * Con el provider Stripe está deshabilitado (403): ahí manda el webhook.
+   */
+  async simulatePaymentSuccess(
+    renterId: string,
+    bookingId: string,
+    kind?: PaymentRecordKindLike,
+  ) {
+    this.assertMockProvider();
+    const kinds: PaymentRecordKindLike[] = kind
+      ? [kind]
+      : ["SENA", "BALANCE", "DEPOSIT_HOLD"];
+
+    for (const current of kinds) {
+      // El intent de saldo exige que la seña ya esté paga, así que el orden del
+      // array importa: cada vuelta ve el estado que dejó la anterior.
+      const intent =
+        current === "BALANCE"
+          ? await this.createBalanceIntent(renterId, bookingId)
+          : await this.createChargeIntent(renterId, bookingId, current);
+
+      if (current === "DEPOSIT_HOLD") {
+        await this.onHoldAuthorized(intent.paymentIntentId);
+      } else {
+        await this.onIntentSucceeded(
+          intent.paymentIntentId,
+          `ch_mock_${intent.paymentIntentId}`,
+        );
+      }
+    }
+
+    return this.getStatus(renterId, bookingId);
+  }
+
+  /** Contracara de simulatePaymentSuccess: deja el cobro pendiente en FAILED. */
+  async simulatePaymentFailure(
+    renterId: string,
+    bookingId: string,
+    kind: PaymentRecordKindLike = "SENA",
+  ) {
+    this.assertMockProvider();
+    const booking = await this.findBooking(bookingId);
+    if (booking.renterId !== renterId) {
+      throw new ForbiddenException("Only the renter can pay for this booking");
+    }
+
+    const record = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: kind as PaymentRecordKind,
+        status: { notIn: [PaymentRecordStatus.FAILED] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (record?.stripePaymentIntentId) {
+      await this.onIntentFailed(record.stripePaymentIntentId);
+    } else {
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: { paymentStatus: PaymentStatus.FAILED },
+      });
+    }
+
+    return this.getStatus(renterId, bookingId);
+  }
+
+  private assertMockProvider() {
+    if (this.provider.name !== "mock") {
+      throw new ForbiddenException(
+        "La simulación de pagos solo está disponible con PAYMENTS_PROVIDER=mock",
+      );
+    }
+  }
+
   // ---- status -------------------------------------------------------------
 
   async getStatus(userId: string, bookingId: string) {

@@ -10,6 +10,7 @@ import { UsersModule } from "./users/users.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { VehiclesModule } from "./vehicles/vehicles.module";
 import { ListingsModule } from "./listings/listings.module";
+import { FavoritesModule } from "./favorites/favorites.module";
 import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
 import { BookingsModule } from "./bookings/bookings.module";
@@ -17,6 +18,9 @@ import { PaymentsModule } from "./payments/payments.module";
 import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
 import { ConversationsModule } from "./conversations/conversations.module";
+import { HealthModule } from "./health/health.module";
+import { ReviewsModule } from "./reviews/reviews.module";
+import { ReportsModule } from "./reports/reports.module";
 
 @Module({
   controllers: [AppController],
@@ -25,10 +29,12 @@ import { ConversationsModule } from "./conversations/conversations.module";
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
+    HealthModule,
     AuthModule,
     UsersModule,
     VehiclesModule,
     ListingsModule,
+    FavoritesModule,
     VerificationModule,
     AdminModule,
     BookingsModule,
@@ -37,6 +43,8 @@ import { ConversationsModule } from "./conversations/conversations.module";
     MediaModule,
     ConversationsModule,
     AiModule,
+    ReviewsModule,
+    ReportsModule,
   ],
 })
 export class AppModule {}

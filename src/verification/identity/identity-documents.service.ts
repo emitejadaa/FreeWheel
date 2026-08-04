@@ -76,8 +76,20 @@ export class IdentityDocumentsService {
    * api_key y exactamente los params firmados que devolvemos.
    */
   signUpload(userId: string, dto: UploadSignatureDto) {
+    // La selfie no tiene lado; los documentos sí, y sin él no habría slot que
+    // atar al archivo (que es lo que impide confundir frente con dorso).
+    if (dto.document === "selfie") {
+      if (dto.side) {
+        throw new BadRequestException("La selfie no lleva lado");
+      }
+    } else if (!dto.side) {
+      throw new BadRequestException(
+        'Falta "side" ("front" o "back") para este documento',
+      );
+    }
+
     const folder = identityFolder(userId);
-    const slot = `${dto.document}_${dto.side}`;
+    const slot = dto.side ? `${dto.document}_${dto.side}` : dto.document;
     const publicId = `${folder}/${slot}_${Date.now()}_${randomBytes(4).toString("hex")}`;
     const timestamp = Math.round(Date.now() / 1000);
 
@@ -111,17 +123,29 @@ export class IdentityDocumentsService {
   async validateSubmission(
     userId: string,
     dto: SubmitIdentityDto,
-  ): Promise<Record<keyof typeof SLOT_BY_FIELD, string>> {
+  ): Promise<
+    Record<keyof typeof SLOT_BY_FIELD, string> & { selfieUrl?: string }
+  > {
     const entries = Object.entries(SLOT_BY_FIELD) as [
       keyof typeof SLOT_BY_FIELD,
       IdentitySlot,
     ][];
 
     const parsed = entries.map(([field, slot]) => ({
-      field,
-      slot,
+      field: field as keyof typeof SLOT_BY_FIELD | "selfieUrl",
+      slot: slot as IdentitySlot | "selfie",
       asset: this.parseIdentityUrl(userId, slot, dto[field]),
     }));
+
+    // La selfie es opcional, pero si viene se valida igual que un documento:
+    // una URL arbitraria guardada acá la termina abriendo un admin.
+    if (dto.selfieUrl) {
+      parsed.push({
+        field: "selfieUrl",
+        slot: "selfie",
+        asset: this.parseIdentityUrl(userId, "selfie", dto.selfieUrl),
+      });
+    }
 
     // Existencia en paralelo: cuatro llamadas independientes a la Admin API.
     const existence = await Promise.all(
@@ -141,7 +165,7 @@ export class IdentityDocumentsService {
 
     return Object.fromEntries(
       parsed.map(({ field, asset }) => [field, this.canonicalUrl(asset)]),
-    ) as Record<keyof typeof SLOT_BY_FIELD, string>;
+    ) as Record<keyof typeof SLOT_BY_FIELD, string> & { selfieUrl?: string };
   }
 
   /** publicId + formato desde una URL canónica ya persistida. */
@@ -174,7 +198,7 @@ export class IdentityDocumentsService {
 
   private parseIdentityUrl(
     userId: string,
-    slot: IdentitySlot,
+    slot: IdentitySlot | "selfie",
     url: string,
   ): ParsedAsset {
     const asset = this.parsePersistedUrl(url);

@@ -6,6 +6,9 @@ import { PrismaService } from "../../src/prisma/prisma.service";
  * tests are independent. Only ever runs against the guarded test database.
  */
 export async function cleanDatabase(prisma: PrismaService): Promise<void> {
+  await prisma.review.deleteMany();
+  await prisma.report.deleteMany();
+  await prisma.favorite.deleteMany();
   await prisma.message.deleteMany();
   await prisma.conversation.deleteMany();
   await prisma.auditLog.deleteMany();

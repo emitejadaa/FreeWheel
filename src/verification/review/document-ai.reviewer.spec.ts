@@ -143,7 +143,7 @@ describe("DocumentAiReviewer", () => {
 
     expect(verdict.outcome).toBe("approved");
     expect(verdict.reasonCodes).toEqual([]);
-    expect(verdict.dniNumber).toBe("12345678");
+    expect(verdict.documentNumber).toBe("12345678");
     expect(verdict.licenseExpiresAt).toEqual(
       new Date("2031-05-20T00:00:00.000Z"),
     );
@@ -186,7 +186,7 @@ describe("DocumentAiReviewer", () => {
     const { reviewer } = makeReviewer({ barcodesBySlot: { dni_front: null } });
     const verdict = await reviewer.review(INPUT);
     expect(verdict.outcome).toBe("approved");
-    expect(verdict.dniNumber).toBe("12345678");
+    expect(verdict.documentNumber).toBe("12345678");
   });
 
   it("rechaza una foto subida en el slot equivocado", async () => {

@@ -77,13 +77,21 @@ export class DocumentAiReviewer implements IdentityReviewer {
         `(${report.reasonCodes.join(", ") || "sin observaciones"})`,
     );
 
+    // El nombre se toma de la fuente autoritativa (PDF417 o MRZ validado), no
+    // del OCR ni de lo que escribió la persona.
+    const authoritative = extraction.dniBarcode ?? extraction.mrz;
+    const fullNameOnDocument = authoritative
+      ? `${authoritative.lastName} ${authoritative.firstName}`.trim()
+      : undefined;
+
     return {
       outcome: report.outcome,
       reasonCodes: report.reasonCodes,
       notes: summarize(report.outcome, report.reasonCodes),
       extracted: toJson(extraction),
       matchReport: toJson(report),
-      dniNumber: report.dniNumber ?? undefined,
+      documentNumber: report.documentNumber ?? undefined,
+      fullNameOnDocument,
       licenseExpiresAt: report.licenseExpiresAt
         ? new Date(`${report.licenseExpiresAt}T00:00:00.000Z`)
         : undefined,

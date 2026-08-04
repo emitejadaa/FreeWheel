@@ -151,7 +151,7 @@ export class AdminService {
 
     const updated = await this.prisma.userVerification.update({
       where: { id },
-      data: { status, notes, reviewedAt, reviewerName: "admin" },
+      data: { status, notes, reviewedAt, reviewedBy: "admin" },
       include: { user: { select: USER_SAFE_SELECT } },
     });
 

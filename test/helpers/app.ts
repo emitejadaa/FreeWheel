@@ -26,11 +26,11 @@ export interface TestContext {
 export interface TestAppOptions {
   /**
    * Modo de revisión de identidad. Por defecto queda el del entorno
-   * (auto_approve), que es lo que asumen las suites que solo necesitan una
-   * cuenta verificada. Pasar "document_ai" para ejercitar la revisión
-   * documental real con los puertos de extracción fakeados.
+   * (auto_approve en .env.test), que es lo que asumen las suites que solo
+   * necesitan una cuenta verificada. Pasar "document_ai" para ejercitar la
+   * revisión documental real con los puertos de extracción fakeados.
    */
-  identityReviewMode?: "auto_approve" | "manual" | "document_ai";
+  identityReviewMode?: "auto_approve" | "manual" | "ai" | "document_ai";
 }
 
 /**

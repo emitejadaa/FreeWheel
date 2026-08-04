@@ -98,6 +98,7 @@ export class AuthService {
           firstName: dto.firstName,
           lastName: dto.lastName,
           displayName: dto.displayName,
+          phone: dto.phone,
           dateOfBirth: parseBirthDate(dto.dateOfBirth),
           acceptedTermsAt: now,
           status: UserStatus.ACTIVE,

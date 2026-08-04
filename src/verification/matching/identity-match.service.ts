@@ -46,7 +46,7 @@ export interface MatchReport {
   checks: IdentityCheck[];
   reasonCodes: string[];
   /** Número de documento de la fuente autoritativa, si la hubo. */
-  dniNumber: string | null;
+  documentNumber: string | null;
   licenseExpiresAt: string | null;
 }
 
@@ -157,7 +157,7 @@ export class IdentityMatchService {
       outcome,
       checks,
       reasonCodes: buildReasonCodes(checks, outcome),
-      dniNumber: authoritative?.dni ?? null,
+      documentNumber: authoritative?.dni ?? null,
       licenseExpiresAt: licenseExpiry(extraction),
     };
   }

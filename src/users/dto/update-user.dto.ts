@@ -1,3 +1,4 @@
+import { Transform } from "class-transformer";
 import {
   IsOptional,
   IsString,
@@ -6,6 +7,10 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
+import {
+  IsArgentinePhone,
+  normalizeArgentinePhone,
+} from "../../common/validators/argentine-phone.validator";
 import { IsCuil } from "../../common/validators/is-cuil.validator";
 
 export class UpdateUserDto {
@@ -27,13 +32,20 @@ export class UpdateUserDto {
   @MaxLength(120)
   displayName?: string;
 
+  /**
+   * Teléfono argentino completo con código de país (54 9 11 3289 5416). Se
+   * normaliza antes de validar, así queda guardado siempre en el mismo formato
+   * sin importar cómo lo haya escrito la persona.
+   */
   @IsOptional()
-  @IsString()
-  @MaxLength(32)
+  @Transform(
+    ({ value }: { value: unknown }) => normalizeArgentinePhone(value) ?? value,
+  )
+  @IsArgentinePhone()
   phone?: string;
 
-  // Identidad manual requerida para la verificación documental: debe
-  // coincidir con lo extraído del DNI y la licencia. Inmutable una vez
+  // Identidad manual requerida para la verificación documental: debe coincidir
+  // con lo extraído del DNI y la licencia. Inmutable una vez que la cuenta es
   // VERIFIED (403 IDENTITY_FIELDS_LOCKED en el servicio).
   @IsOptional()
   @Matches(/^\d{7,8}$/, {
