@@ -4,12 +4,22 @@ import { Prisma } from "@prisma/client";
 // narrow so Prisma still infers exact return types at every call site, while
 // validating the fields against the generated schema types.
 
-/** Minimal public user fields — no contact info. Used for listing owners and chat senders. */
+/**
+ * Minimal public user fields — no contact info. Used for listing owners and chat
+ * senders.
+ *
+ * `profilePhotoUrl` va acá a propósito: es la foto que la persona eligió para
+ * mostrar, o sea información pública por definición. Sin ella el front no tenía
+ * con qué dibujar el avatar en el chat, en la publicación de un auto ni al lado
+ * de una reseña, y en todos esos lugares mostraba un círculo con la inicial
+ * aunque la persona hubiera subido una foto.
+ */
 export const USER_PUBLIC_SELECT = {
   id: true,
   firstName: true,
   lastName: true,
   displayName: true,
+  profilePhotoUrl: true,
 } satisfies Prisma.UserSelect;
 
 /** Public fields plus email — used for the counterparties shown on a booking. */
@@ -19,6 +29,7 @@ export const USER_CONTACT_SELECT = {
   firstName: true,
   lastName: true,
   displayName: true,
+  profilePhotoUrl: true,
 } satisfies Prisma.UserSelect;
 
 /** Full admin-facing user projection: everything except the password hash. */

@@ -366,11 +366,63 @@ export class AiService {
    * —que no siempre está a mano—. Acá se ve de una: si falta la clave, qué
    * contestó Groq la última vez, y qué modelos ofrece hoy.
    */
-  async health(): Promise<{
+  /**
+   * Prueba UN modelo de visión con una imagen mínima y dice si contesta.
+   *
+   * Existe porque `health()` solo comparaba nombres contra la lista de Groq, y
+   * "estar en la lista" no es lo mismo que "funciona": un modelo puede estar
+   * listado y contestar 400 porque no acepta imágenes, o 429 porque la clave se
+   * quedó sin cuota. Con esto se ve qué modelo sirve HOY, que es lo que hace
+   * falta para decidir qué poner en GROQ_VISION_MODEL.
+   *
+   * La imagen es un PNG de 1x1 transparente: la respuesta no importa, lo único
+   * que se mira es si el modelo acepta el pedido.
+   */
+  private async probeVisionModel(
+    model: string,
+  ): Promise<{ model: string; ok: boolean; error?: string }> {
+    const PIXEL =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mN8/x8AAsMB4Bk1sQIAAAAASUVORK5CYII=";
+    try {
+      const res = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey()}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: PIXEL } },
+                { type: "text", text: "ok" },
+              ],
+            },
+          ],
+          max_tokens: 1,
+        }),
+      });
+      if (res.ok) return { model, ok: true };
+      const detalle = await res.text();
+      return { model, ok: false, error: `${res.status} ${detalle.slice(0, 180)}` };
+    } catch (err) {
+      return {
+        model,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async health(probe = false): Promise<{
     configured: boolean;
     visionModels: string[];
     lastVisionError: string | null;
     availableVisionModels?: string[];
+    /** Resultado de probar cada modelo, solo cuando se pide con ?probe=1. */
+    probed?: { model: string; ok: boolean; error?: string }[];
     problem?: string;
   }> {
     const visionModels = this.visionModels();
@@ -406,16 +458,33 @@ export class AiService {
       const withVision = ids.filter((id) => /vision|llama-4|scout|maverick/i.test(id));
       const usable = visionModels.filter((m) => ids.includes(m));
 
+      // Se prueban los configurados y, si ninguno anda, también los que Groq
+      // ofrece hoy: así el aviso puede decir cuál poner en vez de solo "ninguno
+      // sirve". Se limita a seis para no gastar la cuota en una sola consulta.
+      const probed = probe
+        ? await Promise.all(
+            [...new Set([...visionModels, ...withVision])]
+              .slice(0, 6)
+              .map((m) => this.probeVisionModel(m)),
+          )
+        : undefined;
+      const funcionan = probed?.filter((p) => p.ok).map((p) => p.model) ?? [];
+
       return {
         configured: true,
         visionModels,
         lastVisionError: this.lastVisionError,
         availableVisionModels: withVision,
+        probed,
         problem:
           usable.length === 0
             ? "Ninguno de los modelos configurados existe hoy en Groq. " +
               "Cargá uno de availableVisionModels en GROQ_VISION_MODEL."
-            : undefined,
+            : probed && funcionan.length === 0
+              ? "Los modelos configurados existen pero ninguno contestó. " +
+                "Mirá el detalle en `probed`: si dice 401 la clave no sirve, y si " +
+                "dice 429 se agotó la cuota de la clave."
+              : undefined,
       };
     } catch (err) {
       return {

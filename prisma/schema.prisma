@@ -61,11 +61,17 @@ enum DrivetrainType {
 // vehículo en vez de derivarse en el front.
 enum VehicleCategory {
   SEDAN
+  HATCHBACK
   SUV
-  BERLINA
   PICKUP
+  VAN
   ELECTRIC
   PREMIUM
+  /// "Berlina" es la palabra castellana para sedán: era un duplicado de SEDAN y
+  /// se dejó de ofrecer al publicar. Sigue acá porque hay publicaciones que ya lo
+  /// usan y quitar un valor de un enum obliga a reescribir la columna. El front
+  /// lo muestra como "Sedán".
+  BERLINA
   OTHER
 }
 
@@ -93,16 +99,16 @@ enum ReportTargetType {
 }
 
 enum ReportStatus {
-  OPEN          // recién entrado, esperando que un admin lo mire
-  ACTION_TAKEN  // el admin actuó (pausó o eliminó la publicación, etc.)
-  DISMISSED     // el admin lo descartó
+  OPEN // recién entrado, esperando que un admin lo mire
+  ACTION_TAKEN // el admin actuó (pausó o eliminó la publicación, etc.)
+  DISMISSED // el admin lo descartó
 }
 
 /// Qué dijo la IA al leer el reporte y compararlo con la publicación.
 enum ReportAiVerdict {
-  COHERENT     // lo que se denuncia se corresponde con la publicación
-  INCOHERENT   // no tiene relación con la publicación
-  UNCLEAR      // no alcanza para decidir
+  COHERENT // lo que se denuncia se corresponde con la publicación
+  INCOHERENT // no tiene relación con la publicación
+  UNCLEAR // no alcanza para decidir
 }
 
 enum BookingStatus {
@@ -239,26 +245,26 @@ model User {
 }
 
 model UserVerification {
-  id              String             @id @default(uuid())
-  userId          String
-  user            User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status          VerificationStatus @default(ID_SUBMITTED)
-  documentUrl     String?
-  selfieUrl       String?
-  dniFrontUrl     String?
-  dniBackUrl      String?
-  licenseFrontUrl String?
-  licenseBackUrl  String?
-  notes           String?
+  id                 String             @id @default(uuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status             VerificationStatus @default(ID_SUBMITTED)
+  documentUrl        String?
+  selfieUrl          String?
+  dniFrontUrl        String?
+  dniBackUrl         String?
+  licenseFrontUrl    String?
+  licenseBackUrl     String?
+  notes              String?
   // Datos leídos de los documentos por la revisión automática. Quedan
   // registrados acá y no se los pide al usuario, así no se pueden falsear.
-  documentNumber   String?
+  documentNumber     String?
   fullNameOnDocument String?
-  licenseExpiresAt DateTime?
-  reviewedBy       String?
-  reviewedAt      DateTime?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  licenseExpiresAt   DateTime?
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   @@index([userId])
   @@index([status])
@@ -358,19 +364,19 @@ model Listing {
 
   /// Promedio de las reseñas de esta publicación y cuántas son. Calculados y
   /// guardados: es el número que se muestra en el listado y en el detalle.
-  ratingAverage     Float?
-  ratingCount       Int           @default(0)
+  ratingAverage Float?
+  ratingCount   Int    @default(0)
 
   /// Cambio de precio pendiente de confirmar por email, y cuándo se pidió.
   /// El precio no se toca hasta que la persona confirma con el código.
-  pendingPricePerDay      Float?
-  priceChangeRequestedAt  DateTime?
+  pendingPricePerDay     Float?
+  priceChangeRequestedAt DateTime?
   /// Última vez que el precio cambió de verdad. Se usa para el tiempo de espera
   /// entre cambios.
-  priceUpdatedAt          DateTime?
+  priceUpdatedAt         DateTime?
 
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   bookings           Booking[]
   availabilityBlocks ListingAvailabilityBlock[]
@@ -624,9 +630,9 @@ model Review {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  author     User    @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
-  targetUser User    @relation("ReviewTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  author     User     @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  targetUser User     @relation("ReviewTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
   listing    Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
   @@unique([bookingId, authorId])
@@ -670,10 +676,10 @@ model Report {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  reporter     User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  targetUser   User?    @relation("ReportedUser", fields: [targetUserId], references: [id], onDelete: Cascade)
-  listing      Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
-  resolvedBy   User?    @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  reporter   User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUser User?    @relation("ReportedUser", fields: [targetUserId], references: [id], onDelete: Cascade)
+  listing    Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  resolvedBy User?    @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([listingId])

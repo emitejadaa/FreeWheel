@@ -144,3 +144,82 @@ describe("AiService.vision", () => {
     expect(result.reason).toBe("The image does not show a vehicle.");
   });
 });
+
+/**
+ * PROBAR LOS MODELOS DE VERDAD
+ *
+ * `health()` comparaba los nombres configurados contra la lista de Groq, y con eso
+ * decía si estaban "disponibles". Pero estar en la lista no es lo mismo que
+ * funcionar: un modelo puede estar listado y contestar 401 (clave mala) o 429
+ * (cuota agotada). Con ?probe=1 se le manda una imagen de 1x1 a cada uno y se
+ * informa cuál contestó, que es lo que hace falta para saber qué poner en
+ * GROQ_VISION_MODEL.
+ */
+describe("AiService.health con prueba de modelos", () => {
+  // Un ConfigService por CLAVE y no uno que devuelve lo mismo para todo: con el
+  // segundo, GROQ_VISION_MODEL devolvía la clave de la API y se colaba como si
+  // fuera el nombre de un modelo.
+  const config = {
+    get: (name: string) => (name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined),
+  } as unknown as ConfigService;
+
+  afterEach(() => jest.restoreAllMocks());
+
+  /** Groq lista los modelos, y cada prueba responde lo que se le indique. */
+  function conModelos(ids: string[], respuestaPorModelo: Record<string, number>) {
+    global.fetch = jest.fn((url: string, init?: { body?: string }) => {
+      if (String(url).includes("/models")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: ids.map((id) => ({ id })) }),
+        });
+      }
+      const model = String(JSON.parse(init?.body ?? "{}").model);
+      const status = respuestaPorModelo[model] ?? 200;
+      return Promise.resolve({
+        ok: status === 200,
+        status,
+        text: () => Promise.resolve(`{"error":{"message":"estado ${status}"}}`),
+        json: () => Promise.resolve({ choices: [{ message: { content: "ok" } }] }),
+      });
+    }) as unknown as typeof fetch;
+    return new AiService(config);
+  }
+
+  const SCOUT = "meta-llama/llama-4-scout-17b-16e-instruct";
+  const MAVERICK = "meta-llama/llama-4-maverick-17b-128e-instruct";
+
+  it("does not probe unless it is asked to", async () => {
+    const service = conModelos([SCOUT, MAVERICK], {});
+
+    const result = await service.health();
+
+    expect(result.probed).toBeUndefined();
+    // Solo el pedido de la lista de modelos, ninguna prueba.
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  it("reports which vision models actually answer", async () => {
+    const service = conModelos([SCOUT, MAVERICK], { [MAVERICK]: 429 });
+
+    const result = await service.health(true);
+
+    expect(result.probed).toEqual(
+      expect.arrayContaining([
+        { model: SCOUT, ok: true },
+        expect.objectContaining({ model: MAVERICK, ok: false }),
+      ]),
+    );
+    // Uno anda, así que no hay problema que avisar.
+    expect(result.problem).toBeUndefined();
+  });
+
+  it("explains the problem when the models exist but none answers", async () => {
+    const service = conModelos([SCOUT, MAVERICK], { [SCOUT]: 401, [MAVERICK]: 401 });
+
+    const result = await service.health(true);
+
+    expect(result.probed?.every((p) => !p.ok)).toBe(true);
+    expect(result.problem).toContain("401");
+  });
+});
