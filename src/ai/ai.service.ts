@@ -48,6 +48,129 @@ export type DocumentKind =
   | "LICENSE_FRONT"
   | "LICENSE_BACK";
 
+/**
+ * IDIOMA DE LAS RESPUESTAS DE LA IA
+ *
+ * El motivo por el que una foto no sirve ("parece un auto de juguete") lo escribe
+ * el modelo y se le muestra tal cual a la persona. Con el prompt en castellano el
+ * motivo volvía siempre en castellano, así que la app en inglés mostraba una
+ * pantalla en inglés con la explicación en castellano: justo la parte que hace
+ * falta entender para arreglar la foto.
+ *
+ * Ahora el front manda el idioma elegido y el prompt le pide al modelo que
+ * escriba los campos de texto libre en ese idioma. Las preguntas del prompt
+ * quedan en castellano a propósito: son instrucciones para el modelo, no texto
+ * que alguien lea, y cambiarlas cambiaría los resultados de la revisión.
+ */
+export const SUPPORTED_LANGS = ["es", "en", "pt", "it", "zh"] as const;
+export type SupportedLang = (typeof SUPPORTED_LANGS)[number];
+
+const LANG_NAME: Record<SupportedLang, string> = {
+  es: "español",
+  en: "inglés",
+  pt: "portugués",
+  it: "italiano",
+  zh: "chino simplificado",
+};
+
+/** Le pide al modelo que escriba esos campos del JSON en el idioma elegido. */
+const answerInLanguage = (lang: SupportedLang, fields: string[]): string =>
+  `Escribí el contenido de ${fields.map((f) => `"${f}"`).join(" y ")} en ${LANG_NAME[lang]}. ` +
+  "Las claves del JSON no se traducen: van tal cual están escritas acá.";
+
+// Los textos que NO los escribe el modelo (fallos del servicio y respaldos).
+const UNAVAILABLE: Record<
+  SupportedLang,
+  { notConfigured: string; unavailable: string; unreadable: string }
+> = {
+  es: {
+    notConfigured: "La revisión automática no está configurada en el servidor.",
+    unavailable: "La revisión automática no está disponible en este momento.",
+    unreadable: "No se pudo interpretar la revisión automática.",
+  },
+  en: {
+    notConfigured: "The automatic review is not configured on the server.",
+    unavailable: "The automatic review is not available right now.",
+    unreadable: "The automatic review could not be interpreted.",
+  },
+  pt: {
+    notConfigured: "A revisão automática não está configurada no servidor.",
+    unavailable: "A revisão automática não está disponível neste momento.",
+    unreadable: "Não foi possível interpretar a revisão automática.",
+  },
+  it: {
+    notConfigured: "Il controllo automatico non è configurato sul server.",
+    unavailable: "Il controllo automatico non è disponibile in questo momento.",
+    unreadable: "Non è stato possibile interpretare il controllo automatico.",
+  },
+  zh: {
+    notConfigured: "服务器上尚未配置自动审核。",
+    unavailable: "自动审核目前不可用。",
+    unreadable: "无法解析自动审核的结果。",
+  },
+};
+
+const DOC_RESULT: Record<SupportedLang, { ok: string; bad: string }> = {
+  es: {
+    ok: "El documento coincide con lo esperado.",
+    bad: "La imagen no corresponde al documento pedido.",
+  },
+  en: {
+    ok: "The document matches what was expected.",
+    bad: "The image is not the document that was asked for.",
+  },
+  pt: {
+    ok: "O documento corresponde ao esperado.",
+    bad: "A imagem não corresponde ao documento pedido.",
+  },
+  it: {
+    ok: "Il documento corrisponde a quanto atteso.",
+    bad: "L'immagine non corrisponde al documento richiesto.",
+  },
+  zh: { ok: "证件与要求相符。", bad: "图片不是要求的证件。" },
+};
+
+const VISION_RESULT: Record<
+  SupportedLang,
+  {
+    notAVehicle: string;
+    realCar: string;
+    notReal: (detected: string | null) => string;
+    notAVehicleSeen: (detected: string | null) => string;
+  }
+> = {
+  es: {
+    notAVehicle: "La imagen no muestra un vehículo.",
+    realCar: "Es la foto de un vehículo real.",
+    notReal: (d) => `Parece ${d ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`,
+    notAVehicleSeen: (d) => `No es un vehículo${d ? `: se ve ${d}` : ""}.`,
+  },
+  en: {
+    notAVehicle: "The image does not show a vehicle.",
+    realCar: "This is a photo of a real vehicle.",
+    notReal: (d) => `It looks like ${d ?? "a toy vehicle or an image"}, not a real vehicle.`,
+    notAVehicleSeen: (d) => `This is not a vehicle${d ? `: it shows ${d}` : ""}.`,
+  },
+  pt: {
+    notAVehicle: "A imagem não mostra um veículo.",
+    realCar: "É a foto de um veículo real.",
+    notReal: (d) => `Parece ${d ?? "um veículo de brinquedo ou uma imagem"}, não um veículo real.`,
+    notAVehicleSeen: (d) => `Não é um veículo${d ? `: aparece ${d}` : ""}.`,
+  },
+  it: {
+    notAVehicle: "L'immagine non mostra un veicolo.",
+    realCar: "È la foto di un veicolo vero.",
+    notReal: (d) => `Sembra ${d ?? "un veicolo giocattolo o un'immagine"}, non un veicolo vero.`,
+    notAVehicleSeen: (d) => `Non è un veicolo${d ? `: si vede ${d}` : ""}.`,
+  },
+  zh: {
+    notAVehicle: "图片中没有车辆。",
+    realCar: "这是真实车辆的照片。",
+    notReal: (d) => `看起来是${d ?? "玩具车或一张图片"}，不是真实车辆。`,
+    notAVehicleSeen: (d) => `这不是车辆${d ? `：看到的是${d}` : ""}。`,
+  },
+};
+
 const DOCUMENT_PROMPTS: Record<DocumentKind, string> = {
   DNI_FRONT:
     "el FRENTE de un documento nacional de identidad (DNI), con la foto de la persona, su nombre y el número de documento",
@@ -400,6 +523,7 @@ export class AiService {
   async inspectDocument(
     imageUrl: string,
     kind: DocumentKind,
+    lang: SupportedLang = "es",
   ): Promise<DocumentInspection> {
     const expected = DOCUMENT_PROMPTS[kind];
 
@@ -413,7 +537,8 @@ export class AiService {
         '"motivo": "una frase explicando la decisión"}\n' +
         "Si la imagen no es un documento de identidad (por ejemplo un paisaje, " +
         "una mascota, una captura de pantalla o una persona sin documento), " +
-        '"corresponde" debe ser false.',
+        '"corresponde" debe ser false.\n' +
+        answerInLanguage(lang, ["motivo", "tipo_detectado"]),
       400,
     );
 
@@ -423,8 +548,8 @@ export class AiService {
         code: answer.code,
         reason:
           answer.code === "not_configured"
-            ? "La revisión automática no está configurada en el servidor."
-            : "La revisión automática no está disponible en este momento.",
+            ? UNAVAILABLE[lang].notConfigured
+            : UNAVAILABLE[lang].unavailable,
       };
     }
 
@@ -433,7 +558,7 @@ export class AiService {
       return {
         matches: null,
         code: "unreadable",
-        reason: "No se pudo interpretar la revisión automática.",
+        reason: UNAVAILABLE[lang].unreadable,
       };
     }
 
@@ -444,8 +569,8 @@ export class AiService {
         typeof parsed.motivo === "string" && parsed.motivo
           ? parsed.motivo
           : matches
-            ? "El documento coincide con lo esperado."
-            : "La imagen no corresponde al documento pedido.",
+            ? DOC_RESULT[lang].ok
+            : DOC_RESULT[lang].bad,
       detectedType: asText(parsed.tipo_detectado),
       documentNumber: asDigits(parsed.numero),
       fullName: asText(parsed.nombre),
@@ -471,7 +596,10 @@ export class AiService {
    * así la pantalla puede avisar que falta configurar el servidor en vez de
    * quedarse en un silencioso "no verificada".
    */
-  async vision(imageDataUrl: string): Promise<{
+  async vision(
+    imageDataUrl: string,
+    lang: SupportedLang = "es",
+  ): Promise<{
     isVehicle: boolean | null;
     /** Qué se vio en la foto, para explicarle a la persona por qué no sirve. */
     reason?: string;
@@ -496,7 +624,8 @@ export class AiService {
         "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
         '{"es_vehiculo": true|false, "es_real": true|false, ' +
         '"que_es": "en 2 o 3 palabras qué se ve", ' +
-        '"motivo": "una frase corta explicando la decisión"}',
+        '"motivo": "una frase corta explicando la decisión"}\n' +
+        answerInLanguage(lang, ["motivo", "que_es"]),
       220,
     );
 
@@ -509,7 +638,7 @@ export class AiService {
       const text = answer.content.trim().toUpperCase();
       if (text.startsWith("SI")) return { isVehicle: true };
       if (text.startsWith("NO")) {
-        return { isVehicle: false, reason: "La imagen no muestra un vehículo." };
+        return { isVehicle: false, reason: VISION_RESULT[lang].notAVehicle };
       }
       return { isVehicle: null, code: "unreadable" };
     }
@@ -524,7 +653,7 @@ export class AiService {
     if (esVehiculo && esReal) {
       return {
         isVehicle: true,
-        reason: motivo ?? "Es la foto de un vehículo real.",
+        reason: motivo ?? VISION_RESULT[lang].realCar,
         detected,
       };
     }
@@ -534,8 +663,8 @@ export class AiService {
       reason:
         motivo ??
         (esVehiculo
-          ? `Parece ${detected ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`
-          : `No es un vehículo${detected ? `: se ve ${detected}` : ""}.`),
+          ? VISION_RESULT[lang].notReal(detected)
+          : VISION_RESULT[lang].notAVehicleSeen(detected)),
       detected,
     };
   }

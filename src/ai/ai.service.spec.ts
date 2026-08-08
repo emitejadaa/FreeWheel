@@ -25,6 +25,15 @@ describe("AiService.vision", () => {
     return service;
   }
 
+  /** El texto del prompt que se le mandó a Groq en la última llamada. */
+  function promptEnviado(): string {
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [
+      string,
+      { body: string },
+    ];
+    return init.body;
+  }
+
   const IMAGEN = "data:image/jpeg;base64,AAAA";
 
   afterEach(() => {
@@ -97,5 +106,41 @@ describe("AiService.vision", () => {
     // foto de un perro como foto de un auto.
     expect(result.isVehicle).toBeNull();
     expect(result.code).toBe("not_configured");
+  });
+
+  /**
+   * EL IDIOMA DEL MOTIVO
+   *
+   * El motivo lo escribe el modelo y se le muestra tal cual a la persona. Con la
+   * app en inglés, una pantalla en inglés mostraba la explicación en castellano:
+   * justo la parte que hace falta entender para arreglar la foto. Ahora el front
+   * manda el idioma elegido y el prompt le pide al modelo que escriba en ese
+   * idioma; los respaldos escritos a mano también cambian.
+   */
+  it("asks the model for the reason in the chosen language", async () => {
+    const service = conRespuesta('{"es_vehiculo": true, "es_real": true}');
+
+    await service.vision(IMAGEN, "en");
+
+    expect(promptEnviado()).toContain("inglés");
+  });
+
+  it("defaults to Spanish when no language is given", async () => {
+    const service = conRespuesta('{"es_vehiculo": true, "es_real": true}');
+
+    await service.vision(IMAGEN);
+
+    expect(promptEnviado()).toContain("español");
+  });
+
+  it("uses the chosen language for the fallback reason too", async () => {
+    // El modelo contestó "NO" en lugar del JSON pedido: ahí el motivo lo escribe
+    // el backend, y también tiene que salir en el idioma elegido.
+    const service = conRespuesta("NO");
+
+    const result = await service.vision(IMAGEN, "en");
+
+    expect(result.isVehicle).toBe(false);
+    expect(result.reason).toBe("The image does not show a vehicle.");
   });
 });

@@ -36,7 +36,7 @@ export class AiController {
 
   @Post("vision")
   vision(@Body() dto: AiVisionDto) {
-    return this.ai.vision(dto.imageDataUrl);
+    return this.ai.vision(dto.imageDataUrl, dto.lang ?? "es");
   }
 
   // Transcribir consume más que una respuesta de texto: solo usuarios logueados
@@ -55,6 +55,6 @@ export class AiController {
   @Post("document")
   @UseGuards(JwtAuthGuard)
   document(@Body() dto: AiDocumentDto) {
-    return this.ai.inspectDocument(dto.image, dto.kind);
+    return this.ai.inspectDocument(dto.image, dto.kind, dto.lang ?? "es");
   }
 }
