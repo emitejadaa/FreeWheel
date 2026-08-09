@@ -65,7 +65,18 @@ enum VehicleCategory {
   SUV
   PICKUP
   VAN
+  /// Las dos carrocerías de un auto deportivo: dos puertas techo fijo (COUPE) y
+  /// dos puertas techo rebatible (CONVERTIBLE). Reemplazan a PREMIUM, que no era
+  /// una carrocería sino una etiqueta de precio.
+  COUPE
+  CONVERTIBLE
   ELECTRIC
+  /// PREMIUM no es un tipo de auto: es una opinión sobre el precio. Un particular
+  /// no alquila un deportivo de colección, y "premium" no le dice a nadie qué
+  /// auto está mirando. Se dejó de ofrecer al publicar y quien busca un auto así
+  /// ahora elige COUPE o CONVERTIBLE, que sí describen el auto.
+  /// Queda en el enum porque hay publicaciones que ya lo usan; el front las
+  /// muestra deduciendo la carrocería de las medidas del vehículo.
   PREMIUM
   /// "Berlina" es la palabra castellana para sedán: era un duplicado de SEDAN y
   /// se dejó de ofrecer al publicar. Sigue acá porque hay publicaciones que ya lo
@@ -73,6 +84,22 @@ enum VehicleCategory {
   /// lo muestra como "Sedán".
   BERLINA
   OTHER
+}
+
+/// Quién puede ver la foto de perfil de una persona.
+///
+/// Existe porque una foto de perfil es una cara: hay gente que la quiere puesta
+/// para que la reconozcan cuando va a entregar el auto, y gente que no la quiere
+/// a la vista de cualquiera que entre a la app. Antes había una sola respuesta
+/// para las dos —la foto se veía siempre— y quien no estuviera de acuerdo no
+/// tenía más opción que no poner ninguna.
+enum PhotoVisibility {
+  /// Cualquier persona con la sesión abierta: la lista de chats, el encabezado
+  /// de una conversación, la publicación de un auto y las reseñas.
+  EVERYONE
+  /// Solo las personas con las que hay o hubo una reserva en común. Para el
+  /// resto se muestra el círculo con la inicial, igual que si no tuviera foto.
+  BOOKED
 }
 
 enum VerificationCodeTargetType {
@@ -201,6 +228,11 @@ model User {
   phone               String?
   dateOfBirth         DateTime?
   profilePhotoUrl     String?
+  /// Quién ve la foto de arriba. Se elige en el perfil y se puede cambiar cuando
+  /// se quiera. Por defecto la ve todo el mundo: si alguien se tomó el trabajo de
+  /// subir una foto es para que se vea, y quien prefiera lo contrario lo cambia
+  /// en dos toques.
+  profilePhotoVisibility PhotoVisibility  @default(EVERYONE)
   role                UserRole            @default(USER)
   status              UserStatus          @default(ACTIVE)
   verificationStatus  VerificationStatus  @default(UNVERIFIED)

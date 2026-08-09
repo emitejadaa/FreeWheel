@@ -31,6 +31,13 @@ const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
  * tocar el código, para el día que Groq saque un modelo nuevo.
  */
 const DEFAULT_VISION_MODELS = [
+  // Groq dio de baja los dos modelos llama-4 en junio de 2026 y recomienda pasar
+  // a qwen3.6, que también acepta imágenes. Por eso va primero: con los llama-4
+  // solos, la revisión de fotos quedó sin ningún modelo vivo y el panel de
+  // administración avisaba "ninguno de los modelos configurados existe hoy".
+  // Igual queda el respaldo de abajo, y GROQ_VISION_MODEL manda sobre todo esto:
+  // el botón "Probar los modelos" del panel dice cuáles contestan HOY.
+  "qwen/qwen3.6-27b",
   "meta-llama/llama-4-scout-17b-16e-instruct",
   "meta-llama/llama-4-maverick-17b-128e-instruct",
 ];
@@ -142,25 +149,30 @@ const VISION_RESULT: Record<
   es: {
     notAVehicle: "La imagen no muestra un vehículo.",
     realCar: "Es la foto de un vehículo real.",
-    notReal: (d) => `Parece ${d ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`,
+    notReal: (d) =>
+      `Parece ${d ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`,
     notAVehicleSeen: (d) => `No es un vehículo${d ? `: se ve ${d}` : ""}.`,
   },
   en: {
     notAVehicle: "The image does not show a vehicle.",
     realCar: "This is a photo of a real vehicle.",
-    notReal: (d) => `It looks like ${d ?? "a toy vehicle or an image"}, not a real vehicle.`,
-    notAVehicleSeen: (d) => `This is not a vehicle${d ? `: it shows ${d}` : ""}.`,
+    notReal: (d) =>
+      `It looks like ${d ?? "a toy vehicle or an image"}, not a real vehicle.`,
+    notAVehicleSeen: (d) =>
+      `This is not a vehicle${d ? `: it shows ${d}` : ""}.`,
   },
   pt: {
     notAVehicle: "A imagem não mostra um veículo.",
     realCar: "É a foto de um veículo real.",
-    notReal: (d) => `Parece ${d ?? "um veículo de brinquedo ou uma imagem"}, não um veículo real.`,
+    notReal: (d) =>
+      `Parece ${d ?? "um veículo de brinquedo ou uma imagem"}, não um veículo real.`,
     notAVehicleSeen: (d) => `Não é um veículo${d ? `: aparece ${d}` : ""}.`,
   },
   it: {
     notAVehicle: "L'immagine non mostra un veicolo.",
     realCar: "È la foto di un veicolo vero.",
-    notReal: (d) => `Sembra ${d ?? "un veicolo giocattolo o un'immagine"}, non un veicolo vero.`,
+    notReal: (d) =>
+      `Sembra ${d ?? "un veicolo giocattolo o un'immagine"}, non un veicolo vero.`,
     notAVehicleSeen: (d) => `Non è un veicolo${d ? `: si vede ${d}` : ""}.`,
   },
   zh: {
@@ -337,7 +349,9 @@ export class AiService {
         // inválida, modelo dado de baja, imagen demasiado grande).
         const detail = (await res.text().catch(() => "")).slice(0, 500);
         this.lastVisionError = `${model} → ${res.status}: ${detail}`;
-        this.logger.error(`Groq visión (${model}) respondió ${res.status}: ${detail}`);
+        this.logger.error(
+          `Groq visión (${model}) respondió ${res.status}: ${detail}`,
+        );
 
         // Si el modelo ya no existe, se prueba el siguiente de la lista. Con
         // cualquier otro error no tiene sentido: el problema no es el modelo.
@@ -406,7 +420,11 @@ export class AiService {
       });
       if (res.ok) return { model, ok: true };
       const detalle = await res.text();
-      return { model, ok: false, error: `${res.status} ${detalle.slice(0, 180)}` };
+      return {
+        model,
+        ok: false,
+        error: `${res.status} ${detalle.slice(0, 180)}`,
+      };
     } catch (err) {
       return {
         model,
@@ -454,8 +472,13 @@ export class AiService {
         .map((m) => m.id)
         .filter((id): id is string => Boolean(id));
       // Los que sirven para mirar imágenes: Groq no marca esto en la respuesta,
-      // así que se filtra por nombre, que es lo que se puede hacer.
-      const withVision = ids.filter((id) => /vision|llama-4|scout|maverick/i.test(id));
+      // así que se filtra por nombre, que es lo que se puede hacer. `qwen` está
+      // en la lista porque es el modelo multimodal al que Groq mandó a migrar
+      // cuando dio de baja los llama-4; sin él, el panel no lo ofrecía como
+      // alternativa aunque estuviera disponible.
+      const withVision = ids.filter((id) =>
+        /vision|llama-4|scout|maverick|qwen/i.test(id),
+      );
       const usable = visionModels.filter((m) => ids.includes(m));
 
       // Se prueban los configurados y, si ninguno anda, también los que Groq

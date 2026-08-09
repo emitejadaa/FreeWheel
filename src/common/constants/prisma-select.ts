@@ -13,6 +13,10 @@ import { Prisma } from "@prisma/client";
  * con qué dibujar el avatar en el chat, en la publicación de un auto ni al lado
  * de una reseña, y en todos esos lugares mostraba un círculo con la inicial
  * aunque la persona hubiera subido una foto.
+ *
+ * `profilePhotoVisibility` viaja al lado porque es lo que decide si esa foto se
+ * puede mostrar o no. No llega al front: PhotoVisibilityInterceptor lo lee, tapa
+ * la foto cuando corresponde y saca el campo de la respuesta.
  */
 export const USER_PUBLIC_SELECT = {
   id: true,
@@ -20,6 +24,7 @@ export const USER_PUBLIC_SELECT = {
   lastName: true,
   displayName: true,
   profilePhotoUrl: true,
+  profilePhotoVisibility: true,
 } satisfies Prisma.UserSelect;
 
 /** Public fields plus email — used for the counterparties shown on a booking. */
@@ -30,6 +35,7 @@ export const USER_CONTACT_SELECT = {
   lastName: true,
   displayName: true,
   profilePhotoUrl: true,
+  profilePhotoVisibility: true,
 } satisfies Prisma.UserSelect;
 
 /** Full admin-facing user projection: everything except the password hash. */
@@ -42,6 +48,7 @@ export const USER_SAFE_SELECT = {
   phone: true,
   dateOfBirth: true,
   profilePhotoUrl: true,
+  profilePhotoVisibility: true,
   role: true,
   status: true,
   verificationStatus: true,

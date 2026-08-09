@@ -84,7 +84,9 @@ describe("AiService.vision", () => {
   it("does not reject a good photo just because the model omitted es_real", async () => {
     // Un campo que falta no es una respuesta negativa: rechazar por eso dejaría
     // afuera fotos perfectamente válidas.
-    const service = conRespuesta('{"es_vehiculo": true, "que_es": "camioneta"}');
+    const service = conRespuesta(
+      '{"es_vehiculo": true, "que_es": "camioneta"}',
+    );
 
     expect((await service.vision(IMAGEN)).isVehicle).toBe(true);
   });
@@ -160,13 +162,17 @@ describe("AiService.health con prueba de modelos", () => {
   // segundo, GROQ_VISION_MODEL devolvía la clave de la API y se colaba como si
   // fuera el nombre de un modelo.
   const config = {
-    get: (name: string) => (name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined),
+    get: (name: string) =>
+      name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined,
   } as unknown as ConfigService;
 
   afterEach(() => jest.restoreAllMocks());
 
   /** Groq lista los modelos, y cada prueba responde lo que se le indique. */
-  function conModelos(ids: string[], respuestaPorModelo: Record<string, number>) {
+  function conModelos(
+    ids: string[],
+    respuestaPorModelo: Record<string, number>,
+  ) {
     global.fetch = jest.fn((url: string, init?: { body?: string }) => {
       if (String(url).includes("/models")) {
         return Promise.resolve({
@@ -174,13 +180,15 @@ describe("AiService.health con prueba de modelos", () => {
           json: () => Promise.resolve({ data: ids.map((id) => ({ id })) }),
         });
       }
-      const model = String(JSON.parse(init?.body ?? "{}").model);
+      const pedido = JSON.parse(init?.body ?? "{}") as { model?: string };
+      const model = String(pedido.model);
       const status = respuestaPorModelo[model] ?? 200;
       return Promise.resolve({
         ok: status === 200,
         status,
         text: () => Promise.resolve(`{"error":{"message":"estado ${status}"}}`),
-        json: () => Promise.resolve({ choices: [{ message: { content: "ok" } }] }),
+        json: () =>
+          Promise.resolve({ choices: [{ message: { content: "ok" } }] }),
       });
     }) as unknown as typeof fetch;
     return new AiService(config);
@@ -188,6 +196,9 @@ describe("AiService.health con prueba de modelos", () => {
 
   const SCOUT = "meta-llama/llama-4-scout-17b-16e-instruct";
   const MAVERICK = "meta-llama/llama-4-maverick-17b-128e-instruct";
+  // El primero de la lista de respaldo del servicio: Groq dio de baja los dos
+  // llama-4 y mandó a migrar a éste, así que también se prueba.
+  const QWEN = "qwen/qwen3.6-27b";
 
   it("does not probe unless it is asked to", async () => {
     const service = conModelos([SCOUT, MAVERICK], {});
@@ -215,7 +226,11 @@ describe("AiService.health con prueba de modelos", () => {
   });
 
   it("explains the problem when the models exist but none answers", async () => {
-    const service = conModelos([SCOUT, MAVERICK], { [SCOUT]: 401, [MAVERICK]: 401 });
+    const service = conModelos([SCOUT, MAVERICK], {
+      [SCOUT]: 401,
+      [MAVERICK]: 401,
+      [QWEN]: 401,
+    });
 
     const result = await service.health(true);
 
