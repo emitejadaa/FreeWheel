@@ -166,7 +166,19 @@ describe("AiService.health con prueba de modelos", () => {
       name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined,
   } as unknown as ConfigService;
 
-  afterEach(() => jest.restoreAllMocks());
+  /**
+   * Cuerpo del error que devuelve Groq, por modelo. Lo completa la prueba que
+   * necesita un mensaje concreto (por ejemplo "invalid image data"); el resto usa
+   * uno genérico.
+   */
+  const respuestaDeError: Record<string, string> = {};
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    for (const clave of Object.keys(respuestaDeError)) {
+      delete respuestaDeError[clave];
+    }
+  });
 
   /** Groq lista los modelos, y cada prueba responde lo que se le indique. */
   function conModelos(
@@ -186,7 +198,11 @@ describe("AiService.health con prueba de modelos", () => {
       return Promise.resolve({
         ok: status === 200,
         status,
-        text: () => Promise.resolve(`{"error":{"message":"estado ${status}"}}`),
+        text: () =>
+          Promise.resolve(
+            respuestaDeError[model] ??
+              `{"error":{"message":"estado ${status}"}}`,
+          ),
         json: () =>
           Promise.resolve({ choices: [{ message: { content: "ok" } }] }),
       });
@@ -236,5 +252,41 @@ describe("AiService.health con prueba de modelos", () => {
 
     expect(result.probed?.every((p) => !p.ok)).toBe(true);
     expect(result.problem).toContain("401");
+  });
+  it("no da por roto un modelo que solo rechazó la imagen de prueba", async () => {
+    // Esto es lo que pasó de verdad en producción: qwen existía, la clave
+    // funcionaba, y contestaba `400 invalid image data` a la imagen de prueba de
+    // 1x1 que se mandaba antes. El panel lo mostraba como "la revisión no está
+    // funcionando", que era exactamente al revés.
+    const service = conModelos([QWEN], {
+      [QWEN]: 400,
+      [SCOUT]: 404,
+      [MAVERICK]: 404,
+    });
+    respuestaDeError[QWEN] =
+      '{"error":{"message":"invalid image data","type":"invalid_request_error"}}';
+
+    const result = await service.health(true);
+
+    const qwen = result.probed?.find((p) => p.model === QWEN);
+    expect(qwen?.ok).toBe(false);
+    expect(qwen?.testImageRejected).toBe(true);
+    // No se avisa de un problema que no existe...
+    expect(result.problem).toBeUndefined();
+    // ...y se explica qué hacer para saberlo de verdad.
+    expect(result.note).toContain(QWEN);
+    expect(result.note).toContain("foto");
+  });
+
+  it("un 404 de modelo inexistente sigue siendo un problema de verdad", async () => {
+    const service = conModelos([QWEN], { [QWEN]: 404 });
+    respuestaDeError[QWEN] =
+      '{"error":{"message":"The model does not exist","code":"model_not_found"}}';
+
+    const result = await service.health(true);
+
+    expect(
+      result.probed?.find((p) => p.model === QWEN)?.testImageRejected,
+    ).toBeUndefined();
   });
 });

@@ -45,6 +45,20 @@ const DEFAULT_VISION_MODELS = [
 /** Errores de Groq que significan "ese modelo ya no existe": probar el siguiente. */
 const MODEL_GONE = /model_not_found|decommission|does not exist|not found/i;
 
+/**
+ * Un 400 que se queja de la IMAGEN y no del modelo, de la clave ni de la cuota.
+ * Sirve para no dar por roto algo que está bien: ver probeVisionModel().
+ */
+const IMAGE_COMPLAINT =
+  /image|imagen|pixel|dimension|resolution|too small|width|height/i;
+
+/**
+ * Imagen para probar si un modelo acepta pedidos con foto: PNG de 64x64 opaco,
+ * con dos rectángulos. Generada una vez y pegada acá para no depender de nada.
+ */
+const PROBE_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABQklEQVR4AeyUsQ2DUAxELSagZQR2YBJWYR9K9mAIBAtQUyZyh9xwUihi3yFZ4ivWl+/5keZD/jRG/ggAuQAmA2QAOQF9AuQCYH+C27bZPM+pymdGlgt9Auu62jRNqcpnfg0AclHWHsiArOGQuQUAoVS5h86AuEwBiETYzjKAbeMxrwyIRNjOMoBt4zGvDIhE2M4ygG3jMa8MiETYzjKg+saf8kEGjONo+76nKp/5Kbz/DgHwxqolAMhmj+OwZVlSlc+MZIMMuK7LzvNMVT7zawCQi7L2QAZkDYfMLQAIpco9MqDydpFsMgChVLlHBlTeLpKtnAFI6HuPANxpML7LAMat3zPLgDsNxnfIgK7rbBiGVOUzIwuFALRta33fpyqf+TUAyEVZeyADsoZD5hYAhFLlHhlQebtINhmAUPrnnl9n+wIAAP//95dS9wAAAAZJREFUAwAfdSeuB4m6lgAAAABJRU5ErkJggg==";
+
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 
@@ -389,14 +403,21 @@ export class AiService {
    * quedó sin cuota. Con esto se ve qué modelo sirve HOY, que es lo que hace
    * falta para decidir qué poner en GROQ_VISION_MODEL.
    *
-   * La imagen es un PNG de 1x1 transparente: la respuesta no importa, lo único
-   * que se mira es si el modelo acepta el pedido.
+   * LA IMAGEN DE PRUEBA: un PNG de 64x64 con dos rectángulos.
+   *
+   * Antes era un PNG de 1x1 transparente, con la idea de que la respuesta no
+   * importaba y solo se miraba si el modelo aceptaba el pedido. No sirve: qwen
+   * contesta `400 invalid image data` a una imagen de un píxel, y el panel lo
+   * mostraba como si el modelo estuviera roto. O sea que el aviso decía "la
+   * revisión no funciona" justo cuando el modelo y la clave estaban perfectos.
+   * 64x64 y opaca es una imagen que cualquier modelo de visión acepta.
    */
-  private async probeVisionModel(
-    model: string,
-  ): Promise<{ model: string; ok: boolean; error?: string }> {
-    const PIXEL =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mN8/x8AAsMB4Bk1sQIAAAAASUVORK5CYII=";
+  private async probeVisionModel(model: string): Promise<{
+    model: string;
+    ok: boolean;
+    error?: string;
+    testImageRejected?: boolean;
+  }> {
     try {
       const res = await fetch(GROQ_URL, {
         method: "POST",
@@ -410,7 +431,7 @@ export class AiService {
             {
               role: "user",
               content: [
-                { type: "image_url", image_url: { url: PIXEL } },
+                { type: "image_url", image_url: { url: PROBE_IMAGE } },
                 { type: "text", text: "ok" },
               ],
             },
@@ -420,10 +441,16 @@ export class AiService {
       });
       if (res.ok) return { model, ok: true };
       const detalle = await res.text();
+      // Un 400 que se queja de la IMAGEN no dice nada malo del modelo ni de la
+      // clave: el pedido llegó, se autenticó y el modelo lo entendió. Se marca
+      // aparte para no reportarlo como si la revisión estuviera rota.
+      const testImageRejected =
+        res.status === 400 && IMAGE_COMPLAINT.test(detalle);
       return {
         model,
         ok: false,
         error: `${res.status} ${detalle.slice(0, 180)}`,
+        ...(testImageRejected ? { testImageRejected: true } : {}),
       };
     } catch (err) {
       return {
@@ -440,8 +467,15 @@ export class AiService {
     lastVisionError: string | null;
     availableVisionModels?: string[];
     /** Resultado de probar cada modelo, solo cuando se pide con ?probe=1. */
-    probed?: { model: string; ok: boolean; error?: string }[];
+    probed?: {
+      model: string;
+      ok: boolean;
+      error?: string;
+      testImageRejected?: boolean;
+    }[];
     problem?: string;
+    /** Aclaración cuando NO hay nada roto pero la prueba no fue concluyente. */
+    note?: string;
   }> {
     const visionModels = this.visionModels();
     if (!this.configured) {
@@ -492,6 +526,13 @@ export class AiService {
           )
         : undefined;
       const funcionan = probed?.filter((p) => p.ok).map((p) => p.model) ?? [];
+      // Los que rechazaron la imagen DE PRUEBA. No cuentan como roto: el pedido
+      // llegó, la clave se aceptó y el modelo lo entendió, así que con una foto
+      // de verdad puede andar perfectamente.
+      const soloLaImagen =
+        probed
+          ?.filter((p) => !p.ok && p.testImageRejected)
+          .map((p) => p.model) ?? [];
 
       return {
         configured: true,
@@ -503,11 +544,17 @@ export class AiService {
           usable.length === 0
             ? "Ninguno de los modelos configurados existe hoy en Groq. " +
               "Cargá uno de availableVisionModels en GROQ_VISION_MODEL."
-            : probed && funcionan.length === 0
+            : probed && funcionan.length === 0 && soloLaImagen.length === 0
               ? "Los modelos configurados existen pero ninguno contestó. " +
                 "Mirá el detalle en `probed`: si dice 401 la clave no sirve, y si " +
                 "dice 429 se agotó la cuota de la clave."
               : undefined,
+        note:
+          probed && funcionan.length === 0 && soloLaImagen.length > 0
+            ? `El modelo existe y la clave sirve: ${soloLaImagen.join(", ")} ` +
+              "rechazó la imagen de prueba, no el pedido. Probalo con una foto " +
+              "de verdad subiendo el DNI en la verificación de identidad."
+            : undefined,
       };
     } catch (err) {
       return {
