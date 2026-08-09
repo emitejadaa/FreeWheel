@@ -56,6 +56,11 @@ ENDPOINTS.md
 *.md
 !README.md
 !backend.md
+# Qué cargar en el panel de Vercel. Va al repo a propósito: es la única forma de
+# que la persona que administra el deploy lo tenga a mano, y no sirve de nada en
+# la carpeta de uno solo. (Sin esta línea, el `*.md` de arriba lo dejaba afuera y
+# el archivo no entraba en ningún commit.)
+!VARIABLES-VERCEL.md
 
 # External skill repos (local only, not committed)
 .tools/
