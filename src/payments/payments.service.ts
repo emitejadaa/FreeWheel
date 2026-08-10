@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -16,6 +17,8 @@ import {
   User,
 } from "@prisma/client";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { USER_CONTACT_SELECT } from "../common/constants/prisma-select";
+import { EmailService } from "../email/email.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
 import { PrismaService } from "../prisma/prisma.service";
@@ -32,11 +35,14 @@ const PAID_RECORD_STATUSES: PaymentRecordStatus[] = [
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
     private readonly auditLog: AuditLogService,
     private readonly config: ConfigService,
+    private readonly email: EmailService,
   ) {}
 
   // ---- intent creation (renter, on demand) --------------------------------
@@ -408,6 +414,106 @@ export class PaymentsService {
       entityId: bookingId,
       metadata: { paymentIntentId: piId, kind: record.kind },
     });
+
+    await this.avisarDelPago(bookingId, record.kind, record.amount);
+  }
+
+  /** Cómo se llama cada cobro para una persona, no para el código. */
+  private static readonly CONCEPTO: Record<string, string> = {
+    SENA: "Seña",
+    BALANCE: "Saldo",
+    DEPOSIT_HOLD: "Depósito en garantía",
+  };
+
+  /**
+   * Comprobante al inquilino y aviso al dueño, cada vez que un cobro se concreta.
+   *
+   * Va acá, en onIntentSucceeded, porque es el ÚNICO lugar por donde pasan los
+   * dos caminos: el webhook de Stripe y el pago simulado del modo mock. Ponerlo
+   * en cada uno serían dos lugares para olvidarse de uno.
+   *
+   * Nunca hace fallar el pago: si el mail no sale, queda en el log. Un cobro que
+   * se revierte porque no salió un mail sería mucho peor que un mail perdido.
+   */
+  private async avisarDelPago(
+    bookingId: string,
+    kind: PaymentRecordKind | null,
+    amount: number | null,
+  ): Promise<void> {
+    // Sin concepto o sin importe no hay comprobante que tenga sentido mandar.
+    if (!kind || amount == null) return;
+    try {
+      const booking = await this.prisma.booking.findUnique({
+        where: { id: bookingId },
+        include: {
+          owner: { select: USER_CONTACT_SELECT },
+          renter: { select: USER_CONTACT_SELECT },
+          vehicle: { select: { brand: true, model: true, year: true } },
+        },
+      });
+      if (!booking) return;
+
+      const concepto = PaymentsService.CONCEPTO[kind] ?? "Pago";
+      const vehicleLabel =
+        [booking.vehicle?.brand, booking.vehicle?.model, booking.vehicle?.year]
+          .filter(Boolean)
+          .join(" ") || "el vehículo";
+      const nombre = (persona?: {
+        displayName?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+      }) =>
+        persona?.displayName ??
+        [persona?.firstName, persona?.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+
+      // Lo pagado hasta ahora, para que el comprobante ubique el pago dentro del
+      // total en vez de mostrar un número suelto.
+      const pagados = await this.prisma.paymentRecord.aggregate({
+        where: {
+          bookingId,
+          kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
+          status: { in: PAID_RECORD_STATUSES },
+        },
+        _sum: { amount: true },
+      });
+
+      if (booking.renter?.email) {
+        await this.email.sendPaymentReceipt(booking.renter.email, {
+          renterName: nombre(booking.renter),
+          concepto,
+          amount,
+          currency: booking.currency,
+          vehicleLabel,
+          startDate: booking.startDate,
+          endDate: booking.endDate,
+          totalPaid: pagados._sum.amount ?? undefined,
+          bookingId: booking.id,
+        });
+      }
+
+      // El depósito en garantía es una retención, no plata que cobre el dueño:
+      // avisarle que "recibió un pago" por eso sería confundirlo.
+      if (booking.owner?.email && kind !== PaymentRecordKind.DEPOSIT_HOLD) {
+        await this.email.sendPaymentReceivedToOwner(booking.owner.email, {
+          ownerName: nombre(booking.owner),
+          renterName: nombre(booking.renter) || "El inquilino",
+          concepto,
+          amount,
+          currency: booking.currency,
+          vehicleLabel,
+          startDate: booking.startDate,
+          endDate: booking.endDate,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisar del pago de ${bookingId}: ${message}`,
+      );
+    }
   }
 
   private async onHoldAuthorized(piId: string) {

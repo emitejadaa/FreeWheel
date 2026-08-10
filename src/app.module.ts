@@ -1,7 +1,8 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
+import { PhotoVisibilityInterceptor } from "./common/interceptors/photo-visibility.interceptor";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { AiModule } from "./ai/ai.module";
@@ -24,7 +25,15 @@ import { ReportsModule } from "./reports/reports.module";
 
 @Module({
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // El ajuste "quién ve mi foto" se hace valer acá, sobre TODAS las respuestas,
+    // en vez de en cada consulta que devuelve una persona. Ver el comentario del
+    // interceptor: un control de privacidad repartido en seis lugares se olvida
+    // en el séptimo.
+    { provide: APP_INTERCEPTOR, useClass: PhotoVisibilityInterceptor },
+  ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),

@@ -61,6 +61,7 @@ describe("BookingsService", () => {
   };
   let pricing: { computeBooking: jest.Mock };
   let contracts: { createForBooking: jest.Mock };
+  let email: Record<string, jest.Mock>;
 
   const listing = {
     id: "listing-1",
@@ -108,6 +109,15 @@ describe("BookingsService", () => {
     };
     pricing = { computeBooking: jest.fn().mockReturnValue(PRICING) };
     contracts = { createForBooking: jest.fn() };
+    email = {
+      sendBookingRequestedToOwner: jest.fn(),
+      sendBookingRequestedToRenter: jest.fn(),
+      sendBookingAcceptedToRenter: jest.fn(),
+      sendBookingRejectedToRenter: jest.fn(),
+      sendBookingCancelled: jest.fn(),
+      sendPickupConfirmed: jest.fn(),
+      sendReturnConfirmed: jest.fn(),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -118,14 +128,7 @@ describe("BookingsService", () => {
         { provide: PricingService, useValue: pricing },
         { provide: ContractsService, useValue: contracts },
         { provide: AuditLogService, useValue: { create: jest.fn() } },
-        {
-          provide: EmailService,
-          useValue: {
-            sendBookingRequestedToOwner: jest.fn(),
-            sendBookingAcceptedToRenter: jest.fn(),
-            sendBookingRejectedToRenter: jest.fn(),
-          },
-        },
+        { provide: EmailService, useValue: email },
       ],
     }).compile();
 
@@ -301,5 +304,181 @@ describe("BookingsService", () => {
       "renter-1",
       booking.id,
     );
+  });
+  /**
+   * LOS AVISOS POR MAIL
+   *
+   * Un alquiler entre dos personas que no se conocen se sostiene con que las dos
+   * sepan por escrito qué pasó. Lo que se prueba acá no es el texto del mail (eso
+   * vive en EmailService) sino QUIÉN recibe cada aviso: antes solo se le avisaba
+   * al dueño cuando alguien pedía una reserva, y quien reservaba no recibía nada.
+   */
+  describe("avisos por mail", () => {
+    const conPartes = {
+      ...booking,
+      owner: { id: "owner-1", email: "dueño@test.com", firstName: "Ana" },
+      renter: {
+        id: "renter-1",
+        email: "inquilino@test.com",
+        firstName: "Beto",
+      },
+      vehicle: { brand: "Toyota", model: "Corolla", year: 2021 },
+      currency: "usd",
+      totalPriceSnapshot: 200,
+    };
+
+    it("al pedir una reserva se avisa a las DOS partes", async () => {
+      prisma.listing.findUnique.mockResolvedValue(listing);
+      prisma.booking.create.mockResolvedValue(conPartes);
+
+      await service.create("renter-1", {
+        listingId: listing.id,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+      });
+
+      expect(email.sendBookingRequestedToOwner).toHaveBeenCalledWith(
+        "dueño@test.com",
+        expect.objectContaining({ renterName: "Beto", totalPrice: 200 }),
+      );
+      // Éste es el que faltaba.
+      expect(email.sendBookingRequestedToRenter).toHaveBeenCalledWith(
+        "inquilino@test.com",
+        expect.objectContaining({ ownerName: "Ana", totalPrice: 200 }),
+      );
+    });
+
+    it("si el mail falla, la reserva se crea igual", async () => {
+      prisma.listing.findUnique.mockResolvedValue(listing);
+      prisma.booking.create.mockResolvedValue(conPartes);
+      email.sendBookingRequestedToRenter.mockRejectedValue(
+        new Error("gmail caído"),
+      );
+
+      const result = await service.create("renter-1", {
+        listingId: listing.id,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+      });
+
+      expect(result).toBe(conPartes);
+    });
+
+    it("una cancelación le llega a las dos partes, y cada una sabe si canceló ella", async () => {
+      prisma.booking.findUnique.mockResolvedValue(conPartes);
+      prisma.booking.update.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.CANCELLED_BY_RENTER,
+        cancellationReason: "Me surgió un viaje",
+      });
+
+      await service.cancel("renter-1", booking.id, {
+        reason: "Me surgió un viaje",
+      });
+
+      // Al que canceló: "cancelaste". A la otra parte: "fue cancelada".
+      expect(email.sendBookingCancelled).toHaveBeenCalledWith(
+        "inquilino@test.com",
+        expect.objectContaining({ cancelaste: true, otherPartyName: "Ana" }),
+      );
+      expect(email.sendBookingCancelled).toHaveBeenCalledWith(
+        "dueño@test.com",
+        expect.objectContaining({ cancelaste: false, otherPartyName: "Beto" }),
+      );
+      // Y el motivo viaja: es lo único que explica por qué se cayó el alquiler.
+      const [, params] = email.sendBookingCancelled.mock.calls[0] as [
+        string,
+        { reason?: string | null; refunded?: boolean },
+      ];
+      expect(params.reason).toBe("Me surgió un viaje");
+      // Sin pagos hechos, no se promete ninguna devolución.
+      expect(params.refunded).toBe(false);
+    });
+
+    it("cuando había plata pagada, el mail avisa que se devuelve", async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.ACCEPTED,
+        paymentStatus: PaymentStatus.FULLY_PAID,
+      });
+      prisma.booking.update.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.CANCELLED_BY_OWNER,
+      });
+
+      await service.cancel("owner-1", booking.id, { reason: "Se me rompió" });
+
+      const [, params] = email.sendBookingCancelled.mock.calls[0] as [
+        string,
+        { refunded?: boolean },
+      ];
+      expect(params.refunded).toBe(true);
+      expect(payments.refundOnCancel).toHaveBeenCalled();
+    });
+
+    it("la entrega confirmada le llega a las dos partes, con el rol de cada una", async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.READY_FOR_PICKUP,
+      });
+      prisma.booking.update.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.IN_PROGRESS,
+        pickupConfirmedAt: new Date("2099-01-01T10:00:00.000Z"),
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await service.confirmPickup("owner-1", booking.id, "token");
+
+      expect(email.sendPickupConfirmed).toHaveBeenCalledWith(
+        "dueño@test.com",
+        expect.objectContaining({ esDueño: true }),
+      );
+      expect(email.sendPickupConfirmed).toHaveBeenCalledWith(
+        "inquilino@test.com",
+        expect.objectContaining({ esDueño: false }),
+      );
+    });
+
+    it("la devolución cierra la reserva y las dos partes reciben el aviso", async () => {
+      prisma.booking.findUnique.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.IN_PROGRESS,
+      });
+      prisma.booking.update.mockResolvedValue({
+        ...conPartes,
+        status: BookingStatus.COMPLETED,
+        returnConfirmedAt: new Date("2099-01-03T10:00:00.000Z"),
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await service.confirmReturn("renter-1", booking.id, "token");
+
+      expect(email.sendReturnConfirmed).toHaveBeenCalledWith(
+        "dueño@test.com",
+        expect.objectContaining({ esDueño: true, otherPartyName: "Beto" }),
+      );
+      expect(email.sendReturnConfirmed).toHaveBeenCalledWith(
+        "inquilino@test.com",
+        expect.objectContaining({ esDueño: false, otherPartyName: "Ana" }),
+      );
+    });
+
+    it("no intenta mandar nada si la persona no tiene email cargado", async () => {
+      prisma.listing.findUnique.mockResolvedValue(listing);
+      prisma.booking.create.mockResolvedValue({
+        ...conPartes,
+        owner: { id: "owner-1", email: null, firstName: "Ana" },
+      });
+
+      await service.create("renter-1", {
+        listingId: listing.id,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+      });
+
+      expect(email.sendBookingRequestedToOwner).not.toHaveBeenCalled();
+      expect(email.sendBookingRequestedToRenter).toHaveBeenCalled();
+    });
   });
 });

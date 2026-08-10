@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AiChatDto } from "./dto/ai-chat.dto";
@@ -29,8 +29,11 @@ export class AiController {
    * navegador sin depender de los logs del deploy.
    */
   @Get("health")
-  health() {
-    return this.ai.health();
+  health(@Query("probe") probe?: string) {
+    // Con ?probe=1 además PRUEBA cada modelo con una imagen mínima y dice cuál
+    // contesta. Sin eso solo compara nombres contra la lista de Groq, y estar en
+    // la lista no garantiza que el modelo funcione.
+    return this.ai.health(probe === "1" || probe === "true");
   }
 
   // Pública: el chatbot de ayuda funciona también para visitantes sin cuenta.
@@ -43,7 +46,7 @@ export class AiController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("vision")
   vision(@Body() dto: AiVisionDto) {
-    return this.ai.vision(dto.imageDataUrl);
+    return this.ai.vision(dto.imageDataUrl, dto.lang ?? "es");
   }
 
   // Transcribir consume más que una respuesta de texto: solo usuarios logueados
@@ -62,6 +65,6 @@ export class AiController {
   @Post("document")
   @UseGuards(JwtAuthGuard)
   document(@Body() dto: AiDocumentDto) {
-    return this.ai.inspectDocument(dto.image, dto.kind);
+    return this.ai.inspectDocument(dto.image, dto.kind, dto.lang ?? "es");
   }
 }

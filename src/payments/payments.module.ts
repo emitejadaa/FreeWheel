@@ -1,6 +1,7 @@
 import { Module, Provider } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { CommonModule } from "../common/common.module";
+import { EmailModule } from "../email/email.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
@@ -23,7 +24,7 @@ const paymentProvider: Provider = {
 };
 
 @Module({
-  imports: [PrismaModule, CommonModule],
+  imports: [PrismaModule, CommonModule, EmailModule],
   controllers: [PaymentsController],
   providers: [PaymentsService, PricingService, paymentProvider],
   exports: [PaymentsService, PricingService],

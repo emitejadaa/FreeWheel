@@ -31,12 +31,33 @@ const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
  * tocar el código, para el día que Groq saque un modelo nuevo.
  */
 const DEFAULT_VISION_MODELS = [
+  // Groq dio de baja los dos modelos llama-4 en junio de 2026 y recomienda pasar
+  // a qwen3.6, que también acepta imágenes. Por eso va primero: con los llama-4
+  // solos, la revisión de fotos quedó sin ningún modelo vivo y el panel de
+  // administración avisaba "ninguno de los modelos configurados existe hoy".
+  // Igual queda el respaldo de abajo, y GROQ_VISION_MODEL manda sobre todo esto:
+  // el botón "Probar los modelos" del panel dice cuáles contestan HOY.
+  "qwen/qwen3.6-27b",
   "meta-llama/llama-4-scout-17b-16e-instruct",
   "meta-llama/llama-4-maverick-17b-128e-instruct",
 ];
 
 /** Errores de Groq que significan "ese modelo ya no existe": probar el siguiente. */
 const MODEL_GONE = /model_not_found|decommission|does not exist|not found/i;
+
+/**
+ * Un 400 que se queja de la IMAGEN y no del modelo, de la clave ni de la cuota.
+ * Sirve para no dar por roto algo que está bien: ver probeVisionModel().
+ */
+const IMAGE_COMPLAINT =
+  /image|imagen|pixel|dimension|resolution|too small|width|height/i;
+
+/**
+ * Imagen para probar si un modelo acepta pedidos con foto: PNG de 64x64 opaco,
+ * con dos rectángulos. Generada una vez y pegada acá para no depender de nada.
+ */
+const PROBE_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABQklEQVR4AeyUsQ2DUAxELSagZQR2YBJWYR9K9mAIBAtQUyZyh9xwUihi3yFZ4ivWl+/5keZD/jRG/ggAuQAmA2QAOQF9AuQCYH+C27bZPM+pymdGlgt9Auu62jRNqcpnfg0AclHWHsiArOGQuQUAoVS5h86AuEwBiETYzjKAbeMxrwyIRNjOMoBt4zGvDIhE2M4ygG3jMa8MiETYzjKg+saf8kEGjONo+76nKp/5Kbz/DgHwxqolAMhmj+OwZVlSlc+MZIMMuK7LzvNMVT7zawCQi7L2QAZkDYfMLQAIpco9MqDydpFsMgChVLlHBlTeLpKtnAFI6HuPANxpML7LAMat3zPLgDsNxnfIgK7rbBiGVOUzIwuFALRta33fpyqf+TUAyEVZeyADsoZD5hYAhFLlHhlQebtINhmAUPrnnl9n+wIAAP//95dS9wAAAAZJREFUAwAfdSeuB4m6lgAAAABJRU5ErkJggg==";
 
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -47,6 +68,134 @@ export type DocumentKind =
   | "DNI_BACK"
   | "LICENSE_FRONT"
   | "LICENSE_BACK";
+
+/**
+ * IDIOMA DE LAS RESPUESTAS DE LA IA
+ *
+ * El motivo por el que una foto no sirve ("parece un auto de juguete") lo escribe
+ * el modelo y se le muestra tal cual a la persona. Con el prompt en castellano el
+ * motivo volvía siempre en castellano, así que la app en inglés mostraba una
+ * pantalla en inglés con la explicación en castellano: justo la parte que hace
+ * falta entender para arreglar la foto.
+ *
+ * Ahora el front manda el idioma elegido y el prompt le pide al modelo que
+ * escriba los campos de texto libre en ese idioma. Las preguntas del prompt
+ * quedan en castellano a propósito: son instrucciones para el modelo, no texto
+ * que alguien lea, y cambiarlas cambiaría los resultados de la revisión.
+ */
+export const SUPPORTED_LANGS = ["es", "en", "pt", "it", "zh"] as const;
+export type SupportedLang = (typeof SUPPORTED_LANGS)[number];
+
+const LANG_NAME: Record<SupportedLang, string> = {
+  es: "español",
+  en: "inglés",
+  pt: "portugués",
+  it: "italiano",
+  zh: "chino simplificado",
+};
+
+/** Le pide al modelo que escriba esos campos del JSON en el idioma elegido. */
+const answerInLanguage = (lang: SupportedLang, fields: string[]): string =>
+  `Escribí el contenido de ${fields.map((f) => `"${f}"`).join(" y ")} en ${LANG_NAME[lang]}. ` +
+  "Las claves del JSON no se traducen: van tal cual están escritas acá.";
+
+// Los textos que NO los escribe el modelo (fallos del servicio y respaldos).
+const UNAVAILABLE: Record<
+  SupportedLang,
+  { notConfigured: string; unavailable: string; unreadable: string }
+> = {
+  es: {
+    notConfigured: "La revisión automática no está configurada en el servidor.",
+    unavailable: "La revisión automática no está disponible en este momento.",
+    unreadable: "No se pudo interpretar la revisión automática.",
+  },
+  en: {
+    notConfigured: "The automatic review is not configured on the server.",
+    unavailable: "The automatic review is not available right now.",
+    unreadable: "The automatic review could not be interpreted.",
+  },
+  pt: {
+    notConfigured: "A revisão automática não está configurada no servidor.",
+    unavailable: "A revisão automática não está disponível neste momento.",
+    unreadable: "Não foi possível interpretar a revisão automática.",
+  },
+  it: {
+    notConfigured: "Il controllo automatico non è configurato sul server.",
+    unavailable: "Il controllo automatico non è disponibile in questo momento.",
+    unreadable: "Non è stato possibile interpretare il controllo automatico.",
+  },
+  zh: {
+    notConfigured: "服务器上尚未配置自动审核。",
+    unavailable: "自动审核目前不可用。",
+    unreadable: "无法解析自动审核的结果。",
+  },
+};
+
+const DOC_RESULT: Record<SupportedLang, { ok: string; bad: string }> = {
+  es: {
+    ok: "El documento coincide con lo esperado.",
+    bad: "La imagen no corresponde al documento pedido.",
+  },
+  en: {
+    ok: "The document matches what was expected.",
+    bad: "The image is not the document that was asked for.",
+  },
+  pt: {
+    ok: "O documento corresponde ao esperado.",
+    bad: "A imagem não corresponde ao documento pedido.",
+  },
+  it: {
+    ok: "Il documento corrisponde a quanto atteso.",
+    bad: "L'immagine non corrisponde al documento richiesto.",
+  },
+  zh: { ok: "证件与要求相符。", bad: "图片不是要求的证件。" },
+};
+
+const VISION_RESULT: Record<
+  SupportedLang,
+  {
+    notAVehicle: string;
+    realCar: string;
+    notReal: (detected: string | null) => string;
+    notAVehicleSeen: (detected: string | null) => string;
+  }
+> = {
+  es: {
+    notAVehicle: "La imagen no muestra un vehículo.",
+    realCar: "Es la foto de un vehículo real.",
+    notReal: (d) =>
+      `Parece ${d ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`,
+    notAVehicleSeen: (d) => `No es un vehículo${d ? `: se ve ${d}` : ""}.`,
+  },
+  en: {
+    notAVehicle: "The image does not show a vehicle.",
+    realCar: "This is a photo of a real vehicle.",
+    notReal: (d) =>
+      `It looks like ${d ?? "a toy vehicle or an image"}, not a real vehicle.`,
+    notAVehicleSeen: (d) =>
+      `This is not a vehicle${d ? `: it shows ${d}` : ""}.`,
+  },
+  pt: {
+    notAVehicle: "A imagem não mostra um veículo.",
+    realCar: "É a foto de um veículo real.",
+    notReal: (d) =>
+      `Parece ${d ?? "um veículo de brinquedo ou uma imagem"}, não um veículo real.`,
+    notAVehicleSeen: (d) => `Não é um veículo${d ? `: aparece ${d}` : ""}.`,
+  },
+  it: {
+    notAVehicle: "L'immagine non mostra un veicolo.",
+    realCar: "È la foto di un veicolo vero.",
+    notReal: (d) =>
+      `Sembra ${d ?? "un veicolo giocattolo o un'immagine"}, non un veicolo vero.`,
+    notAVehicleSeen: (d) => `Non è un veicolo${d ? `: si vede ${d}` : ""}.`,
+  },
+  zh: {
+    notAVehicle: "图片中没有车辆。",
+    realCar: "这是真实车辆的照片。",
+    notReal: (d) => `看起来是${d ?? "玩具车或一张图片"}，不是真实车辆。`,
+    notAVehicleSeen: (d) => `这不是车辆${d ? `：看到的是${d}` : ""}。`,
+  },
+};
 
 const DOCUMENT_PROMPTS: Record<DocumentKind, string> = {
   DNI_FRONT:
@@ -245,12 +394,88 @@ export class AiService {
    * —que no siempre está a mano—. Acá se ve de una: si falta la clave, qué
    * contestó Groq la última vez, y qué modelos ofrece hoy.
    */
-  async health(): Promise<{
+  /**
+   * Prueba UN modelo de visión con una imagen mínima y dice si contesta.
+   *
+   * Existe porque `health()` solo comparaba nombres contra la lista de Groq, y
+   * "estar en la lista" no es lo mismo que "funciona": un modelo puede estar
+   * listado y contestar 400 porque no acepta imágenes, o 429 porque la clave se
+   * quedó sin cuota. Con esto se ve qué modelo sirve HOY, que es lo que hace
+   * falta para decidir qué poner en GROQ_VISION_MODEL.
+   *
+   * LA IMAGEN DE PRUEBA: un PNG de 64x64 con dos rectángulos.
+   *
+   * Antes era un PNG de 1x1 transparente, con la idea de que la respuesta no
+   * importaba y solo se miraba si el modelo aceptaba el pedido. No sirve: qwen
+   * contesta `400 invalid image data` a una imagen de un píxel, y el panel lo
+   * mostraba como si el modelo estuviera roto. O sea que el aviso decía "la
+   * revisión no funciona" justo cuando el modelo y la clave estaban perfectos.
+   * 64x64 y opaca es una imagen que cualquier modelo de visión acepta.
+   */
+  private async probeVisionModel(model: string): Promise<{
+    model: string;
+    ok: boolean;
+    error?: string;
+    testImageRejected?: boolean;
+  }> {
+    try {
+      const res = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey()}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: PROBE_IMAGE } },
+                { type: "text", text: "ok" },
+              ],
+            },
+          ],
+          max_tokens: 1,
+        }),
+      });
+      if (res.ok) return { model, ok: true };
+      const detalle = await res.text();
+      // Un 400 que se queja de la IMAGEN no dice nada malo del modelo ni de la
+      // clave: el pedido llegó, se autenticó y el modelo lo entendió. Se marca
+      // aparte para no reportarlo como si la revisión estuviera rota.
+      const testImageRejected =
+        res.status === 400 && IMAGE_COMPLAINT.test(detalle);
+      return {
+        model,
+        ok: false,
+        error: `${res.status} ${detalle.slice(0, 180)}`,
+        ...(testImageRejected ? { testImageRejected: true } : {}),
+      };
+    } catch (err) {
+      return {
+        model,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async health(probe = false): Promise<{
     configured: boolean;
     visionModels: string[];
     lastVisionError: string | null;
     availableVisionModels?: string[];
+    /** Resultado de probar cada modelo, solo cuando se pide con ?probe=1. */
+    probed?: {
+      model: string;
+      ok: boolean;
+      error?: string;
+      testImageRejected?: boolean;
+    }[];
     problem?: string;
+    /** Aclaración cuando NO hay nada roto pero la prueba no fue concluyente. */
+    note?: string;
   }> {
     const visionModels = this.visionModels();
     if (!this.configured) {
@@ -281,21 +506,54 @@ export class AiService {
         .map((m) => m.id)
         .filter((id): id is string => Boolean(id));
       // Los que sirven para mirar imágenes: Groq no marca esto en la respuesta,
-      // así que se filtra por nombre, que es lo que se puede hacer.
+      // así que se filtra por nombre, que es lo que se puede hacer. `qwen` está
+      // en la lista porque es el modelo multimodal al que Groq mandó a migrar
+      // cuando dio de baja los llama-4; sin él, el panel no lo ofrecía como
+      // alternativa aunque estuviera disponible.
       const withVision = ids.filter((id) =>
-        /vision|llama-4|scout|maverick/i.test(id),
+        /vision|llama-4|scout|maverick|qwen/i.test(id),
       );
       const usable = visionModels.filter((m) => ids.includes(m));
+
+      // Se prueban los configurados y, si ninguno anda, también los que Groq
+      // ofrece hoy: así el aviso puede decir cuál poner en vez de solo "ninguno
+      // sirve". Se limita a seis para no gastar la cuota en una sola consulta.
+      const probed = probe
+        ? await Promise.all(
+            [...new Set([...visionModels, ...withVision])]
+              .slice(0, 6)
+              .map((m) => this.probeVisionModel(m)),
+          )
+        : undefined;
+      const funcionan = probed?.filter((p) => p.ok).map((p) => p.model) ?? [];
+      // Los que rechazaron la imagen DE PRUEBA. No cuentan como roto: el pedido
+      // llegó, la clave se aceptó y el modelo lo entendió, así que con una foto
+      // de verdad puede andar perfectamente.
+      const soloLaImagen =
+        probed
+          ?.filter((p) => !p.ok && p.testImageRejected)
+          .map((p) => p.model) ?? [];
 
       return {
         configured: true,
         visionModels,
         lastVisionError: this.lastVisionError,
         availableVisionModels: withVision,
+        probed,
         problem:
           usable.length === 0
             ? "Ninguno de los modelos configurados existe hoy en Groq. " +
               "Cargá uno de availableVisionModels en GROQ_VISION_MODEL."
+            : probed && funcionan.length === 0 && soloLaImagen.length === 0
+              ? "Los modelos configurados existen pero ninguno contestó. " +
+                "Mirá el detalle en `probed`: si dice 401 la clave no sirve, y si " +
+                "dice 429 se agotó la cuota de la clave."
+              : undefined,
+        note:
+          probed && funcionan.length === 0 && soloLaImagen.length > 0
+            ? `El modelo existe y la clave sirve: ${soloLaImagen.join(", ")} ` +
+              "rechazó la imagen de prueba, no el pedido. Probalo con una foto " +
+              "de verdad subiendo el DNI en la verificación de identidad."
             : undefined,
       };
     } catch (err) {
@@ -404,6 +662,7 @@ export class AiService {
   async inspectDocument(
     imageUrl: string,
     kind: DocumentKind,
+    lang: SupportedLang = "es",
   ): Promise<DocumentInspection> {
     const expected = DOCUMENT_PROMPTS[kind];
 
@@ -417,7 +676,8 @@ export class AiService {
         '"motivo": "una frase explicando la decisión"}\n' +
         "Si la imagen no es un documento de identidad (por ejemplo un paisaje, " +
         "una mascota, una captura de pantalla o una persona sin documento), " +
-        '"corresponde" debe ser false.',
+        '"corresponde" debe ser false.\n' +
+        answerInLanguage(lang, ["motivo", "tipo_detectado"]),
       400,
     );
 
@@ -427,8 +687,8 @@ export class AiService {
         code: answer.code,
         reason:
           answer.code === "not_configured"
-            ? "La revisión automática no está configurada en el servidor."
-            : "La revisión automática no está disponible en este momento.",
+            ? UNAVAILABLE[lang].notConfigured
+            : UNAVAILABLE[lang].unavailable,
       };
     }
 
@@ -437,7 +697,7 @@ export class AiService {
       return {
         matches: null,
         code: "unreadable",
-        reason: "No se pudo interpretar la revisión automática.",
+        reason: UNAVAILABLE[lang].unreadable,
       };
     }
 
@@ -448,8 +708,8 @@ export class AiService {
         typeof parsed.motivo === "string" && parsed.motivo
           ? parsed.motivo
           : matches
-            ? "El documento coincide con lo esperado."
-            : "La imagen no corresponde al documento pedido.",
+            ? DOC_RESULT[lang].ok
+            : DOC_RESULT[lang].bad,
       detectedType: asText(parsed.tipo_detectado),
       documentNumber: asDigits(parsed.numero),
       fullName: asText(parsed.nombre),
@@ -494,7 +754,10 @@ export class AiService {
    * así la pantalla puede avisar que falta configurar el servidor en vez de
    * quedarse en un silencioso "no verificada".
    */
-  async vision(imageDataUrl: string): Promise<{
+  async vision(
+    imageDataUrl: string,
+    lang: SupportedLang = "es",
+  ): Promise<{
     isVehicle: boolean | null;
     /** Qué se vio en la foto, para explicarle a la persona por qué no sirve. */
     reason?: string;
@@ -519,7 +782,8 @@ export class AiService {
         "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
         '{"es_vehiculo": true|false, "es_real": true|false, ' +
         '"que_es": "en 2 o 3 palabras qué se ve", ' +
-        '"motivo": "una frase corta explicando la decisión"}',
+        '"motivo": "una frase corta explicando la decisión"}\n' +
+        answerInLanguage(lang, ["motivo", "que_es"]),
       220,
     );
 
@@ -532,10 +796,7 @@ export class AiService {
       const text = answer.content.trim().toUpperCase();
       if (text.startsWith("SI")) return { isVehicle: true };
       if (text.startsWith("NO")) {
-        return {
-          isVehicle: false,
-          reason: "La imagen no muestra un vehículo.",
-        };
+        return { isVehicle: false, reason: VISION_RESULT[lang].notAVehicle };
       }
       return { isVehicle: null, code: "unreadable" };
     }
@@ -550,7 +811,7 @@ export class AiService {
     if (esVehiculo && esReal) {
       return {
         isVehicle: true,
-        reason: motivo ?? "Es la foto de un vehículo real.",
+        reason: motivo ?? VISION_RESULT[lang].realCar,
         detected,
       };
     }
@@ -560,8 +821,8 @@ export class AiService {
       reason:
         motivo ??
         (esVehiculo
-          ? `Parece ${detected ?? "un vehículo de juguete o una imagen"}, no un vehículo real.`
-          : `No es un vehículo${detected ? `: se ve ${detected}` : ""}.`),
+          ? VISION_RESULT[lang].notReal(detected)
+          : VISION_RESULT[lang].notAVehicleSeen(detected)),
       detected,
     };
   }

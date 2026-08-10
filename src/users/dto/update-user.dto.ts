@@ -1,5 +1,7 @@
+import { PhotoVisibility } from "@prisma/client";
 import { Transform } from "class-transformer";
 import {
+  IsEnum,
   IsOptional,
   IsString,
   IsUrl,
@@ -67,4 +69,12 @@ export class UpdateUserDto {
   @IsUrl({ require_protocol: true })
   @MaxLength(2048)
   profilePhotoUrl?: string;
+
+  /**
+   * Quién ve la foto de perfil: EVERYONE (cualquiera con la sesión abierta) o
+   * BOOKED (solo con quien haya una reserva en común). Se elige en el perfil.
+   */
+  @IsOptional()
+  @IsEnum(PhotoVisibility)
+  profilePhotoVisibility?: PhotoVisibility;
 }

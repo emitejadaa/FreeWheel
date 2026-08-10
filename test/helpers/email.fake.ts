@@ -61,17 +61,68 @@ export class FakeEmailService {
     return this.resetTokens.get(email);
   }
 
-  // Booking notifications — no-ops in tests (assertions don't need them, but
-  // the methods must exist so BookingsService.safeNotify stays quiet).
-  sendBookingRequestedToOwner(): Promise<void> {
+  // ── Avisos de una reserva ─────────────────────────────────────────────────
+  //
+  // Se ANOTAN en vez de descartarse. Antes eran no-ops, y con eso una prueba no
+  // podía comprobar que el aviso saliera: si mañana alguien borra el envío al
+  // inquilino, ninguna prueba se entera porque safeNotify se traga todo en
+  // silencio. Ahora quedan registrados y se pueden revisar.
+  private readonly avisosEnviados: {
+    tipo: string;
+    to: string;
+    params?: unknown;
+  }[] = [];
+
+  /** Los avisos que salieron, opcionalmente filtrados por destinatario. */
+  avisos(to?: string): { tipo: string; to: string; params?: unknown }[] {
+    return to
+      ? this.avisosEnviados.filter((a) => a.to === to)
+      : [...this.avisosEnviados];
+  }
+
+  /** ¿Salió este aviso a esta dirección? */
+  huboAviso(tipo: string, to: string): boolean {
+    return this.avisosEnviados.some((a) => a.tipo === tipo && a.to === to);
+  }
+
+  private anotar(tipo: string, to: string, params?: unknown): Promise<void> {
+    this.avisosEnviados.push({ tipo, to, params });
     return Promise.resolve();
   }
 
-  sendBookingAcceptedToRenter(): Promise<void> {
-    return Promise.resolve();
+  sendBookingRequestedToOwner(to: string, params?: unknown): Promise<void> {
+    return this.anotar("bookingRequestedToOwner", to, params);
   }
 
-  sendBookingRejectedToRenter(): Promise<void> {
-    return Promise.resolve();
+  sendBookingRequestedToRenter(to: string, params?: unknown): Promise<void> {
+    return this.anotar("bookingRequestedToRenter", to, params);
+  }
+
+  sendBookingAcceptedToRenter(to: string, params?: unknown): Promise<void> {
+    return this.anotar("bookingAcceptedToRenter", to, params);
+  }
+
+  sendBookingRejectedToRenter(to: string, params?: unknown): Promise<void> {
+    return this.anotar("bookingRejectedToRenter", to, params);
+  }
+
+  sendBookingCancelled(to: string, params?: unknown): Promise<void> {
+    return this.anotar("bookingCancelled", to, params);
+  }
+
+  sendPaymentReceipt(to: string, params?: unknown): Promise<void> {
+    return this.anotar("paymentReceipt", to, params);
+  }
+
+  sendPaymentReceivedToOwner(to: string, params?: unknown): Promise<void> {
+    return this.anotar("paymentReceivedToOwner", to, params);
+  }
+
+  sendPickupConfirmed(to: string, params?: unknown): Promise<void> {
+    return this.anotar("pickupConfirmed", to, params);
+  }
+
+  sendReturnConfirmed(to: string, params?: unknown): Promise<void> {
+    return this.anotar("returnConfirmed", to, params);
   }
 }

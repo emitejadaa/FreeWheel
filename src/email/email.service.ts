@@ -85,6 +85,77 @@ export class EmailService {
     }
   }
 
+  /**
+   * El sobre de todos los mails: encabezado con la marca, tarjeta blanca y el
+   * contenido adentro.
+   *
+   * Existe porque el mismo bloque de HTML estaba copiado en cada mail. Con nueve
+   * avisos distintos eso son nueve lugares donde cambiar un color, y el noveno
+   * siempre queda distinto.
+   */
+  private layout(titulo: string, cuerpo: string): string {
+    return `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+        <div style="background:#111827;padding:24px 32px">
+          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
+        </div>
+        <div style="padding:32px">
+          <h2 style="color:#111827;margin:0 0 12px;font-size:20px">${titulo}</h2>
+          ${cuerpo}
+        </div>
+      </div>`;
+  }
+
+  /**
+   * El cuadro de datos (fechas, montos, quién es la otra persona).
+   *
+   * Va con <table> y no con flex a propósito: los clientes de correo no soportan
+   * flexbox parejo —en Outlook la etiqueta y el valor se apilaban en vez de
+   * quedar uno a cada lado—, y una tabla se ve igual en todos.
+   * `destacar` pinta el valor de azul y en negrita, para el importe principal.
+   */
+  private cuadro(
+    filas: { etiqueta: string; valor: string; destacar?: boolean }[],
+  ): string {
+    const celdas = filas
+      .map(
+        (fila) => `
+          <tr>
+            <td style="padding:5px 0;font-size:14px;color:#6b7280">${fila.etiqueta}</td>
+            <td style="padding:5px 0;font-size:14px;text-align:right;font-weight:700;color:${fila.destacar ? "#2563eb" : "#111827"}">${fila.valor}</td>
+          </tr>`,
+      )
+      .join("");
+    return `
+      <table role="presentation" width="100%" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:14px 16px;margin:0 0 20px;border-collapse:separate">
+        ${celdas}
+      </table>`;
+  }
+
+  /** El botón principal del mail. */
+  private boton(url: string, texto: string): string {
+    return `<a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">${texto}</a>`;
+  }
+
+  /** Un párrafo, con el mismo color y espaciado en todos los mails. */
+  private p(texto: string): string {
+    return `<p style="color:#374151;margin:0 0 16px;line-height:1.6">${texto}</p>`;
+  }
+
+  /** El renglón chico del final, para aclaraciones. */
+  private nota(texto: string): string {
+    return `<p style="color:#6b7280;font-size:13px;margin:20px 0 0;line-height:1.6">${texto}</p>`;
+  }
+
+  /** A dónde van los links de los mails de reserva. */
+  private get misReservas(): string {
+    return `${getFrontendUrl(this.configService)}/my-bookings`;
+  }
+
+  private saludo(nombre?: string): string {
+    return nombre ? `Hola ${nombre},` : "Hola,";
+  }
+
   async sendVerificationCode(email: string, code: string) {
     const html = `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
@@ -222,6 +293,20 @@ export class EmailService {
       html,
     );
   }
+  // ── AVISOS DE UNA RESERVA ───────────────────────────────────────────────────
+  //
+  // Un alquiler entre dos personas que no se conocen se sostiene con que las dos
+  // sepan, por escrito, qué pasó y cuándo. Antes solo salían tres avisos: el
+  // pedido al dueño, y la aceptación o el rechazo al inquilino. Quien reservaba
+  // no recibía NADA al pedir —ni las fechas, ni el monto—, un pago no dejaba
+  // comprobante, y una cancelación no le llegaba a la otra parte. O sea que la
+  // parte del trámite donde hay plata de por medio era la que menos rastro
+  // dejaba.
+  //
+  // Todos estos usan send() y no sendOrThrow(): si el mail falla, la reserva
+  // sigue su curso igual. Un aviso que no salió es un problema; una reserva que
+  // se cae porque el aviso no salió es un problema peor.
+
   async sendBookingRequestedToOwner(
     email: string,
     params: {
@@ -234,29 +319,76 @@ export class EmailService {
       currency: string;
     },
   ) {
-    const url = `${getFrontendUrl(this.configService)}/my-bookings`;
-    const greeting = params.ownerName ? `Hola ${params.ownerName},` : "Hola,";
-    const html = `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
-        <div style="background:#111827;padding:24px 32px">
-          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
-        </div>
-        <div style="padding:32px">
-          <h2 style="color:#111827;margin:0 0 8px">Nueva solicitud de reserva</h2>
-          <p style="color:#374151;margin:0 0 16px">${greeting} <strong>${params.renterName}</strong> quiere reservar tu <strong>${params.vehicleLabel}</strong>.</p>
-          <div style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:16px;margin-bottom:20px">
-            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Desde</span><strong>${this.formatDate(params.startDate)}</strong></div>
-            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Hasta</span><strong>${this.formatDate(params.endDate)}</strong></div>
-            <div style="display:flex;justify-content:space-between;font-size:14px;color:#111827"><span style="color:#6b7280">Total estimado</span><strong style="color:#2563eb">${this.formatMoney(params.totalPrice, params.currency)}</strong></div>
-          </div>
-          <p style="color:#374151;margin:0 0 20px">Revisá la disponibilidad y confirmá o rechazá la solicitud desde tu panel.</p>
-          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
-            Ver la solicitud
-          </a>
-          <p style="color:#6b7280;font-size:13px;margin-top:20px">Si no reconocés esta solicitud, podés ignorar este email.</p>
-        </div>
-      </div>`;
+    const html = this.layout(
+      "Nueva solicitud de reserva",
+      this.p(
+        `${this.saludo(params.ownerName)} <strong>${params.renterName}</strong> quiere reservar tu <strong>${params.vehicleLabel}</strong>.`,
+      ) +
+        this.cuadro([
+          { etiqueta: "Desde", valor: this.formatDate(params.startDate) },
+          { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+          {
+            etiqueta: "Total estimado",
+            valor: this.formatMoney(params.totalPrice, params.currency),
+            destacar: true,
+          },
+        ]) +
+        this.p(
+          "Revisá la disponibilidad y confirmá o rechazá la solicitud desde tu panel.",
+        ) +
+        this.boton(this.misReservas, "Ver la solicitud") +
+        this.nota("Si no reconocés esta solicitud, podés ignorar este email."),
+    );
     await this.send(email, "Nueva solicitud de reserva - Freewheel", html);
+  }
+
+  /**
+   * Al INQUILINO, cuando acaba de pedir la reserva.
+   *
+   * Es el aviso que faltaba y el más importante de los nuevos: quien reservaba
+   * mandaba el pedido y no le llegaba nada. No tenía por escrito ni qué auto pidió,
+   * ni para qué fechas, ni cuánto va a pagar, ni qué tiene que pasar después.
+   */
+  async sendBookingRequestedToRenter(
+    email: string,
+    params: {
+      renterName?: string;
+      ownerName: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+      totalPrice: number;
+      currency: string;
+    },
+  ) {
+    const html = this.layout(
+      "Recibimos tu solicitud",
+      this.p(
+        `${this.saludo(params.renterName)} le pedimos a <strong>${params.ownerName}</strong> que confirme la reserva de <strong>${params.vehicleLabel}</strong>.`,
+      ) +
+        this.cuadro([
+          { etiqueta: "Desde", valor: this.formatDate(params.startDate) },
+          { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+          {
+            etiqueta: "Total estimado",
+            valor: this.formatMoney(params.totalPrice, params.currency),
+            destacar: true,
+          },
+        ]) +
+        this.p(
+          "<strong>Todavía no te cobramos nada.</strong> Cuando el dueño acepte, " +
+            "te avisamos por mail y ahí vas a poder pagar la seña.",
+        ) +
+        this.boton(this.misReservas, "Ver mi solicitud") +
+        this.nota(
+          "Si el dueño no responde o rechaza el pedido, también te lo avisamos.",
+        ),
+    );
+    await this.send(
+      email,
+      "Recibimos tu solicitud de reserva - Freewheel",
+      html,
+    );
   }
 
   async sendBookingAcceptedToRenter(
@@ -268,26 +400,20 @@ export class EmailService {
       endDate: Date;
     },
   ) {
-    const url = `${getFrontendUrl(this.configService)}/my-bookings`;
-    const greeting = params.renterName ? `Hola ${params.renterName},` : "Hola,";
-    const html = `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
-        <div style="background:#111827;padding:24px 32px">
-          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
-        </div>
-        <div style="padding:32px">
-          <h2 style="color:#111827;margin:0 0 8px">¡Tu reserva fue aceptada! 🎉</h2>
-          <p style="color:#374151;margin:0 0 16px">${greeting} el dueño confirmó la disponibilidad de <strong>${params.vehicleLabel}</strong> para las fechas solicitadas.</p>
-          <div style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:16px;margin-bottom:20px">
-            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151;margin-bottom:8px"><span style="color:#6b7280">Desde</span><strong>${this.formatDate(params.startDate)}</strong></div>
-            <div style="display:flex;justify-content:space-between;font-size:14px;color:#374151"><span style="color:#6b7280">Hasta</span><strong>${this.formatDate(params.endDate)}</strong></div>
-          </div>
-          <p style="color:#374151;margin:0 0 20px">Ingresá para completar el pago y coordinar el retiro del vehículo.</p>
-          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
-            Completar mi reserva
-          </a>
-        </div>
-      </div>`;
+    const html = this.layout(
+      "Tu reserva fue aceptada",
+      this.p(
+        `${this.saludo(params.renterName)} el dueño confirmó la disponibilidad de <strong>${params.vehicleLabel}</strong> para las fechas solicitadas.`,
+      ) +
+        this.cuadro([
+          { etiqueta: "Desde", valor: this.formatDate(params.startDate) },
+          { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+        ]) +
+        this.p(
+          "Ingresá para completar el pago y coordinar el retiro del vehículo.",
+        ) +
+        this.boton(this.misReservas, "Completar mi reserva"),
+    );
     await this.send(email, "Tu reserva fue aceptada - Freewheel", html);
   }
 
@@ -300,23 +426,250 @@ export class EmailService {
       endDate: Date;
     },
   ) {
-    const url = `${getFrontendUrl(this.configService)}`;
-    const greeting = params.renterName ? `Hola ${params.renterName},` : "Hola,";
-    const html = `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
-        <div style="background:#111827;padding:24px 32px">
-          <span style="font-size:20px;font-weight:800;color:#fff">Free</span><span style="font-size:20px;font-weight:800;color:#2563eb">wheel</span>
-        </div>
-        <div style="padding:32px">
-          <h2 style="color:#111827;margin:0 0 8px">Tu solicitud no fue aceptada</h2>
-          <p style="color:#374151;margin:0 0 16px">${greeting} lamentablemente el dueño no pudo confirmar <strong>${params.vehicleLabel}</strong> para las fechas del ${this.formatDate(params.startDate)} al ${this.formatDate(params.endDate)}.</p>
-          <p style="color:#374151;margin:0 0 20px">No te preocupes, hay muchos otros vehículos disponibles en Freewheel.</p>
-          <a href="${url}" style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">
-            Buscar otros autos
-          </a>
-        </div>
-      </div>`;
+    const html = this.layout(
+      "Tu solicitud no fue aceptada",
+      this.p(
+        `${this.saludo(params.renterName)} el dueño no pudo confirmar <strong>${params.vehicleLabel}</strong> para las fechas del ${this.formatDate(params.startDate)} al ${this.formatDate(params.endDate)}.`,
+      ) +
+        this.p(
+          "No te cobramos nada. Hay otros autos disponibles para esas fechas.",
+        ) +
+        this.boton(getFrontendUrl(this.configService), "Buscar otros autos"),
+    );
     await this.send(email, "Actualización de tu solicitud - Freewheel", html);
+  }
+
+  /**
+   * Cancelación. Le llega a las DOS partes: a quien canceló como constancia de
+   * que quedó registrado, y a la otra porque le cambia el plan.
+   *
+   * `cancelaste` distingue los dos textos con un solo mail: decirle "tu reserva
+   * fue cancelada" a quien acaba de cancelarla suena a error del sistema.
+   * El motivo va entero: es lo único que explica por qué se cayó el alquiler, y
+   * esconderlo obliga a preguntar por chat algo que ya está escrito.
+   */
+  async sendBookingCancelled(
+    email: string,
+    params: {
+      recipientName?: string;
+      otherPartyName: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+      reason?: string | null;
+      cancelaste: boolean;
+      refunded?: boolean;
+    },
+  ) {
+    const titulo = params.cancelaste
+      ? "Cancelaste la reserva"
+      : "La reserva fue cancelada";
+    const apertura = params.cancelaste
+      ? `${this.saludo(params.recipientName)} registramos la cancelación de <strong>${params.vehicleLabel}</strong>. Ya le avisamos a ${params.otherPartyName}.`
+      : `${this.saludo(params.recipientName)} <strong>${params.otherPartyName}</strong> canceló la reserva de <strong>${params.vehicleLabel}</strong>.`;
+
+    const filas = [
+      { etiqueta: "Desde", valor: this.formatDate(params.startDate) },
+      { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+    ];
+    if (params.reason?.trim()) {
+      filas.push({ etiqueta: "Motivo", valor: params.reason.trim() });
+    }
+
+    const sobreElDinero = params.refunded
+      ? this.p(
+          "Lo que estaba pagado se devuelve al mismo medio de pago. Puede tardar " +
+            "unos días hábiles en aparecer en el resumen.",
+        )
+      : this.p("No hay cobros pendientes por esta reserva.");
+
+    const html = this.layout(
+      titulo,
+      this.p(apertura) +
+        this.cuadro(filas) +
+        sobreElDinero +
+        this.boton(this.misReservas, "Ver mis reservas"),
+    );
+    await this.send(email, `${titulo} - Freewheel`, html);
+  }
+
+  /**
+   * Comprobante de un pago, al INQUILINO.
+   *
+   * `concepto` es lo que se pagó escrito en castellano ("Seña", "Saldo",
+   * "Depósito en garantía"), no el código interno: el mail lo lee una persona.
+   */
+  async sendPaymentReceipt(
+    email: string,
+    params: {
+      renterName?: string;
+      concepto: string;
+      amount: number;
+      currency: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+      totalPaid?: number;
+      bookingId: string;
+    },
+  ) {
+    const filas = [
+      { etiqueta: "Concepto", valor: params.concepto },
+      {
+        etiqueta: "Importe",
+        valor: this.formatMoney(params.amount, params.currency),
+        destacar: true,
+      },
+      { etiqueta: "Auto", valor: params.vehicleLabel },
+      {
+        etiqueta: "Fechas",
+        valor: `${this.formatDate(params.startDate)} al ${this.formatDate(params.endDate)}`,
+      },
+      {
+        etiqueta: "Reserva",
+        valor: params.bookingId.slice(0, 8).toUpperCase(),
+      },
+    ];
+    if (params.totalPaid != null) {
+      filas.push({
+        etiqueta: "Pagado en total",
+        valor: this.formatMoney(params.totalPaid, params.currency),
+      });
+    }
+
+    const html = this.layout(
+      "Comprobante de pago",
+      this.p(
+        `${this.saludo(params.renterName)} recibimos tu pago. Este mail te sirve como comprobante.`,
+      ) +
+        this.cuadro(filas) +
+        this.boton(this.misReservas, "Ver la reserva") +
+        this.nota(
+          "Guardá este mail. Si algo no coincide con lo que esperabas, respondelo " +
+            "y lo revisamos.",
+        ),
+    );
+    await this.send(
+      email,
+      `Comprobante de pago - ${params.concepto} - Freewheel`,
+      html,
+    );
+  }
+
+  /** Aviso al DUEÑO de que el inquilino pagó. */
+  async sendPaymentReceivedToOwner(
+    email: string,
+    params: {
+      ownerName?: string;
+      renterName: string;
+      concepto: string;
+      amount: number;
+      currency: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+    },
+  ) {
+    const html = this.layout(
+      "Recibiste un pago",
+      this.p(
+        `${this.saludo(params.ownerName)} <strong>${params.renterName}</strong> pagó la ${params.concepto.toLowerCase()} de <strong>${params.vehicleLabel}</strong>.`,
+      ) +
+        this.cuadro([
+          {
+            etiqueta: params.concepto,
+            valor: this.formatMoney(params.amount, params.currency),
+            destacar: true,
+          },
+          { etiqueta: "Desde", valor: this.formatDate(params.startDate) },
+          { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+        ]) +
+        this.boton(this.misReservas, "Ver la reserva") +
+        this.nota(
+          "El dinero se transfiere a tu cuenta según lo acordado, una vez que el " +
+            "alquiler termine.",
+        ),
+    );
+    await this.send(email, "Recibiste un pago - Freewheel", html);
+  }
+
+  /**
+   * Entrega del auto confirmada. Le llega a las dos partes con el mismo cuerpo:
+   * es el momento en que empieza a correr el alquiler y las dos necesitan la
+   * misma constancia, con la misma hora.
+   */
+  async sendPickupConfirmed(
+    email: string,
+    params: {
+      recipientName?: string;
+      vehicleLabel: string;
+      startDate: Date;
+      endDate: Date;
+      confirmedAt: Date;
+      esDueño: boolean;
+    },
+  ) {
+    const apertura = params.esDueño
+      ? `${this.saludo(params.recipientName)} confirmaste la entrega de <strong>${params.vehicleLabel}</strong>. El alquiler ya está en curso.`
+      : `${this.saludo(params.recipientName)} quedó confirmado el retiro de <strong>${params.vehicleLabel}</strong>. El alquiler ya está en curso.`;
+
+    const html = this.layout(
+      "Entrega confirmada",
+      this.p(apertura) +
+        this.cuadro([
+          {
+            etiqueta: "Entregado el",
+            valor: this.formatDate(params.confirmedAt),
+          },
+          {
+            etiqueta: "Devolución prevista",
+            valor: this.formatDate(params.endDate),
+            destacar: true,
+          },
+        ]) +
+        this.p(
+          params.esDueño
+            ? "Cuando te devuelvan el auto, confirmá la devolución para cerrar la reserva."
+            : "Al devolverlo, el dueño confirma la devolución y con eso se cierra la reserva.",
+        ) +
+        this.boton(this.misReservas, "Ver la reserva"),
+    );
+    await this.send(email, "Entrega confirmada - Freewheel", html);
+  }
+
+  /** Devolución confirmada: la reserva se cerró. También a las dos partes. */
+  async sendReturnConfirmed(
+    email: string,
+    params: {
+      recipientName?: string;
+      otherPartyName: string;
+      vehicleLabel: string;
+      confirmedAt: Date;
+      esDueño: boolean;
+    },
+  ) {
+    const html = this.layout(
+      "Reserva cerrada",
+      this.p(
+        `${this.saludo(params.recipientName)} quedó confirmada la devolución de <strong>${params.vehicleLabel}</strong>. La reserva está cerrada.`,
+      ) +
+        this.cuadro([
+          {
+            etiqueta: "Devuelto el",
+            valor: this.formatDate(params.confirmedAt),
+          },
+          {
+            etiqueta: params.esDueño ? "Inquilino" : "Dueño",
+            valor: params.otherPartyName,
+          },
+        ]) +
+        this.p(
+          `Ahora podés dejarle una reseña a ${params.otherPartyName}. Las reseñas son ` +
+            "lo que le permite a la siguiente persona saber con quién está tratando.",
+        ) +
+        this.boton(this.misReservas, "Dejar una reseña"),
+    );
+    await this.send(email, "Reserva cerrada - Freewheel", html);
   }
 
   private formatDate(date: Date): string {

@@ -72,6 +72,9 @@ export class UsersService {
         lastName: true,
         displayName: true,
         profilePhotoUrl: true,
+        // Lo lee PhotoVisibilityInterceptor para decidir si la foto se muestra;
+        // no llega al front (el interceptor saca el campo de la respuesta).
+        profilePhotoVisibility: true,
         ratingAverage: true,
         ratingCount: true,
         verificationStatus: true,
