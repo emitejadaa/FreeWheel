@@ -10,6 +10,14 @@ const input: IdentityReviewInput = {
   dniBackUrl: "https://cdn.test/dni-back.jpg",
   licenseFrontUrl: "https://cdn.test/lic-front.jpg",
   licenseBackUrl: "https://cdn.test/lic-back.jpg",
+  profile: {
+    firstName: "Ignacio",
+    lastName: "Britos",
+    dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
+    dni: "40123456",
+    cuil: "20401234563",
+    address: "Av. Siempre Viva 742",
+  },
 };
 
 /** AiService que responde lo que le indique el test para cada foto. */
@@ -36,7 +44,8 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(true);
+    expect(verdict.outcome).toBe("approved");
+    expect(verdict.reasonCodes).toEqual([]);
   });
 
   it("rejects when a photo is not the requested document", async () => {
@@ -52,7 +61,8 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(false);
+    expect(verdict.outcome).toBe("rejected");
+    expect(verdict.reasonCodes).toContain("AI_DOCUMENT_MISMATCH");
     expect(verdict.notes).toContain("paisaje");
     expect(verdict.notes).toContain("dorso del DNI");
   });
@@ -74,9 +84,15 @@ describe("AiIdentityReviewer", () => {
       fullName: "Ignacio Britos",
       licenseExpiresAt: "2030-05-20",
     });
+    // Y se promueven a columnas para poder consultarlos y cruzarlos.
+    expect(verdict.documentNumber).toBe("40123456");
+    expect(verdict.fullNameOnDocument).toBe("Ignacio Britos");
+    expect(verdict.licenseExpiresAt).toEqual(
+      new Date("2030-05-20T00:00:00.000Z"),
+    );
   });
 
-  it("leaves the submission pending — never approved — when the AI is unavailable", async () => {
+  it("sends the case to manual review when the AI service is unavailable", async () => {
     const unavailable: DocumentInspection = {
       matches: null,
       reason: "La revisión automática no está disponible.",
@@ -87,12 +103,28 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    // Antes esto aprobaba "para no dejar cuentas sin verificar", y así una foto
-    // de un perro quedó aprobada como DNI el día que el modelo de Groq se cayó.
-    // Ahora espera a un admin: pendiente no es lo mismo que rechazado.
-    expect(verdict.approved).toBe(false);
-    expect(verdict.pending).toBe(true);
-    expect(verdict.notes).toContain("no está disponible");
+    // Que falte el servicio externo no rechaza a la persona, pero tampoco la
+    // aprueba: si nadie miró las fotos, cualquier imagen entraría. El caso
+    // queda ID_SUBMITTED esperando a un admin.
+    expect(verdict.outcome).toBe("inconclusive");
+    expect(verdict.reasonCodes).toContain("AI_UNAVAILABLE");
+    expect(verdict.notes).toContain("revisión manual");
+  });
+
+  it("sends the case to manual review when only some photos could be checked", async () => {
+    const reviewer = new AiIdentityReviewer(
+      makeAi([
+        good(),
+        good(),
+        good(),
+        { matches: null, reason: "No se pudo interpretar la revisión." },
+      ]),
+    );
+
+    const verdict = await reviewer.review(input);
+
+    expect(verdict.outcome).toBe("inconclusive");
+    expect(verdict.reasonCodes).toContain("AI_PARTIALLY_UNAVAILABLE");
   });
 
   it("rejects a licence issued to somebody other than the DNI holder", async () => {
@@ -107,7 +139,8 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(false);
+    expect(verdict.outcome).toBe("rejected");
+    expect(verdict.reasonCodes).toContain("LICENSE_NAME_MISMATCH");
     expect(verdict.notes).toContain("no coincide con el del DNI");
   });
 
@@ -124,7 +157,7 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(true);
+    expect(verdict.outcome).toBe("approved");
   });
 
   it("rejects a licence whose number is not the DNI number", async () => {
@@ -139,7 +172,8 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(false);
+    expect(verdict.outcome).toBe("rejected");
+    expect(verdict.reasonCodes).toContain("LICENSE_DNI_MISMATCH");
     expect(verdict.notes).toContain("no coincide con el del");
   });
 
@@ -150,7 +184,8 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(false);
+    expect(verdict.outcome).toBe("rejected");
+    expect(verdict.reasonCodes).toContain("LICENSE_EXPIRED");
     expect(verdict.notes).toContain("vencida");
   });
 
@@ -164,6 +199,6 @@ describe("AiIdentityReviewer", () => {
 
     const verdict = await reviewer.review(input);
 
-    expect(verdict.approved).toBe(true);
+    expect(verdict.outcome).toBe("approved");
   });
 });

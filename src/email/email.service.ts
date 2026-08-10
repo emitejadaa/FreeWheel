@@ -35,7 +35,7 @@ export class EmailService {
   get configured(): boolean {
     return Boolean(
       this.configService.get<string>("GMAIL_USER") &&
-        this.configService.get<string>("GMAIL_APP_PASSWORD"),
+      this.configService.get<string>("GMAIL_APP_PASSWORD"),
     );
   }
 
@@ -100,7 +100,11 @@ export class EmailService {
           <p style="color:#6b7280;font-size:13px;margin-top:20px">Expira en 10 minutos. No lo compartas con nadie.</p>
         </div>
       </div>`;
-    await this.sendOrThrow(email, "Tu código de verificación - Freewheel", html);
+    await this.sendOrThrow(
+      email,
+      "Tu código de verificación - Freewheel",
+      html,
+    );
   }
 
   /**
@@ -180,7 +184,11 @@ export class EmailService {
           </p>
         </div>
       </div>`;
-    await this.sendOrThrow(email, "Confirmá el cambio de precio - Freewheel", html);
+    await this.sendOrThrow(
+      email,
+      "Confirmá el cambio de precio - Freewheel",
+      html,
+    );
   }
 
   async sendPasswordReset(
@@ -208,7 +216,11 @@ export class EmailService {
           </p>
         </div>
       </div>`;
-    await this.sendOrThrow(email, "Restablecer tu contraseña - Freewheel", html);
+    await this.sendOrThrow(
+      email,
+      "Restablecer tu contraseña - Freewheel",
+      html,
+    );
   }
   async sendBookingRequestedToOwner(
     email: string,

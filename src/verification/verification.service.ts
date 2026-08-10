@@ -18,6 +18,11 @@ import { EmailService } from "../email/email.service";
 import { SmsService } from "../sms/sms.service";
 import { assertFound } from "../common/utils/entity.util";
 import { SubmitIdentityDto } from "./dto/submit-identity.dto";
+import { UploadSignatureDto } from "./dto/upload-signature.dto";
+import {
+  IdentityDocumentsService,
+  readReasonCodes,
+} from "./identity/identity-documents.service";
 import {
   buildVerificationChecklist,
   IdentityReviewService,
@@ -45,6 +50,16 @@ type SafeVerificationResponse = {
   code?: string;
 };
 
+/** Estado de la última revisión en términos que entiende el front. */
+function describeOutcome(
+  status: VerificationStatus | null,
+): "approved" | "rejected" | "pending" | "none" {
+  if (status === VerificationStatus.VERIFIED) return "approved";
+  if (status === VerificationStatus.REJECTED) return "rejected";
+  if (status === VerificationStatus.ID_SUBMITTED) return "pending";
+  return "none";
+}
+
 @Injectable()
 export class VerificationService {
   private readonly maxAttempts = 5;
@@ -54,6 +69,7 @@ export class VerificationService {
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
     private readonly smsService: SmsService,
+    private readonly identityDocuments: IdentityDocumentsService,
     private readonly identityReview: IdentityReviewService,
     private readonly config: ConfigService,
   ) {}
@@ -131,20 +147,34 @@ export class VerificationService {
       // canal va a llegar el código, para explicarlo en pantalla.
       phoneRequired: isPhoneVerificationRequired(this.config),
       phoneCodeChannel: this.smsService.isMock ? "email" : "sms",
+      // Motivos en códigos estables: el detalle de la extracción es un dato
+      // personal y solo lo ve un admin.
+      lastReview: {
+        outcome: describeOutcome(latestSubmission?.status ?? null),
+        reasonCodes: readReasonCodes(latestSubmission?.matchReport),
+      },
     };
+  }
+
+  /** Firma la subida de un documento de identidad (documento + lado). */
+  signIdentityUpload(userId: string, data: UploadSignatureDto) {
+    return this.identityDocuments.signUpload(userId, data);
   }
 
   async submitIdentity(userId: string, data: SubmitIdentityDto) {
     const user = await this.getUser(userId);
 
+    // Cada URL debe ser nuestra, del slot correcto, de esta cuenta y existir:
+    // se persiste la forma canónica sin firma.
+    const documents = await this.identityDocuments.validateSubmission(
+      userId,
+      data,
+    );
+
     const verification = await this.prisma.userVerification.create({
       data: {
         userId,
-        dniFrontUrl: data.dniFrontUrl,
-        dniBackUrl: data.dniBackUrl,
-        licenseFrontUrl: data.licenseFrontUrl,
-        licenseBackUrl: data.licenseBackUrl,
-        selfieUrl: data.selfieUrl,
+        ...documents,
         notes: data.notes,
         status: VerificationStatus.ID_SUBMITTED,
       },
@@ -159,17 +189,46 @@ export class VerificationService {
 
     await this.identityReview.evaluate(userId);
 
-    // Re-read: the review may have already resolved the submission (auto-approve).
-    return this.prisma.userVerification.findUnique({
+    // Re-read: the review may have already resolved the submission.
+    const reviewed = await this.prisma.userVerification.findUnique({
       where: { id: verification.id },
     });
+    assertFound(reviewed, "Verification not found");
+
+    return this.identityDocuments.toPublicView(reviewed);
+  }
+
+  /**
+   * Vuelve a correr la revisión de la última submission pendiente (p. ej.
+   * tras un timeout del proveedor o después de corregir los datos del perfil).
+   */
+  async retryIdentityReview(userId: string) {
+    const submission = await this.latestSubmission(userId);
+    if (!submission) {
+      throw new NotFoundException("No hay documentos enviados para revisar");
+    }
+    if (submission.status !== VerificationStatus.ID_SUBMITTED) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "REVIEW_NOT_PENDING",
+        message: "La última solicitud ya tiene un veredicto",
+      });
+    }
+
+    await this.identityReview.evaluate(userId);
+
+    return this.getMyStatus(userId);
   }
 
   async getMyIdentity(userId: string) {
-    return this.prisma.userVerification.findMany({
+    const submissions = await this.prisma.userVerification.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
     });
+
+    return submissions.map((submission) =>
+      this.identityDocuments.toPublicView(submission),
+    );
   }
 
   private async createCode(

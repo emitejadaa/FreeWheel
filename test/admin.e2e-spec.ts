@@ -10,6 +10,7 @@ import {
   futureDate,
   registerUser,
 } from "./helpers/factory";
+import { identityDocs } from "./helpers/cloudinary.fake";
 
 describe("Admin", () => {
   let app: INestApplication;
@@ -92,12 +93,7 @@ describe("Admin", () => {
     await http()
       .post("/verification/identity/submit")
       .set("Authorization", auth(user.token))
-      .send({
-        dniFrontUrl: "https://example.com/dni-front.png",
-        dniBackUrl: "https://example.com/dni-back.png",
-        licenseFrontUrl: "https://example.com/license-front.png",
-        licenseBackUrl: "https://example.com/license-back.png",
-      })
+      .send(identityDocs(user.id))
       .expect(201);
 
     const list = await http()
@@ -147,7 +143,11 @@ describe("Admin", () => {
     const booking = await http()
       .post("/bookings")
       .set("Authorization", auth(renter.token))
-      .send({ listingId: listing.id, startDate: futureDate(5), endDate: futureDate(8) })
+      .send({
+        listingId: listing.id,
+        startDate: futureDate(5),
+        endDate: futureDate(8),
+      })
       .expect(201);
 
     const list = await http()

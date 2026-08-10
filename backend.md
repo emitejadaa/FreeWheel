@@ -425,15 +425,32 @@ Archivos:
 - `src/verification/verification.service.ts`
 - `src/verification/dto/confirm-code.dto.ts`
 - `src/verification/dto/submit-identity.dto.ts`
+- `src/verification/dto/upload-signature.dto.ts`
+- `src/verification/identity/identity-documents.service.ts`
+- `src/verification/extraction/barcode-decoder.service.ts` (zxing-wasm: PDF417 + QR)
+- `src/verification/extraction/document-ocr.service.ts` (texto impreso via Groq)
+- `src/verification/extraction/dni-pdf417.parser.ts`
+- `src/verification/extraction/mrz-td1.parser.ts`
+- `src/verification/extraction/license-code.parser.ts`
+- `src/verification/extraction/extraction.types.ts`
+- `src/verification/matching/normalize.util.ts`
+- `src/verification/matching/identity-match.service.ts`
+- `src/verification/review/identity-reviewer.interface.ts`
+- `src/verification/review/identity-review.service.ts`
+- `src/verification/review/document-ai.reviewer.ts`
+- `src/verification/review/auto-approve.reviewer.ts`
+- `src/verification/review/manual.reviewer.ts`
 
 Responsabilidades:
 
 - Solicitar/confirmar codigo de email (entregado por `EmailService`).
 - Solicitar/confirmar codigo de telefono (entregado por `SmsService`).
-- Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `documentsSubmitted`, `dateOfBirthProvided`) y `fullyVerified`.
-- Enviar documentos de identidad: DNI (frente/dorso) y licencia (frente/dorso) por URL (subidos a Cloudinary desde el cliente).
-- Consultar identidad propia.
-- Tras cada evento dispara `IdentityReviewService.evaluate`: si el checklist esta completo, el revisor configurado decide y (si aprueba) deja la cuenta `VERIFIED`.
+- Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `documentsSubmitted`, `dateOfBirthProvided`, `identityDataProvided`), `fullyVerified` y `lastReview` (outcome + reason codes).
+- Firmar la subida de cada documento por separado (documento + lado), forzando carpeta, `public_id` y entrega privada.
+- Recibir los cuatro documentos (DNI y licencia, frente y dorso) validando que cada URL sea un asset propio del slot correcto.
+- Revisar los documentos y decidir: extraccion determinista (PDF417 del DNI, QR de la licencia, MRZ con digitos verificadores) + OCR del texto impreso + cruce contra los datos de la cuenta.
+- Reintentar la revision de una solicitud pendiente.
+- Tras cada evento dispara `IdentityReviewService.evaluate`: si el checklist esta completo, el revisor configurado decide.
 
 Estado actual:
 
@@ -441,7 +458,32 @@ Estado actual:
 - Codigos numericos con RNG criptografico y TTL de 10 minutos (constante compartida con la verificacion de email de `AuthModule`).
 - El codigo no se devuelve en la respuesta HTTP; en entornos no productivos se loguea para pruebas manuales.
 - SMS via `SmsModule` con interfaz de proveedor (`SMS_PROVIDER`); solo el provider `mock` (loguea el codigo) esta implementado. Un proveedor real (Twilio, etc.) se agrega sin tocar callers.
-- Revision de documentos via seam `IdentityReviewService` (`IDENTITY_REVIEW_MODE`): `auto_approve` (default) aprueba automaticamente; `manual` deja el caso al endpoint de admin. TODO: reemplazar por revision real (manual/AI/KYC) en `src/verification/review`.
+- Revision documental real implementada (`IDENTITY_REVIEW_MODE=document_ai`), con veredicto de tres estados.
+
+Diseno reemplazable:
+
+- Seam `IdentityReviewer` (`IDENTITY_REVIEWER`) elegido por `IDENTITY_REVIEW_MODE`:
+  - `document_ai` (default): revision documental completa. Si se pide a mano sin `CLOUDINARY_*`/`GROQ_API_KEY` falla al arrancar; si es solo el default y faltan, cae a `manual` avisando.
+  - `manual`: nada se aprueba solo; decide un admin.
+  - `ai`: revision liviana; un modelo de vision confirma que cada foto sea el documento pedido y extrae los datos visibles. Si la IA no responde, el caso NO se aprueba: queda para el admin.
+  - `auto_approve`: aprueba todo. Solo desarrollo y tests.
+- Puertos de extraccion inyectables y fakeables: `BarcodeDecoderService` (determinista, zxing-wasm) y `DocumentOcrService` (probabilistico, Groq). Cambiar de proveedor de OCR (Claude, Google Vision) toca un solo archivo.
+- `IdentityMatchService` es puro (sin IO): toda la politica de decision vive ahi y se testea con una matriz de casos.
+
+Seguridad:
+
+- Los documentos se suben como `type=authenticated`: sus URLs sin firma devuelven 401. La base guarda la URL canonica sin firma; las URLs firmadas se generan al momento y solo para admins.
+- El `public_id` lo arma el servidor a partir del JWT (`identity/<userId>/<documento>_<lado>_...`), asi que un usuario no puede subir a la carpeta de otro ni cruzar un documento de slot.
+- El submit valida cloud, tipo de entrega, prefijo de carpeta, slot y existencia real del asset antes de aceptar una URL.
+- Antifraude: `User.dni`/`User.cuil` son unicos, y la aprobacion revalida dentro de la transaccion que el documento no verifique ya otra cuenta.
+- Minimizacion de datos (Ley 25.326): el usuario solo ve codigos de motivo; los datos extraidos y el reporte de cruces quedan para admins y nunca entran en `AuditLog`.
+- Los campos que respaldan la identidad (`firstName`, `lastName`, `dni`, `cuil`, `address`) quedan inmutables una vez `VERIFIED`.
+
+Pendiente:
+
+- Verificacion facial con prueba de vida (liveness): captura por camara con tareas guiadas al crear la cuenta, y re-chequeo al iniciar sesion en un dispositivo nuevo o ante acciones de alta sensibilidad. La columna `UserVerification.selfieUrl` queda reservada para esto.
+- Politica de retencion/purga del JSON `extracted` (datos personales) pasados N dias de la decision.
+- Un cambio legitimo de nombre despues de verificar requiere intervencion de un admin.
 
 ### AdminModule
 
@@ -479,24 +521,25 @@ Archivos:
 
 - `src/media/media.controller.ts`
 - `src/media/media.service.ts`
+- `src/media/cloudinary.service.ts`
 - `src/media/dto/register-media-asset.dto.ts`
+- `src/media/dto/sign-upload.dto.ts`
 
 Responsabilidades:
 
-- Registrar metadata de assets externos.
-- Listar assets propios.
+- Firmar uploads a Cloudinary (el API secret nunca sale del backend; el archivo va directo del cliente a Cloudinary, sin pasar por el limite de body de Vercel).
+- `CloudinaryService`: firma multi-parametro, chequeo de existencia via Admin API, URLs de entrega firmadas y descarga server-side de assets privados.
+- Registrar metadata de assets externos y listar assets propios.
 
 Estado actual:
 
-- No sube archivos por si mismo.
-- No firma uploads.
-- No integra SDK de Cloudinary en backend.
-- Puede registrar assets subidos fuera del backend, incluyendo `storageProvider: "cloudinary"` y `storageKey` si el frontend o un servicio externo hizo el upload.
+- No sube archivos por si mismo: solo firma y valida.
+- Integracion hand-rolled sobre `fetch` + `crypto` (sin SDK), mismo idioma que el proxy de Groq. Si la firma de entrega diera problemas contra la cuenta real, se cambia por el SDK oficial tocando solo `cloudinary.service.ts`.
+- `POST /media/cloudinary-signature` firma media publica (perfil, vehiculos, publicaciones) y **rechaza la carpeta `identity/`**: los documentos de identidad tienen su propio endpoint, que ademas los sube como privados.
 
 Pendiente importante:
 
 - Validar ownership de `entityType/entityId` para impedir que un usuario registre assets sobre entidades ajenas.
-- Agregar firma segura para upload directo si se integra Cloudinary desde backend.
 
 ### ConversationsModule
 
@@ -618,9 +661,11 @@ Query soportada en catalogo:
 | POST | `/verification/email/confirm` | JWT | Confirma codigo email |
 | POST | `/verification/phone/request` | JWT | Solicita codigo phone |
 | POST | `/verification/phone/confirm` | JWT | Confirma codigo phone |
-| GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`) |
-| POST | `/verification/identity/submit` | JWT | Envia DNI y licencia (frente/dorso) por URL |
-| GET | `/verification/identity/me` | JWT | Consulta identidad propia |
+| GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`, `lastReview`) |
+| POST | `/verification/identity/upload-signature` | JWT | Firma la subida de UN documento (`document` + `side`) |
+| POST | `/verification/identity/submit` | JWT | Envia DNI y licencia (frente/dorso) por URL y dispara la revision |
+| POST | `/verification/identity/review-retry` | JWT | Reintenta la revision de la solicitud pendiente |
+| GET | `/verification/identity/me` | JWT | Solicitudes propias (sin URLs ni datos extraidos) |
 
 ### Bookings
 
@@ -684,6 +729,7 @@ Query soportada en catalogo:
 | PATCH | `/admin/users/:id/role` | JWT ADMIN | Cambia rol de usuario |
 | GET | `/admin/verifications` | JWT ADMIN | Lista verificaciones |
 | GET | `/admin/verifications/:id` | JWT ADMIN | Obtiene verificacion |
+| GET | `/admin/verifications/:id/documents` | JWT ADMIN | Documentos con URLs firmadas + extraccion y cruces (auditado) |
 | PATCH | `/admin/verifications/:id/review` | JWT ADMIN | Revisa verificacion |
 | GET | `/admin/listings` | JWT ADMIN | Lista listings |
 | PATCH | `/admin/listings/:id/status` | JWT ADMIN | Cambia estado de listing |
@@ -1086,6 +1132,77 @@ Indices:
 
 ## 9. Flujos De Dominio
 
+### Verificacion De Identidad (document_ai)
+
+Objetivo: que el titular de una cuenta verificada sea una persona real, mayor
+de edad y habilitada para conducir. Es el requisito para todas las acciones
+sensibles (`VerifiedAccountGuard`).
+
+Pasos:
+
+1. El usuario carga a mano en su perfil `dni`, `cuil` y `address`
+   (`PATCH /users/me`). El CUIL se valida con checksum mod-11 y debe contener
+   el DNI informado.
+2. Por cada documento y lado pide una firma
+   (`POST /verification/identity/upload-signature` con `document` + `side`).
+   El servidor devuelve `folder=identity/<userId>`,
+   `public_id=<documento>_<lado>_<epoch>_<nonce>` y `type=authenticated`.
+3. El cliente sube el archivo directo a Cloudinary con esos parametros.
+4. Envia las cuatro URLs (`POST /verification/identity/submit`). El backend
+   valida cloud, tipo de entrega, carpeta, slot y existencia de cada asset;
+   persiste la URL canonica sin firma y crea la solicitud en `ID_SUBMITTED`.
+5. Si el checklist esta completo (email + telefono + fecha de nacimiento +
+   datos de identidad + 4 documentos), corre la revision:
+   - descarga las cuatro imagenes desde el almacenamiento privado;
+   - decodifica el **PDF417** del frente del DNI (fuente autoritativa) y el
+     **QR/PDF417** del dorso de la licencia, reintentando con variantes de la
+     imagen (ampliada, escala de grises);
+   - lee el **texto impreso** de los cuatro lados con OCR, que ademas
+     clasifica que documento/lado es cada foto;
+   - parsea el **MRZ** del dorso del DNI y valida sus digitos verificadores
+     (respaldo autoritativo cuando el PDF417 no se pudo leer);
+   - cruza todo entre si y contra los datos de la cuenta.
+6. Veredicto (tres estados):
+   - **approved**: solicitud y usuario pasan a `VERIFIED`.
+   - **rejected**: hay una contradiccion concluyente (nombre, apellido, numero
+     de documento o fecha de nacimiento distintos; menor de 18; DNI o licencia
+     vencidos; CUIL invalido o de otro DNI; foto en el slot equivocado).
+     Solicitud y usuario quedan `REJECTED`; el usuario reenvia documentos.
+   - **inconclusive**: no se pudo leer algo o hay una senal debil (codigo
+     ilegible, domicilio escrito distinto, PDF417 y MRZ que se contradicen,
+     timeout del proveedor). La solicitud **queda `ID_SUBMITTED`** para la cola
+     de admins y el usuario puede reintentar con
+     `POST /verification/identity/review-retry`.
+
+Criterio de fondo: un dato que no se pudo leer nunca rechaza a una persona
+real; deriva a revision humana. Solo rechaza automaticamente lo que se leyo
+bien y no coincide.
+
+Cruces que se evaluan (fuentes: PDF417, MRZ, OCR de cada lado, codigo de la
+licencia y datos de la cuenta):
+
+| Chequeo | Falla concluyente | Ilegible |
+| --- | --- | --- |
+| Fuente autoritativa presente (PDF417 o MRZ valido) | - | manual |
+| Documento/lado correcto por slot | rechaza | manual |
+| Numero de documento (todas las fuentes + cuenta) | rechaza | manual |
+| Apellido / primer nombre | rechaza | manual |
+| Fecha de nacimiento | rechaza | manual |
+| Mayor de 18 al dia de hoy | rechaza | manual |
+| DNI vigente (vencimiento del MRZ u OCR) | rechaza | manual |
+| Licencia vigente | rechaza | manual |
+| Licencia del mismo titular que el DNI | rechaza | manual |
+| CUIL: checksum y DNI embebido | rechaza | manual |
+| CUIL: prefijo vs sexo, CUIL impreso | manual | manual |
+| Sexo (PDF417 vs MRZ vs OCR) | manual | manual |
+| Domicilio (similitud de tokens) | manual (nunca rechaza) | manual |
+| PDF417 vs MRZ en desacuerdo | manual (nunca aprueba) | - |
+| Codigo QR de la licencia | informativo | informativo |
+
+Antifraude: `User.dni` y `User.cuil` son unicos, la aprobacion revalida dentro
+de la transaccion que el documento no verifique ya otra cuenta, y los campos
+que respaldan la identidad quedan inmutables una vez `VERIFIED`.
+
 ### Flujo De Reserva Actual
 
 1. Renter solicita reserva sobre un listing `ACTIVE`.
@@ -1189,6 +1306,12 @@ Implementado:
 - Auditoria para acciones importantes.
 - ValidationPipe global con whitelist.
 - Filtro global de errores (`AllExceptionsFilter`) con logging de contexto sin filtrar secretos.
+- Rate limiting global (`ThrottlerGuard`, 120 req/min/IP) con limites mas bajos por ruta en lo que llama a servicios externos pagos: firma de documentos (10/5min), submit de identidad (5/15min), reintento de revision (3/15min) y proxy de IA (chat 20/min, vision 10/min).
+- Proxy de IA (`/ai/chat`, `/ai/vision`) detras de `JwtAuthGuard`: cada request consume cuota de una API key nuestra.
+- Documentos de identidad privados en Cloudinary (`type=authenticated`): la URL persistida no sirve para verlos y las URLs firmadas se generan al momento, solo para admins y con auditoria.
+- Documentos ligados estructuralmente a su dueno y a su slot: el `public_id` lo arma el servidor desde el JWT y el submit rechaza URLs ajenas, de otro slot o inexistentes. La carpeta `identity/` esta vedada en el endpoint de media generico.
+- Antifraude de identidad: `User.dni` y `User.cuil` unicos, revalidacion del documento dentro de la transaccion de aprobacion, e inmutabilidad de los campos de identidad una vez `VERIFIED`.
+- Minimizacion de datos personales (Ley 25.326) en la verificacion: el usuario solo recibe codigos de motivo; la extraccion y el reporte de cruces quedan para admins y nunca entran en `AuditLog` ni en los logs.
 
 Riesgos conocidos:
 
@@ -1197,7 +1320,9 @@ Riesgos conocidos:
 - `MediaAsset` necesita validacion mas estricta de ownership por `entityType/entityId`.
 - CORS esta abierto con `origin: true`.
 - `JWT_SECRET` cae a un valor por defecto interno si no esta seteado (deuda de seguridad); configurar la variable en cada entorno y luego pasar a fail-fast.
-- Falta rate limiting para auth, verification, token confirmation y payment mock.
+- Falta rate limiting especifico para auth y confirmacion de tokens de booking.
+- La verificacion documental no prueba que quien sube los documentos sea su titular: falta la verificacion facial con prueba de vida (ver Pendientes).
+- El JSON `extracted` guarda datos personales sin politica de retencion/purga.
 - Falta observabilidad avanzada y tracing.
 
 ## 11. Integraciones
@@ -1331,6 +1456,16 @@ GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
 GMAIL_USER=""
 GMAIL_APP_PASSWORD=""
+SMS_PROVIDER="mock"
+ONBOARDING_JWT_EXPIRES_IN="30m"
+# Verificacion de identidad: document_ai (produccion) | manual | auto_approve
+IDENTITY_REVIEW_MODE="auto_approve"
+IDENTITY_REVIEW_TIMEOUT_MS=45000
+# Requeridas por IDENTITY_REVIEW_MODE=document_ai (falla al arrancar sin ellas)
+GROQ_API_KEY=""
+CLOUDINARY_CLOUD_NAME=""
+CLOUDINARY_API_KEY=""
+CLOUDINARY_API_SECRET=""
 PAYMENTS_PROVIDER="mock"
 STRIPE_SECRET_KEY=""
 STRIPE_PUBLISHABLE_KEY=""
@@ -1457,10 +1592,22 @@ Implementado:
 
 Alta prioridad:
 
+- **Verificacion facial con prueba de vida (liveness).** La verificacion
+  documental prueba que los documentos son validos, coherentes entre si y
+  consistentes con la cuenta, pero no que quien los subio sea su titular
+  (alguien podria usar fotos de documentos ajenos). Diseno previsto: captura
+  por camara con una serie de tareas guiadas (girar la cabeza, parpadear,
+  repetir una frase) al crear la cuenta, guardando el descriptor facial; y
+  re-chequeo al iniciar sesion desde un dispositivo nuevo o antes de una
+  accion de alta sensibilidad. La columna `UserVerification.selfieUrl` esta
+  reservada para esto y el cruce documental ya deja el hueco donde
+  engancharlo.
+- Politica de retencion/purga del JSON `extracted` (datos personales) pasados
+  N dias de la decision.
 - Reemplazar previews de tokens QR por emision efimera o canal seguro.
 - Agregar expiracion, regeneracion e intentos fallidos para tokens pickup/return.
 - Validar ownership de `MediaAsset.entityType/entityId`.
-- Agregar rate limiting en auth, verification, payment mock y confirmaciones de token.
+- Agregar rate limiting en auth y confirmaciones de token de booking.
 - Agregar healthcheck dedicado.
 - Crear tests E2E reales con DB aislada.
 - Corregir mocks antiguos para que `tsc --noEmit` pase completo.

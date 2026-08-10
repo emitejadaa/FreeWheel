@@ -214,7 +214,9 @@ export class AiService {
         // inválida, modelo dado de baja, imagen demasiado grande).
         const detail = (await res.text().catch(() => "")).slice(0, 500);
         this.lastVisionError = `${model} → ${res.status}: ${detail}`;
-        this.logger.error(`Groq visión (${model}) respondió ${res.status}: ${detail}`);
+        this.logger.error(
+          `Groq visión (${model}) respondió ${res.status}: ${detail}`,
+        );
 
         // Si el modelo ya no existe, se prueba el siguiente de la lista. Con
         // cualquier otro error no tiene sentido: el problema no es el modelo.
@@ -280,7 +282,9 @@ export class AiService {
         .filter((id): id is string => Boolean(id));
       // Los que sirven para mirar imágenes: Groq no marca esto en la respuesta,
       // así que se filtra por nombre, que es lo que se puede hacer.
-      const withVision = ids.filter((id) => /vision|llama-4|scout|maverick/i.test(id));
+      const withVision = ids.filter((id) =>
+        /vision|llama-4|scout|maverick/i.test(id),
+      );
       const usable = visionModels.filter((m) => ids.includes(m));
 
       return {
@@ -454,6 +458,25 @@ export class AiService {
   }
 
   /**
+   * Extracción estructurada libre sobre una imagen: mismo modelo de visión,
+   * pero con el prompt que arme el llamador. La usa el OCR de documentos de la
+   * verificación de identidad (modo document_ai), que necesita leer campos
+   * concretos de cada lado del DNI y de la licencia.
+   *
+   * Devuelve el texto crudo del modelo (el llamador parsea el JSON) o null si
+   * el proveedor no está disponible: ese null significa "fuente no
+   * disponible", nunca un dato válido.
+   */
+  async visionStructured(
+    imageDataUrl: string,
+    prompt: string,
+    maxTokens = 700,
+  ): Promise<string | null> {
+    const answer = await this.askVisionModel(imageDataUrl, prompt, maxTokens);
+    return answer.ok ? answer.content : null;
+  }
+
+  /**
    * ¿La foto muestra un vehículo REAL, de los que se pueden alquilar?
    *
    * Antes la pregunta era "¿esta imagen muestra un automóvil, camioneta, SUV,
@@ -509,7 +532,10 @@ export class AiService {
       const text = answer.content.trim().toUpperCase();
       if (text.startsWith("SI")) return { isVehicle: true };
       if (text.startsWith("NO")) {
-        return { isVehicle: false, reason: "La imagen no muestra un vehículo." };
+        return {
+          isVehicle: false,
+          reason: "La imagen no muestra un vehículo.",
+        };
       }
       return { isVehicle: null, code: "unreadable" };
     }

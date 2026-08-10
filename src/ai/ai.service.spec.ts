@@ -75,7 +75,9 @@ describe("AiService.vision", () => {
   it("does not reject a good photo just because the model omitted es_real", async () => {
     // Un campo que falta no es una respuesta negativa: rechazar por eso dejaría
     // afuera fotos perfectamente válidas.
-    const service = conRespuesta('{"es_vehiculo": true, "que_es": "camioneta"}');
+    const service = conRespuesta(
+      '{"es_vehiculo": true, "que_es": "camioneta"}',
+    );
 
     expect((await service.vision(IMAGEN)).isVehicle).toBe(true);
   });

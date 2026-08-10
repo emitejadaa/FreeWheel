@@ -10,7 +10,7 @@ import {
 /** Cada foto enviada, con el tipo de documento que debería mostrar. */
 const CHECKS: {
   kind: DocumentKind;
-  field: keyof IdentityReviewInput;
+  field: "dniFrontUrl" | "dniBackUrl" | "licenseFrontUrl" | "licenseBackUrl";
   label: string;
 }[] = [
   { kind: "DNI_FRONT", field: "dniFrontUrl", label: "frente del DNI" },
@@ -52,7 +52,10 @@ function nameWords(value: string | null | undefined): string[] {
  * que aparezca un apellido distinto. Con menos de dos palabras en común no se
  * arriesga una conclusión.
  */
-function samePerson(a: string | null | undefined, b: string | null | undefined): boolean {
+function samePerson(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
   const first = nameWords(a);
   const second = nameWords(b);
   if (first.length < 2 || second.length < 2) return false;
@@ -75,27 +78,19 @@ function isExpired(date: string | null | undefined): boolean {
  * Revisión de identidad con IA: mira las cuatro fotos y aprueba solo si cada una
  * es realmente el documento que corresponde.
  *
- * Es el modo IDENTITY_REVIEW_MODE=ai. A diferencia de auto_approve (que aprueba
- * cualquier cosa con tal de que haya cuatro archivos), acá no se puede subir una
- * foto cualquiera: si alguna no es un DNI o una licencia, la verificación queda
- * rechazada con el motivo.
+ * Es el modo IDENTITY_REVIEW_MODE=ai. Más liviano que document_ai: no decodifica
+ * el PDF417 ni el MRZ ni cruza los datos contra los de la cuenta, pero alcanza
+ * para impedir que se suba una foto cualquiera. Además extrae los datos visibles
+ * (número, nombre y vencimiento) para que queden registrados en la base.
  *
- * Además extrae los datos visibles (número de documento, nombre y vencimiento)
- * para que queden registrados en la base y no dependan de lo que escriba el
- * usuario.
+ * También cruza DNI y licencia: la licencia tiene que ser de la misma persona
+ * que el DNI (mismo nombre, y en Argentina también el mismo número) y no puede
+ * estar vencida. Sin este cruce alcanzaba con subir un DNI propio y una
+ * licencia de otra persona.
  *
- * Además cruza los dos documentos: la licencia tiene que ser de la misma persona
- * que el DNI (mismo nombre, y en Argentina también el mismo número, porque la
- * licencia nacional lleva el número de DNI) y no puede estar vencida. Sin este
- * cruce alcanzaba con subir un DNI propio y una licencia de otra persona.
- *
- * Si la IA no está disponible (sin GROQ_API_KEY o error del servicio), la
- * solicitud queda PENDIENTE de que la mire un admin. Antes se aprobaba sin
- * revisar "para que un servicio externo no deje a las cuentas sin verificar", y
- * el resultado fue el contrario del buscado: el día que el modelo de Groq se dio
- * de baja, la revisión falló para todos y cualquier foto —una de un perro, por
- * ejemplo— quedaba aprobada como DNI. Vale más una cuenta esperando que una
- * verificación que no verificó nada.
+ * Cuando la IA no puede revisar, el caso queda INCONCLUSO y pasa a la cola del
+ * admin. Aprobar sin haber mirado sería exactamente el agujero que este modo
+ * existe para tapar: con el proveedor caído, cualquier imagen entraría.
  */
 export class AiIdentityReviewer implements IdentityReviewer {
   readonly name = "ai";
@@ -107,7 +102,7 @@ export class AiIdentityReviewer implements IdentityReviewer {
   async review(input: IdentityReviewInput): Promise<IdentityReviewVerdict> {
     const results = await Promise.all(
       CHECKS.map(async (check) => {
-        const url = input[check.field] as string;
+        const url = input[check.field];
         const inspection = await this.ai.inspectDocument(url, check.kind);
         return { ...check, inspection };
       }),
@@ -124,7 +119,9 @@ export class AiIdentityReviewer implements IdentityReviewer {
     const fromLicense = results.filter((r) => r.kind.startsWith("LICENSE"));
     const firstOf = <T>(
       list: typeof results,
-      pick: (inspection: (typeof results)[number]["inspection"]) => T | null | undefined,
+      pick: (
+        inspection: (typeof results)[number]["inspection"],
+      ) => T | null | undefined,
     ): T | null => list.map((r) => pick(r.inspection)).find(Boolean) ?? null;
 
     const dniName = firstOf(fromDni, (i) => i.fullName);
@@ -133,10 +130,19 @@ export class AiIdentityReviewer implements IdentityReviewer {
     const licenseNumber = firstOf(fromLicense, (i) => i.documentNumber);
     const licenseExpiresAt = firstOf(fromLicense, (i) => i.expiresAt);
 
-    const extracted = {
-      documentNumber: dniNumber,
-      fullName: dniName ?? licenseName,
-      licenseExpiresAt,
+    const promoted = {
+      extracted: {
+        documentNumber: dniNumber,
+        fullName: dniName ?? licenseName,
+        licenseExpiresAt,
+      },
+      ...(dniNumber ? { documentNumber: dniNumber } : {}),
+      ...(dniName || licenseName
+        ? { fullNameOnDocument: dniName ?? licenseName ?? undefined }
+        : {}),
+      ...(licenseExpiresAt
+        ? { licenseExpiresAt: new Date(`${licenseExpiresAt}T00:00:00.000Z`) }
+        : {}),
     };
 
     if (rejected.length > 0) {
@@ -147,29 +153,28 @@ export class AiIdentityReviewer implements IdentityReviewer {
         `Identity submission ${input.verificationId} rejected by AI review (${rejected.length} fotos)`,
       );
       return {
-        approved: false,
+        outcome: "rejected",
+        reasonCodes: ["AI_DOCUMENT_MISMATCH"],
         notes: `Revisión automática: fotos que no corresponden. ${detail}`,
-        extracted,
+        ...promoted,
       };
     }
 
-    // Sin IA no se aprueba: queda esperando a un admin. Aprobar acá era darle el
-    // cartel de "identidad verificada" a algo que nadie miró.
-    if (unavailable.length === results.length) {
+    if (unavailable.length > 0) {
       this.logger.warn(
-        `AI review unavailable for ${input.verificationId}: queda pendiente de revisión manual`,
+        `AI review incompleta para ${input.verificationId}: ${unavailable.length} de ${results.length} fotos sin revisar, queda para el admin`,
       );
       return {
-        approved: false,
-        pending: true,
-        notes:
-          "La revisión automática no está disponible (revisá GET /ai/health). " +
-          "La solicitud queda pendiente de revisión manual.",
-        extracted,
+        outcome: "inconclusive",
+        reasonCodes:
+          unavailable.length === results.length
+            ? ["AI_UNAVAILABLE"]
+            : ["AI_PARTIALLY_UNAVAILABLE"],
+        notes: `Revisión automática incompleta (${unavailable.length} de ${results.length} fotos): queda pendiente de revisión manual.`,
+        ...promoted,
       };
     }
 
-    // Cruce entre los dos documentos: tienen que ser de la misma persona.
     const mismatch = this.crossCheck({
       dniName,
       dniNumber,
@@ -179,20 +184,28 @@ export class AiIdentityReviewer implements IdentityReviewer {
     });
     if (mismatch) {
       this.logger.log(
-        `Identity submission ${input.verificationId} rejected by cross-check: ${mismatch}`,
+        `Identity submission ${input.verificationId} rejected by cross-check: ${mismatch.reason}`,
       );
-      return { approved: false, notes: `Revisión automática: ${mismatch}`, extracted };
+      return {
+        outcome: "rejected",
+        reasonCodes: [mismatch.code],
+        notes: `Revisión automática: ${mismatch.reason}`,
+        ...promoted,
+      };
     }
 
     this.logger.log(
       `Identity submission ${input.verificationId} approved by AI review`,
     );
     return {
-      approved: true,
-      notes: `Revisión automática: las ${results.length - unavailable.length} fotos revisadas corresponden${
-        dniName && licenseName ? " y la licencia es de la misma persona que el DNI" : ""
+      outcome: "approved",
+      reasonCodes: [],
+      notes: `Revisión automática: las ${results.length} fotos revisadas corresponden${
+        dniName && licenseName
+          ? " y la licencia es de la misma persona que el DNI"
+          : ""
       }.`,
-      extracted,
+      ...promoted,
     };
   }
 
@@ -210,17 +223,26 @@ export class AiIdentityReviewer implements IdentityReviewer {
     licenseName: string | null;
     licenseNumber: string | null;
     licenseExpiresAt: string | null;
-  }): string | null {
+  }): { code: string; reason: string } | null {
     if (isExpired(data.licenseExpiresAt)) {
-      return `la licencia está vencida (venció el ${data.licenseExpiresAt}).`;
+      return {
+        code: "LICENSE_EXPIRED",
+        reason: `la licencia está vencida (venció el ${data.licenseExpiresAt}).`,
+      };
     }
 
-    if (data.dniName && data.licenseName && !samePerson(data.dniName, data.licenseName)) {
-      return (
-        "el nombre de la licencia no coincide con el del DNI " +
-        `("${data.licenseName}" contra "${data.dniName}"). ` +
-        "Los dos documentos tienen que ser de la misma persona."
-      );
+    if (
+      data.dniName &&
+      data.licenseName &&
+      !samePerson(data.dniName, data.licenseName)
+    ) {
+      return {
+        code: "LICENSE_NAME_MISMATCH",
+        reason:
+          "el nombre de la licencia no coincide con el del DNI " +
+          `("${data.licenseName}" contra "${data.dniName}"). ` +
+          "Los dos documentos tienen que ser de la misma persona.",
+      };
     }
 
     // En Argentina la licencia nacional lleva el número de DNI, así que si los
@@ -230,10 +252,12 @@ export class AiIdentityReviewer implements IdentityReviewer {
       data.licenseNumber &&
       data.dniNumber !== data.licenseNumber
     ) {
-      return (
-        `el número de la licencia (${data.licenseNumber}) no coincide con el del ` +
-        `DNI (${data.dniNumber}).`
-      );
+      return {
+        code: "LICENSE_DNI_MISMATCH",
+        reason:
+          `el número de la licencia (${data.licenseNumber}) no coincide con el del ` +
+          `DNI (${data.dniNumber}).`,
+      };
     }
 
     return null;

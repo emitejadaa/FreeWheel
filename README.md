@@ -217,7 +217,9 @@ Usuario autenticado:
 - `POST /verification/phone/request`
 - `POST /verification/phone/confirm`
 - `GET /verification/me/status`
+- `POST /verification/identity/upload-signature`
 - `POST /verification/identity/submit`
+- `POST /verification/identity/review-retry`
 - `GET /verification/identity/me`
 - `POST /bookings`
 - `GET /bookings/me`
@@ -249,6 +251,7 @@ Admin:
 - `PATCH /admin/users/:id/role`
 - `GET /admin/verifications`
 - `GET /admin/verifications/:id`
+- `GET /admin/verifications/:id/documents`
 - `PATCH /admin/verifications/:id/review`
 - `GET /admin/listings`
 - `PATCH /admin/listings/:id/status`
@@ -307,6 +310,53 @@ El provider es intercambiable (`PaymentProvider`): `stripe` (real, sólo claves
 `sk_test_…`) o `mock` (determinista, offline) según `PAYMENTS_PROVIDER`. Una guarda
 impide arrancar con claves live. Cada reserva genera un **contrato digital** (PDF)
 accesible para ambas partes en `/contracts/bookings/:id`.
+
+## Verificación de identidad (DNI + licencia)
+
+Una cuenta queda **verificada** —requisito para publicar, reservar y pagar—
+sólo cuando el backend comprueba que sus documentos son reales, están vigentes
+y describen a la misma persona que cargó los datos.
+
+El usuario carga en su perfil `dni`, `cuil` y `address` (`PATCH /users/me`,
+con validación de checksum del CUIL), pide una firma por cada documento y lado
+(`POST /verification/identity/upload-signature` con `{ document: "dni"|"license",
+side: "front"|"back" }`), sube cada archivo **directo a Cloudinary** con esos
+parámetros, y envía las cuatro URLs a `POST /verification/identity/submit`.
+Como el `public_id` lo arma el servidor a partir del token
+(`identity/<userId>/<documento>_<lado>_…`) y los assets se suben como
+`authenticated`, no se puede confundir un documento con otro ni subir a la
+carpeta de otra persona, y las fotos **no son legibles con una URL pública**.
+
+Con el checklist completo corre la revisión (`IDENTITY_REVIEW_MODE=document_ai`):
+
+- decodifica el **PDF417** del frente del DNI y el **QR** del dorso de la
+  licencia con `zxing-wasm` (determinístico, reintentando con la imagen
+  ampliada y en escala de grises);
+- lee el **texto impreso** de los cuatro lados con el modelo de visión, que
+  además clasifica qué documento y lado es cada foto;
+- valida el **MRZ** del dorso del DNI con sus dígitos verificadores (respaldo
+  autoritativo si el PDF417 no se pudo leer);
+- **cruza todo**: nombre, apellido, nro. de documento, CUIL, domicilio y fecha
+  de nacimiento entre código, MRZ, texto impreso de ambos documentos y los
+  datos de la cuenta; más 18+ al día de hoy, DNI y licencia vigentes, y que la
+  licencia sea del mismo titular.
+
+Tres resultados: **aprobado** (cuenta `VERIFIED`), **rechazado** cuando hay una
+contradicción concluyente (el usuario recibe códigos de motivo y reenvía), o
+**pendiente** cuando algo no se pudo leer, en cuyo caso queda para la cola de
+admins y el usuario puede reintentar con
+`POST /verification/identity/review-retry`. Un dato ilegible nunca rechaza a
+una persona real: deriva a revisión humana.
+
+Los datos extraídos y el reporte de cruces son información personal sensible:
+sólo los ve un admin (`GET /admin/verifications/:id/documents`, con URLs
+firmadas efímeras y auditoría de acceso), nunca el usuario ni los logs. Un DNI
+o CUIL no puede verificar dos cuentas, y los campos que respaldan la identidad
+quedan inmutables una vez verificada.
+
+Modos (`IDENTITY_REVIEW_MODE`): `document_ai` (producción, exige `CLOUDINARY_*`
+y `GROQ_API_KEY` o no arranca), `manual` (decide siempre un admin) y
+`auto_approve` (aprueba todo; **sólo** desarrollo y tests).
 
 ## QR Tokens
 

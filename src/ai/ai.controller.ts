@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AiChatDto } from "./dto/ai-chat.dto";
 import { AiDocumentDto } from "./dto/ai-document.dto";
@@ -10,6 +11,10 @@ import { AiService } from "./ai.service";
  * Proxy de IA. Todas las llamadas a Groq salen desde acá y nunca desde el
  * navegador: así la GROQ_API_KEY queda del lado del servidor en vez de quedar
  * incluida en el JavaScript que se descarga el visitante.
+ *
+ * Las rutas abiertas llevan un límite por IP más bajo que el global (120/min):
+ * cada request consume cuota de una API key nuestra, así que sin tope una ruta
+ * pública es una factura ajena.
  */
 @Controller("ai")
 export class AiController {
@@ -29,11 +34,13 @@ export class AiController {
   }
 
   // Pública: el chatbot de ayuda funciona también para visitantes sin cuenta.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post("chat")
   chat(@Body() dto: AiChatDto) {
     return this.ai.chat(dto.messages, dto.temperature);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("vision")
   vision(@Body() dto: AiVisionDto) {
     return this.ai.vision(dto.imageDataUrl);

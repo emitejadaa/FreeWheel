@@ -254,7 +254,9 @@ describe("Reviews, reports and price change", () => {
           reason: "Información falsa en la publicación",
           details:
             "Las fotos son de otro auto y el año no coincide con el del título.",
-          evidenceUrls: ["https://res.cloudinary.com/demo/image/upload/prueba1.jpg"],
+          evidenceUrls: [
+            "https://res.cloudinary.com/demo/image/upload/prueba1.jpg",
+          ],
         })
         .expect(201);
       expect(created.body.status).toBe("OPEN");
@@ -362,7 +364,8 @@ describe("Reviews, reports and price change", () => {
           targetType: "LISTING",
           listingId: listing.id,
           reason: "Vehículo en mal estado no declarado",
-          details: "El parabrisas estaba rajado y no figuraba en la publicación.",
+          details:
+            "El parabrisas estaba rajado y no figuraba en la publicación.",
           evidenceUrls: pruebas,
         })
         .expect(201);
@@ -386,7 +389,8 @@ describe("Reviews, reports and price change", () => {
         targetType: "LISTING",
         listingId: listing.id,
         reason: "Intento de estafa o fraude",
-        details: "Me pidió transferir por fuera de la plataforma para reservar.",
+        details:
+          "Me pidió transferir por fuera de la plataforma para reservar.",
       };
 
       await http()
@@ -423,7 +427,9 @@ describe("Reviews, reports and price change", () => {
           listingId: listing.id,
           reason: "Vehículo en mal estado no declarado",
           details: "El auto tenía el parabrisas roto y no estaba informado.",
-          evidenceUrls: ["https://res.cloudinary.com/demo/image/upload/roto.jpg"],
+          evidenceUrls: [
+            "https://res.cloudinary.com/demo/image/upload/roto.jpg",
+          ],
         })
         .expect(201);
 
