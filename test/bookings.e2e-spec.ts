@@ -11,6 +11,8 @@ import {
   registerUser,
 } from "./helpers/factory";
 import { payBookingFully } from "./helpers/payments";
+import { EmailService } from "../src/email/email.service";
+import type { FakeEmailService } from "./helpers/email.fake";
 
 describe("Bookings", () => {
   let app: INestApplication;
@@ -244,5 +246,101 @@ describe("Bookings", () => {
       .set("Authorization", auth(renter.token))
       .expect(200);
     expect(mine.body.length).toBeGreaterThanOrEqual(1);
+  });
+  /**
+   * LOS AVISOS POR MAIL, POR HTTP
+   *
+   * La lógica de a quién se le avisa ya está probada aparte. Lo que se comprueba
+   * acá es que los avisos estén ENGANCHADOS al circuito real: safeNotify se traga
+   * cualquier error en silencio a propósito —para que un mail caído no tire abajo
+   * una reserva—, y ese silencio también taparía un envío que alguien borró sin
+   * darse cuenta.
+   */
+  describe("avisos por mail del circuito de reserva", () => {
+    const mails = () => app.get(EmailService) as unknown as FakeEmailService;
+
+    it("pedir una reserva avisa al dueño Y al inquilino", async () => {
+      const { owner, renter, listingId } = await setup();
+
+      await http()
+        .post("/bookings")
+        .set("Authorization", auth(renter.token))
+        .send({
+          listingId,
+          startDate: futureDate(10),
+          endDate: futureDate(12),
+        })
+        .expect(201);
+
+      expect(mails().huboAviso("bookingRequestedToOwner", owner.email)).toBe(true);
+      // El que faltaba: quien reserva no recibía nada.
+      expect(mails().huboAviso("bookingRequestedToRenter", renter.email)).toBe(
+        true,
+      );
+    });
+
+    it("aceptar avisa al inquilino, y cancelar avisa a los dos", async () => {
+      const { owner, renter, listingId } = await setup();
+
+      const creada = await http()
+        .post("/bookings")
+        .set("Authorization", auth(renter.token))
+        .send({
+          listingId,
+          startDate: futureDate(20),
+          endDate: futureDate(22),
+        })
+        .expect(201);
+      const bookingId = creada.body.id as string;
+
+      await http()
+        .patch(`/bookings/${bookingId}/accept`)
+        .set("Authorization", auth(owner.token))
+        .expect(200);
+      expect(mails().huboAviso("bookingAcceptedToRenter", renter.email)).toBe(
+        true,
+      );
+
+      await http()
+        .patch(`/bookings/${bookingId}/cancel`)
+        .set("Authorization", auth(renter.token))
+        .send({ reason: "Me surgió un viaje" })
+        .expect(200);
+
+      // Las dos partes se enteran de la cancelación.
+      expect(mails().huboAviso("bookingCancelled", renter.email)).toBe(true);
+      expect(mails().huboAviso("bookingCancelled", owner.email)).toBe(true);
+
+      // Y el motivo viaja en el mail, no se pierde en la base.
+      const aviso = mails()
+        .avisos(owner.email)
+        .find((a) => a.tipo === "bookingCancelled");
+      expect((aviso?.params as { reason?: string })?.reason).toBe(
+        "Me surgió un viaje",
+      );
+    });
+
+    it("rechazar avisa al inquilino", async () => {
+      const { owner, renter, listingId } = await setup();
+
+      const creada = await http()
+        .post("/bookings")
+        .set("Authorization", auth(renter.token))
+        .send({
+          listingId,
+          startDate: futureDate(30),
+          endDate: futureDate(32),
+        })
+        .expect(201);
+
+      await http()
+        .patch(`/bookings/${creada.body.id as string}/reject`)
+        .set("Authorization", auth(owner.token))
+        .expect(200);
+
+      expect(mails().huboAviso("bookingRejectedToRenter", renter.email)).toBe(
+        true,
+      );
+    });
   });
 });
