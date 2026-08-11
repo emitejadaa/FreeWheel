@@ -32,9 +32,17 @@ export class MockPaymentsProvider implements PaymentProvider {
   readonly name = "mock";
   private readonly webhookSecret: string;
   private readonly stripe: Stripe;
+  /** ¿Se aceptan eventos sin firmar aunque esto corra en producción? */
+  private readonly permiteSinFirma: boolean;
+  private readonly enProduccion: boolean;
 
   constructor(config: ConfigService) {
     this.webhookSecret = config.get<string>("STRIPE_WEBHOOK_SECRET") ?? "";
+    this.permiteSinFirma =
+      (config.get<string>("ALLOW_UNSIGNED_WEBHOOKS") ?? "").toLowerCase() ===
+      "true";
+    this.enProduccion =
+      (config.get<string>("NODE_ENV") ?? process.env.NODE_ENV) === "production";
     // Key-independent: only used for the offline signature helpers.
     this.stripe = new Stripe(
       config.get<string>("STRIPE_SECRET_KEY") ?? "sk_test_mock",
@@ -148,7 +156,23 @@ export class MockPaymentsProvider implements PaymentProvider {
       };
     }
 
-    // Lenient path for local dev without a configured signing secret.
+    // Camino permisivo: sin secreto de firma configurado, se cree lo que llega.
+    //
+    // En desarrollo hace falta para poder recorrer el circuito de pago sin una
+    // cuenta de Stripe. En producción NO, y dejarlo pasar significa que cualquiera
+    // que sepa la URL del webhook puede mandar un "payment_intent.succeeded" y
+    // hacer figurar una reserva como pagada sin haber pagado. Así que en
+    // producción se corta acá y se dice qué falta configurar, en vez de aceptarlo
+    // en silencio. ALLOW_UNSIGNED_WEBHOOKS=true lo habilita a propósito para una
+    // demostración, sabiendo lo que implica.
+    if (this.enProduccion && !this.permiteSinFirma) {
+      throw new Error(
+        "Evento de webhook sin firma verificada. En producción hay que configurar " +
+          "STRIPE_WEBHOOK_SECRET (y PAYMENTS_PROVIDER=stripe para cobrar de verdad). " +
+          "Para una demostración sin pagos reales: ALLOW_UNSIGNED_WEBHOOKS=true.",
+      );
+    }
+
     const parsed = JSON.parse(rawBody.toString("utf8")) as {
       id?: string;
       type?: string;
