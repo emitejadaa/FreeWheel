@@ -1,6 +1,7 @@
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
 import { EmailService } from "./email.service";
+import { PrismaService } from "../prisma/prisma.service";
 
 /**
  * Lo que se prueba acá es lo que la persona LEE.
@@ -16,9 +17,14 @@ jest.mock("nodemailer");
 describe("EmailService", () => {
   let enviados: { to: string; subject: string; html: string }[];
   let service: EmailService;
+  // Con qué preferencia contesta la base para cada dirección. Por defecto no hay
+  // ninguna cuenta cargada, y eso ya es un caso real: el mail de cambio de email
+  // va a una dirección que todavía no es de nadie.
+  let cuentas: Record<string, { emailNotifications: boolean }>;
 
   beforeEach(() => {
     enviados = [];
+    cuentas = {};
     (nodemailer.createTransport as jest.Mock).mockReturnValue({
       sendMail: (mail: { to: string; subject: string; html: string }) => {
         enviados.push(mail);
@@ -33,7 +39,13 @@ describe("EmailService", () => {
           FRONTEND_URL: "https://freewheel-5a.vercel.app",
         })[name],
     } as unknown as ConfigService;
-    service = new EmailService(config);
+    const prisma = {
+      user: {
+        findUnique: ({ where }: { where: { email: string } }) =>
+          Promise.resolve(cuentas[where.email] ?? null),
+      },
+    } as unknown as PrismaService;
+    service = new EmailService(config, prisma);
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -252,11 +264,105 @@ describe("EmailService", () => {
     });
   });
 
+  /*
+    QUIÉN APAGA QUÉ.
+
+    El interruptor de Ajustes apaga los AVISOS. No puede apagar los mails que son
+    la única forma de entrar a la cuenta: si alguien apaga los avisos y después
+    se olvida la contraseña, el link para recuperarla tiene que llegar igual, o
+    esa persona quedó afuera de su propia cuenta sin haber pedido eso.
+
+    Por eso la puerta está en send() y no en sendOrThrow(), y por eso se prueban
+    los dos lados: que el aviso NO salga y que el de seguridad SÍ.
+  */
+  describe("avisos apagados", () => {
+    const APAGADA = "no-quiero@avisos.com";
+
+    beforeEach(() => {
+      cuentas[APAGADA] = { emailNotifications: false };
+    });
+
+    it("un aviso de reserva no sale", async () => {
+      await service.sendBookingAcceptedToRenter(APAGADA, {
+        renterName: "Beto",
+        vehicleLabel: "Toyota Corolla 2021",
+        startDate: DESDE,
+        endDate: HASTA,
+      });
+      expect(enviados).toHaveLength(0);
+    });
+
+    it("el aviso de mensajes sin leer tampoco", async () => {
+      await service.sendUnreadMessages(APAGADA, { recipientName: "Beto" });
+      expect(enviados).toHaveLength(0);
+    });
+
+    it("pero el link para recuperar la contraseña SÍ sale", async () => {
+      await service.sendPasswordReset(
+        APAGADA,
+        "Beto",
+        "token-de-prueba",
+        "u-1",
+      );
+      expect(enviados).toHaveLength(1);
+      expect(ultimo().to).toBe(APAGADA);
+    });
+
+    it("y el código para entrar también", async () => {
+      await service.sendVerificationCode(APAGADA, "123456");
+      expect(enviados).toHaveLength(1);
+    });
+
+    it("con los avisos prendidos, el aviso de reserva sale", async () => {
+      cuentas["si@quiero.com"] = { emailNotifications: true };
+      await service.sendBookingAcceptedToRenter("si@quiero.com", {
+        renterName: "Beto",
+        vehicleLabel: "Toyota Corolla 2021",
+        startDate: DESDE,
+        endDate: HASTA,
+      });
+      expect(enviados).toHaveLength(1);
+    });
+
+    it("y a una dirección que no es de ninguna cuenta también", async () => {
+      // Pasa de verdad: el código de cambio de email va a la dirección NUEVA,
+      // que todavía no pertenece a nadie. Si el silencio fuera el caso por
+      // defecto, ese mail no llegaría nunca.
+      await service.sendUnreadMessages("nadie@todavia.com", {});
+      expect(enviados).toHaveLength(1);
+    });
+  });
+
+  describe("el aviso de mensajes sin leer", () => {
+    it("no copia el mensaje: solo dice que hay algo para leer", async () => {
+      await service.sendUnreadMessages("a@b.com", {
+        recipientName: "Beto",
+        listingLabel: "Toyota Corolla 2021",
+      });
+
+      const html = ultimo().html;
+      expect(ultimo().subject).toContain("mensajes sin leer");
+      // De qué charla es, sí: alcanza para saber si hay que abrirla ahora.
+      expect(html).toContain("Toyota Corolla 2021");
+      // Y el camino para leerlo, que es en la app.
+      expect(html).toContain("/chat");
+    });
+
+    it("sin saber de qué publicación es, igual avisa", async () => {
+      await service.sendUnreadMessages("a@b.com", { recipientName: "Beto" });
+      expect(ultimo().html).toContain("Hola Beto");
+      expect(ultimo().html).not.toContain("undefined");
+    });
+  });
+
   describe("sin configuración de mail", () => {
     it("un aviso de reserva no se manda y no rompe nada", async () => {
-      const sinMail = new EmailService({
-        get: () => undefined,
-      } as unknown as ConfigService);
+      const sinMail = new EmailService(
+        { get: () => undefined } as unknown as ConfigService,
+        {
+          user: { findUnique: () => Promise.resolve(null) },
+        } as unknown as PrismaService,
+      );
 
       await expect(
         sinMail.sendPaymentReceipt("a@b.com", {

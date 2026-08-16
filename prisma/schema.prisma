@@ -240,6 +240,21 @@ model User {
   /// subir una foto es para que se vea, y quien prefiera lo contrario lo cambia
   /// en dos toques.
   profilePhotoVisibility PhotoVisibility     @default(EVERYONE)
+  /// Si esta persona quiere recibir avisos por mail: reservas pedidas,
+  /// aceptadas, pagos, entregas y devoluciones, y el aviso de que tiene
+  /// mensajes sin leer en el chat.
+  ///
+  /// NO alcanza a los mails de seguridad —el código para entrar, el de cambiar
+  /// el email, el link para recuperar la contraseña, el código para cambiar el
+  /// precio de una publicación—: esos no son avisos, son la forma de poder usar
+  /// la cuenta, y salen aunque esto esté apagado.
+  ///
+  /// Arranca en true: quien no quiera recibirlos lo apaga en Ajustes, y así
+  /// ninguna cuenta que ya existía cambia de comportamiento.
+  emailNotifications     Boolean             @default(true)
+  /// Cuándo se mandó el último aviso de "tenés mensajes sin leer". Sin esto, una
+  /// charla de veinte mensajes serían veinte mails.
+  lastUnreadEmailAt      DateTime?
   role                   UserRole            @default(USER)
   status                 UserStatus          @default(ACTIVE)
   verificationStatus     VerificationStatus  @default(UNVERIFIED)
