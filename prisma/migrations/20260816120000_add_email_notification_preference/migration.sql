@@ -1,0 +1,28 @@
+-- Avisos por mail: poder apagarlos, y avisar de los mensajes sin leer.
+--
+-- ── emailNotifications ───────────────────────────────────────────────────────
+-- Hasta ahora los avisos de una reserva —pedida, aceptada, pagada, entregada,
+-- devuelta— salían siempre y no había forma de no recibirlos. Con esta columna
+-- se apagan desde Ajustes.
+--
+-- Queda claro qué NO apaga: los mails de seguridad (el código para entrar, el de
+-- cambiar el email, el link para recuperar la contraseña, el código para cambiar
+-- el precio de una publicación) salen igual. Esos no son avisos: son la forma de
+-- poder usar la cuenta, y dejar que alguien se los corte sin querer es dejarlo
+-- afuera de su propia cuenta.
+--
+-- El valor por defecto es true para que ninguna cuenta que ya existe cambie de
+-- comportamiento al aplicar esta migración.
+--
+-- ── lastUnreadEmailAt ────────────────────────────────────────────────────────
+-- El aviso nuevo: "tenés mensajes sin leer". No lleva el texto del mensaje —eso
+-- es una conversación privada entre dos personas y no tiene por qué viajar por
+-- mail ni quedar guardado en la bandeja de un tercero—, solo dice que hay algo
+-- para mirar.
+--
+-- Esta columna guarda cuándo se mandó el último, para no mandar un mail por cada
+-- mensaje: una charla de veinte mensajes serían veinte mails. Se vuelve a poner
+-- en NULL cuando la persona abre la conversación, así el próximo mensaje que
+-- llegue después de eso sí avisa.
+ALTER TABLE "User" ADD COLUMN "emailNotifications" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "User" ADD COLUMN "lastUnreadEmailAt" TIMESTAMP(3);

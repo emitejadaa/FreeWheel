@@ -1,6 +1,7 @@
 import { PhotoVisibility } from "@prisma/client";
 import { Transform } from "class-transformer";
 import {
+  IsBoolean,
   IsEnum,
   IsOptional,
   IsString,
@@ -77,4 +78,16 @@ export class UpdateUserDto {
   @IsOptional()
   @IsEnum(PhotoVisibility)
   profilePhotoVisibility?: PhotoVisibility;
+
+  /**
+   * Si esta persona quiere recibir avisos por mail: reservas pedidas,
+   * aceptadas, pagos, entregas y devoluciones, y el aviso de mensajes sin leer.
+   *
+   * No apaga los mails de seguridad —el código para entrar, el de cambiar el
+   * email, el link para recuperar la contraseña, el código para cambiar el
+   * precio—: esos no son avisos, son la forma de poder usar la cuenta.
+   */
+  @IsOptional()
+  @IsBoolean()
+  emailNotifications?: boolean;
 }

@@ -1,13 +1,19 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ListingStatus, MessageType } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { EmailService } from "../email/email.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
 import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
 
 @Injectable()
 export class ConversationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ConversationsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly email: EmailService,
+  ) {}
 
   async startOrGet(renterId: string, listingId: string) {
     const listing = await this.prisma.listing.findUnique({
@@ -76,7 +82,7 @@ export class ConversationsService {
     content: string,
     type: MessageType = MessageType.TEXT,
   ) {
-    await this.findOne(userId, conversationId);
+    const conv = await this.findOne(userId, conversationId);
 
     const message = await this.prisma.message.create({
       data: { conversationId, senderId: userId, content, type },
@@ -88,6 +94,11 @@ export class ConversationsService {
       data: { lastMessageAt: new Date() },
     });
 
+    // El aviso por mail va DESPUÉS de guardar el mensaje y sin esperarlo: mandar
+    // un mail tarda, y quien escribió no tiene por qué mirar la rueda girando
+    // mientras tanto. Si el mail falla, el mensaje ya está guardado igual.
+    void this.avisarMensajeSinLeer(conv, userId);
+
     return message;
   }
 
@@ -97,7 +108,72 @@ export class ConversationsService {
       where: { conversationId, senderId: { not: userId }, readAt: null },
       data: { readAt: new Date() },
     });
+    // Al abrir la conversación se borra la marca del último aviso: el próximo
+    // mensaje que llegue después de esto vuelve a avisar. Sin esto, quien lee y
+    // contesta al toque no se enteraría del mensaje siguiente hasta el otro día.
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lastUnreadEmailAt: null },
+    });
     return { ok: true };
+  }
+
+  /**
+   * Le avisa por mail a la otra persona que tiene algo para leer.
+   *
+   * UNA SOLA VEZ POR CHARLA. Sin esto, escribir "hola", "¿estás?", "te paso la
+   * dirección" son tres mails en un minuto, y el aviso deja de servir: se vuelve
+   * ruido que se manda a la carpeta de spam junto con todo lo demás. La marca se
+   * guarda en la persona que recibe y se borra cuando abre el chat.
+   *
+   * No manda nada si:
+   *  · ya se le avisó y todavía no abrió la conversación;
+   *  · apagó los avisos por mail (eso lo resuelve EmailService, que mira la
+   *    preferencia antes de mandar cualquier aviso).
+   *
+   * Nunca tira una excepción: es un aviso, no puede hacer fallar el envío de un
+   * mensaje que ya se guardó.
+   */
+  private async avisarMensajeSinLeer(
+    conv: {
+      id: string;
+      ownerId: string;
+      renterId: string;
+      listing?: { title?: string | null } | null;
+    },
+    senderId: string,
+  ) {
+    try {
+      const destinatarioId =
+        conv.ownerId === senderId ? conv.renterId : conv.ownerId;
+
+      const destinatario = await this.prisma.user.findUnique({
+        where: { id: destinatarioId },
+        select: {
+          email: true,
+          firstName: true,
+          lastUnreadEmailAt: true,
+        },
+      });
+      if (!destinatario) return;
+      // Ya se le avisó y todavía no abrió la charla.
+      if (destinatario.lastUnreadEmailAt) return;
+
+      await this.prisma.user.update({
+        where: { id: destinatarioId },
+        data: { lastUnreadEmailAt: new Date() },
+      });
+
+      await this.email.sendUnreadMessages(destinatario.email, {
+        recipientName: destinatario.firstName,
+        listingLabel: conv.listing?.title ?? undefined,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `No se pudo avisar del mensaje sin leer en ${conv.id}: ${message}`,
+      );
+    }
   }
 
   private conversationInclude() {

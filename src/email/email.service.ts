@@ -6,12 +6,16 @@ import {
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
 import { getFrontendUrl } from "../config/public-urls";
+import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   private createTransporter() {
     const user = this.configService.get<string>("GMAIL_USER");
@@ -64,10 +68,72 @@ export class EmailService {
           "el envío de mails.",
       );
     }
-    await this.send(to, subject, html);
+    // Va DIRECTO a entregar y no por send(): send() mira si la persona apagó los
+    // avisos, y esto no es un aviso. Alguien que apagó los avisos y después se
+    // olvidó la contraseña tiene que recibir igual el link para recuperarla; si
+    // no, se quedó afuera de su propia cuenta sin haber pedido eso.
+    await this.entregar(to, subject, html);
   }
 
+  /**
+   * ¿Esta dirección quiere recibir AVISOS?
+   *
+   * Se consulta acá adentro, en un solo lugar, y no en cada uno de los nueve
+   * avisos: con la decisión repartida por bookings, payments y conversations,
+   * el décimo aviso que alguien agregue se manda igual y nadie se entera hasta
+   * que llega una queja.
+   *
+   * Si la dirección no corresponde a ninguna cuenta se manda igual. Pasa en un
+   * caso real: el mail de cambio de email va a la dirección NUEVA, que todavía
+   * no es la de ninguna cuenta.
+   *
+   * Y si la consulta a la base falla, también se manda. Un problema de base de
+   * datos no puede terminar en "nadie recibe más avisos y nadie se dio cuenta".
+   */
+  private async quiereAvisos(to: string): Promise<boolean> {
+    try {
+      const persona = await this.prisma.user.findUnique({
+        where: { email: to.toLowerCase() },
+        select: { emailNotifications: true },
+      });
+      return persona ? persona.emailNotifications : true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `No se pudo leer la preferencia de avisos de ${to} (${message}); se manda igual.`,
+      );
+      return true;
+    }
+  }
+
+  /**
+   * Manda un AVISO: algo que la persona quiere saber pero no está esperando con
+   * la pantalla abierta. Si apagó los avisos en Ajustes, no sale.
+   *
+   * Los mails que sí bloquean —códigos, recuperar contraseña— usan sendOrThrow()
+   * y no pasan por acá: apagar los avisos no puede dejar a nadie afuera de su
+   * propia cuenta.
+   */
   private async send(to: string, subject: string, html: string) {
+    if (!(await this.quiereAvisos(to))) {
+      this.logger.log(
+        `Aviso "${subject}" no enviado a ${to}: los tiene apagados.`,
+      );
+      return;
+    }
+    await this.entregar(to, subject, html);
+  }
+
+  /**
+   * La entrega en sí. Es el único lugar que habla con el servidor de correo.
+   *
+   * No decide nada: quién puede recibir qué se resuelve en send() (avisos) y en
+   * sendOrThrow() (los que no se pueden perder). Está separado justamente para
+   * eso: antes sendOrThrow() llamaba a send(), y cuando send() empezó a mirar la
+   * preferencia de avisos, apagar los avisos apagaba también el código para
+   * entrar a la cuenta.
+   */
+  private async entregar(to: string, subject: string, html: string) {
     const transporter = this.createTransporter();
     if (!transporter) return;
     const from = this.configService.get<string>("GMAIL_USER");
@@ -670,6 +736,50 @@ export class EmailService {
         this.boton(this.misReservas, "Dejar una reseña"),
     );
     await this.send(email, "Reserva cerrada - Freewheel", html);
+  }
+
+  /**
+   * "Tenés mensajes sin leer."
+   *
+   * QUÉ NO LLEVA, y por qué: no lleva el texto del mensaje ni el nombre de quien
+   * escribió. Una conversación entre dos personas que están arreglando la
+   * entrega de un auto incluye direcciones, horarios y teléfonos. Eso no tiene
+   * por qué viajar por mail —que pasa por servidores de terceros— ni quedar
+   * guardado para siempre en una bandeja de entrada que puede abrir cualquiera
+   * que tenga el teléfono de esa persona en la mano. El mail dice que hay algo
+   * para leer; lo que dice está en la app.
+   *
+   * Solo se informa de qué publicación es la charla, que es lo mínimo para saber
+   * si hace falta abrirla ahora o después.
+   */
+  async sendUnreadMessages(
+    email: string,
+    params: { recipientName?: string; listingLabel?: string },
+  ) {
+    const dondeEsta = params.listingLabel
+      ? ` en la conversación de <strong>${params.listingLabel}</strong>`
+      : "";
+    const html = this.layout(
+      "Tenés mensajes sin leer",
+      this.p(
+        `${this.saludo(params.recipientName)} te escribieron${dondeEsta} y todavía ` +
+          "no lo leíste.",
+      ) +
+        this.p(
+          "No copiamos el mensaje acá: las conversaciones quedan en la app y se " +
+            "leen ahí.",
+        ) +
+        this.boton(
+          `${getFrontendUrl(this.configService)}/chat`,
+          "Abrir el chat",
+        ) +
+        this.nota(
+          "Te avisamos una sola vez por charla hasta que la abras, así una " +
+            "conversación larga no se convierte en veinte mails. Si no querés " +
+            "recibir estos avisos, los podés apagar en Ajustes.",
+        ),
+    );
+    await this.send(email, "Tenés mensajes sin leer - Freewheel", html);
   }
 
   private formatDate(date: Date): string {
