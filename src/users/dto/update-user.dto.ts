@@ -11,9 +11,9 @@ import {
   MinLength,
 } from "class-validator";
 import {
-  IsArgentinePhone,
-  normalizeArgentinePhone,
-} from "../../common/validators/argentine-phone.validator";
+  IsPhone,
+  normalizePhone,
+} from "../../common/validators/phone.validator";
 import { IsCuil } from "../../common/validators/is-cuil.validator";
 
 export class UpdateUserDto {
@@ -41,10 +41,8 @@ export class UpdateUserDto {
    * sin importar cómo lo haya escrito la persona.
    */
   @IsOptional()
-  @Transform(
-    ({ value }: { value: unknown }) => normalizeArgentinePhone(value) ?? value,
-  )
-  @IsArgentinePhone()
+  @Transform(({ value }: { value: unknown }) => normalizePhone(value) ?? value)
+  @IsPhone()
   phone?: string;
 
   // Identidad manual requerida para la verificación documental: debe coincidir
