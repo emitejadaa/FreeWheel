@@ -47,6 +47,28 @@ type PublicListing = Omit<
 };
 type PublicListingWithPhotos = PublicListing & { photos: string[] };
 
+/**
+ * La dirección escrita y la coordenada son el mismo lugar dicho de dos maneras,
+ * así que se cambian juntas o no se cambian.
+ *
+ * Al crear no hace falta comprobarlo (las tres son obligatorias en el DTO), pero
+ * en un PATCH cada campo viaja suelto: mandando sólo `locationText` quedaba una
+ * publicación que dice "Belgrano" con el pin en Palermo, y ni el mapa ni la
+ * búsqueda por zona tienen forma de saber cuál de los dos es el bueno. Es peor
+ * que no tener el dato: se ve correcto y está mal.
+ */
+function assertLocationIsWhole(data: UpdateListingDto): void {
+  const parts = [data.locationText, data.latitude, data.longitude];
+  const provided = parts.filter((value) => value !== undefined).length;
+
+  if (provided > 0 && provided < parts.length) {
+    throw new BadRequestException(
+      "La ubicación se cambia entera: mandá locationText, latitude y longitude " +
+        "juntos, apuntando al mismo lugar.",
+    );
+  }
+}
+
 @Injectable()
 export class ListingsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -165,6 +187,8 @@ export class ListingsService {
       );
     }
     const { pricePerDay: _ignoredPrice, ...editable } = data;
+
+    assertLocationIsWhole(data);
 
     if (data.vehicleId) {
       const vehicle = await this.prisma.vehicle.findUnique({

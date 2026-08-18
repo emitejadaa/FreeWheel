@@ -226,7 +226,11 @@ export async function createListing(
       title: "Reliable city car",
       description: "Great condition, ideal for city trips.",
       pricePerDay: 5000,
+      // La dirección escrita y la coordenada son el mismo lugar: el back exige
+      // las tres juntas al publicar.
       locationText: "Palermo, CABA",
+      latitude: -34.5889,
+      longitude: -58.4306,
       status: "ACTIVE",
       ...overrides,
     })

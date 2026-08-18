@@ -406,21 +406,34 @@ model Vehicle {
 }
 
 model Listing {
-  id                String        @id @default(uuid())
-  vehicleId         String
-  ownerId           String
-  vehicle           Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  owner             User          @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  title             String
-  description       String
-  pricePerDay       Float
-  locationText      String
-  latitude          Float?
-  longitude         Float?
-  deliveryLatitude  Float?
-  deliveryLongitude Float?
-  deliveryRadiusKm  Float?
-  status            ListingStatus @default(DRAFT)
+  id          String  @id @default(uuid())
+  vehicleId   String
+  ownerId     String
+  vehicle     Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner       User    @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  title       String
+  description String
+  pricePerDay Float
+
+  /// ── Dónde está el auto y hasta dónde lo llevan ──────────────────────────
+  /// Un solo punto: `locationText` es la dirección escrita y `latitude`/
+  /// `longitude` son ESE MISMO punto, no otro. El front los mantiene en sincro
+  /// (se mueve el pin y se reescribe la dirección, y al revés), y el back los
+  /// recibe y los devuelve juntos siempre.
+  ///
+  /// Son opcionales en la base sólo por los avisos que se publicaron antes de
+  /// que se pidieran; al crear uno nuevo son obligatorios (CreateListingDto).
+  locationText String
+  latitude     Float?
+  longitude    Float?
+
+  /// Cuántos metros a la redonda de ESE punto el dueño está dispuesto a llevar
+  /// el auto. 0 = no hay entrega, se retira en el lugar. En metros y no en
+  /// kilómetros porque es lo que mueve el slider del front, y un entero evita
+  /// que "5 km" y "5000 m" convivan como dos formas del mismo dato.
+  deliveryRadiusM Int @default(0)
+
+  status ListingStatus @default(DRAFT)
 
   /// Promedio de las reseñas de esta publicación y cuántas son. Calculados y
   /// guardados: es el número que se muestra en el listado y en el detalle.

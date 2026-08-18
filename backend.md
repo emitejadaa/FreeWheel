@@ -640,6 +640,22 @@ Estado actual:
 | GET | `/listings/:id/availability-blocks` | JWT owner | Lista bloqueos manuales |
 | DELETE | `/listings/:id/availability-blocks/:blockId` | JWT owner | Elimina bloqueo manual |
 
+Ubicacion de la publicacion (`POST` y `PATCH`):
+
+`locationText`, `latitude` y `longitude` describen UN punto: la direccion escrita
+y la coordenada son el mismo lugar. Al crear, las tres son obligatorias. Al
+editar viajan juntas o ninguna: mandar solo una devuelve `400`, porque dejaria la
+direccion apuntando a un lado y el pin al otro.
+
+`deliveryRadiusM` es cuantos metros a la redonda de ESE punto el dueno esta
+dispuesto a llevar el auto. Entero, opcional, `0` por defecto (sin entrega, se
+retira en el lugar), maximo `200000`. Se puede cambiar solo, sin tocar la
+ubicacion.
+
+Los cuatro campos vuelven en todas las respuestas que incluyen una publicacion
+(`GET /listings`, `GET /listings/:id`, `GET /listings/me`, favoritos, reservas y
+admin). El filtrado por zona lo hace el front con esos datos.
+
 Query soportada en catalogo:
 
 - `page`
@@ -868,12 +884,10 @@ Campos:
 - `title`
 - `description`
 - `pricePerDay`
-- `locationText`
+- `locationText` (dirección escrita)
 - `latitude`
 - `longitude`
-- `deliveryLatitude`
-- `deliveryLongitude`
-- `deliveryRadiusKm`
+- `deliveryRadiusM` (metros a la redonda que el dueño lleva el auto; `0` = sin entrega)
 - `status`
 - timestamps
 

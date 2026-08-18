@@ -48,6 +48,8 @@ describe("Listings", () => {
           description: "This should be forbidden for non-owners.",
           pricePerDay: 1000,
           locationText: "Nowhere",
+          latitude: -34.6,
+          longitude: -58.4,
         })
         .expect(403);
     });
@@ -63,6 +65,8 @@ describe("Listings", () => {
           description: "No such vehicle exists in the database.",
           pricePerDay: 1000,
           locationText: "Nowhere",
+          latitude: -34.6,
+          longitude: -58.4,
         })
         .expect(404);
     });
@@ -99,6 +103,168 @@ describe("Listings", () => {
         .send({ pricePerDay: 9999 })
         .expect(400);
       expect(String(res.body.message)).toContain("Cambiar precio");
+    });
+  });
+
+  // La ubicación es un solo punto dicho de dos maneras (una dirección escrita y
+  // una coordenada) más un radio de entrega alrededor de ese punto. El front
+  // mantiene las dos formas atadas con el mapa; estos tests fijan que el back no
+  // acepte una publicación a la que le falte una de las dos, ni un cambio que
+  // las deje apuntando a lugares distintos.
+  describe("ubicación y radio de entrega", () => {
+    const point = { latitude: -34.6037, longitude: -58.3816 };
+
+    async function ownedVehicle() {
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      return { owner, vehicle };
+    }
+
+    function postListing(token: string, body: Record<string, unknown>) {
+      return request(app.getHttpServer())
+        .post("/listings")
+        .set("Authorization", `Bearer ${token}`)
+        .send(body);
+    }
+
+    const base = (vehicleId: string) => ({
+      vehicleId,
+      title: "Auto con ubicación",
+      description: "Publicación para probar la ubicación del aviso.",
+      pricePerDay: 4000,
+      locationText: "Av. de Mayo 500, CABA",
+    });
+
+    it("guarda y devuelve los cuatro datos de ubicación", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+      const created = await postListing(owner.token, {
+        ...base(vehicle.id),
+        ...point,
+        deliveryRadiusM: 7500,
+        status: "ACTIVE",
+      }).expect(201);
+
+      expect(created.body).toMatchObject({
+        locationText: "Av. de Mayo 500, CABA",
+        ...point,
+        deliveryRadiusM: 7500,
+      });
+
+      // Y siguen estando en el catálogo público y en el detalle, que es de donde
+      // el front los lee para dibujar el mapa y filtrar por zona.
+      const list = await request(app.getHttpServer())
+        .get("/listings")
+        .expect(200);
+      expect(list.body.data[0]).toMatchObject({
+        locationText: "Av. de Mayo 500, CABA",
+        ...point,
+        deliveryRadiusM: 7500,
+      });
+
+      const detail = await request(app.getHttpServer())
+        .get(`/listings/${created.body.id}`)
+        .expect(200);
+      expect(detail.body).toMatchObject({ ...point, deliveryRadiusM: 7500 });
+    });
+
+    it("sin entrega declarada el radio queda en 0, no en null", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+      const created = await postListing(owner.token, {
+        ...base(vehicle.id),
+        ...point,
+      }).expect(201);
+
+      expect(created.body.deliveryRadiusM).toBe(0);
+    });
+
+    it("no se puede publicar sin coordenada, ni con una imposible", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+
+      await postListing(owner.token, base(vehicle.id)).expect(400);
+      await postListing(owner.token, {
+        ...base(vehicle.id),
+        latitude: point.latitude,
+      }).expect(400);
+      await postListing(owner.token, {
+        ...base(vehicle.id),
+        latitude: 91,
+        longitude: point.longitude,
+      }).expect(400);
+      await postListing(owner.token, {
+        ...base(vehicle.id),
+        latitude: point.latitude,
+        longitude: -181,
+      }).expect(400);
+    });
+
+    it("rechaza radios negativos, con decimales o desmedidos", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+
+      for (const deliveryRadiusM of [-1, 1500.5, 200_001]) {
+        await postListing(owner.token, {
+          ...base(vehicle.id),
+          ...point,
+          deliveryRadiusM,
+        }).expect(400);
+      }
+    });
+
+    it("al editar, la dirección y la coordenada se cambian juntas", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      const patch = (body: Record<string, unknown>) =>
+        request(app.getHttpServer())
+          .patch(`/listings/${listing.id}`)
+          .set("Authorization", `Bearer ${owner.token}`)
+          .send(body);
+
+      // Sólo el texto dejaría la dirección diciendo una cosa y el pin otra.
+      const soloTexto = await patch({ locationText: "Belgrano, CABA" }).expect(
+        400,
+      );
+      expect(String(soloTexto.body.message)).toContain("ubicación");
+      await patch({ latitude: point.latitude }).expect(400);
+      await patch({ ...point }).expect(400);
+
+      // Las tres juntas sí.
+      const ok = await patch({
+        locationText: "Belgrano, CABA",
+        ...point,
+      }).expect(200);
+      expect(ok.body).toMatchObject({
+        locationText: "Belgrano, CABA",
+        ...point,
+      });
+    });
+
+    it("el radio de entrega se puede cambiar solo", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      const res = await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ deliveryRadiusM: 20_000 })
+        .expect(200);
+      expect(res.body.deliveryRadiusM).toBe(20_000);
+    });
+
+    it("los campos viejos de entrega ya no existen", async () => {
+      const { owner, vehicle } = await ownedVehicle();
+
+      await postListing(owner.token, {
+        ...base(vehicle.id),
+        ...point,
+        deliveryLatitude: -34.6,
+        deliveryLongitude: -58.4,
+      }).expect(400);
+
+      await postListing(owner.token, {
+        ...base(vehicle.id),
+        ...point,
+        deliveryRadiusKm: 10,
+      }).expect(400);
     });
   });
 
