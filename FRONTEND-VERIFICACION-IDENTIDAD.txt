@@ -1,0 +1,1345 @@
+================================================================================
+FREEWHEEL — VERIFICACIÓN DE IDENTIDAD (DNI + LICENCIA DE CONDUCIR)
+GUÍA DE IMPLEMENTACIÓN PARA EL FRONTEND
+================================================================================
+Documento: instrucciones completas para implementar en la web el flujo de
+           verificación de documentos contra la API de FreeWheel.
+Estado del backend: YA IMPLEMENTADO Y MERGEADO A main. No hay que esperar nada
+           del backend: todos los endpoints descritos acá existen y están
+           desplegados.
+API de producción: https://free-wheel-back.vercel.app
+Última revisión del documento: 18/08/2026
+
+
+--------------------------------------------------------------------------------
+ÍNDICE
+--------------------------------------------------------------------------------
+ 0. Qué se implementó y cómo llegó a main
+ 1. Lo mínimo que hay que entender antes de escribir código
+ 2. Configuración: base URL, token, CORS, timeouts
+ 3. Máquina de estados y checklist
+ 4. PASO A: requisitos previos (cuenta + email + fecha de nacimiento)
+ 5. PASO B: datos de identidad (DNI, CUIL, domicilio)
+ 6. PASO C: teléfono (opcional hoy)
+ 7. PASO D: subida de los 4 documentos (el flujo de 3 llamadas)
+ 8. PASO E: resultado, reintento y polling
+ 9. Referencia de endpoints (contratos exactos: request/response)
+10. Catálogo COMPLETO de reasonCodes y qué texto mostrar
+11. Catálogo COMPLETO de errores HTTP y códigos de error
+12. Gating: qué se bloquea si la cuenta no está verificada
+13. Reglas de privacidad y seguridad que el front DEBE respetar
+14. Límites de uso (rate limits) y qué hacer con el 429
+15. Pantallas sugeridas y checklist de implementación
+16. Casos de prueba / QA
+17. Panel de administración (solo si el front tiene rol ADMIN)
+18. Preguntas frecuentes y errores típicos de integración
+
+
+================================================================================
+0. QUÉ SE IMPLEMENTÓ Y CÓMO LLEGÓ A main
+================================================================================
+
+Antes, la "verificación de identidad" era un placeholder: se guardaban cuatro
+URLs y un reviewer aprobaba TODA solicitud sin mirar las fotos. Eso se
+reemplazó por una verificación documental real.
+
+Commits relevantes:
+  7c448f9  feat(verification): revisión documental real de DNI y licencia
+  10e5ee6  merge: integrar origin/main con la revisión documental de identidad
+  4f3b866  merge: verificación documental de identidad (DNI + licencia) en main
+  ac6a661  merge: segunda punta de main (i18n de la revisión, modelos de visión)
+
+Todo eso YA ESTÁ EN main y desplegado. La rama de desarrollo no tiene commits
+pendientes de mergear (`git rev-list origin/main..rama` = 0).
+
+Qué hace hoy el backend cuando llegan las cuatro fotos:
+
+  1. Decodifica el PDF417 del FRENTE del DNI y el QR del DORSO de la licencia
+     con zxing-wasm (determinístico; reintenta con la imagen ampliada y en
+     escala de grises).
+  2. Parsea el MRZ TD1 del DORSO del DNI validando sus dígitos verificadores
+     (fuente autoritativa de respaldo si el PDF417 no se pudo leer).
+  3. Lee el texto impreso de los cuatro lados con un modelo de visión, que
+     además clasifica qué documento y qué lado es cada foto (por eso una foto
+     puesta en el slot equivocado se detecta).
+  4. Cruza TODO entre sí y contra los datos de la cuenta: nombre, apellido,
+     número de documento, CUIL, domicilio, fecha de nacimiento, sexo; más 18+
+     al día de hoy, DNI vigente, licencia vigente y licencia del mismo titular.
+
+Y emite un veredicto de TRES estados (esto es lo más importante para la UI):
+
+  approved      → la cuenta pasa a VERIFIED. Fin.
+  rejected      → hubo una contradicción CONCLUYENTE (los datos se leyeron bien
+                  y no coinciden, o la persona es menor, o el documento está
+                  vencido). El usuario recibe códigos de motivo y debe volver a
+                  enviar.
+  inconclusive  → algo no se pudo leer (foto borrosa, reflejo, proveedor caído,
+                  timeout). NO rechaza a nadie: la solicitud queda PENDIENTE en
+                  la cola de revisión manual del admin, y el usuario puede
+                  reintentar la revisión.
+
+Regla de oro del producto: un dato ilegible NUNCA rechaza a una persona real.
+La UI tiene que reflejar eso: "pendiente" no es "rechazado".
+
+Otras cosas que el backend garantiza y que condicionan al front:
+  · Las fotos se suben DIRECTO a Cloudinary, no pasan por la API (límite de
+    body de Vercel). El backend solo firma la subida y recibe URLs.
+  · Los assets se suben como `authenticated`: sus URLs sin firma devuelven 401.
+    Las fotos NO son legibles públicamente y el backend NUNCA las devuelve al
+    usuario.
+  · El servidor arma la carpeta y el public_id desde el JWT
+    (`identity/<userId>/<documento>_<lado>_<ts>_<rand>`): es imposible subir a
+    la carpeta de otra persona o confundir frente con dorso.
+  · Un mismo DNI/CUIL no puede verificar dos cuentas.
+  · Una vez VERIFIED, dni/cuil/address quedan inmutables (403).
+
+
+================================================================================
+1. LO MÍNIMO QUE HAY QUE ENTENDER ANTES DE ESCRIBIR CÓDIGO
+================================================================================
+
+(1) La verificación NO es solo subir fotos. Es un CHECKLIST de 5 ítems, y la
+    revisión automática recién corre cuando el checklist está completo:
+      - email verificado
+      - (teléfono verificado, solo si está configurado como obligatorio)
+      - fecha de nacimiento cargada
+      - dni + cuil + address cargados en el perfil
+      - los 4 documentos enviados
+
+    Si mandás las fotos sin haber cargado dni/cuil/address, el backend las
+    acepta (201) pero NO corre la revisión: la solicitud queda pendiente para
+    siempre. Ese es el error de integración más probable. La UI debe pedir los
+    datos ANTES de las fotos, o al menos dejarlo claro.
+
+(2) POST /verification/identity/submit es SÍNCRONO. Ahí adentro corre toda la
+    revisión (descarga de imágenes, códigos de barras, OCR con modelo de
+    visión, cruces). Presupuesto: 45 s (IDENTITY_REVIEW_TIMEOUT_MS), y la
+    función serverless corta a los 60 s. La request puede tardar entre 5 y 50
+    segundos. NO le pongas un timeout de 10 s al fetch: usá 70.000 ms y una
+    pantalla de "estamos revisando tus documentos" con spinner.
+
+(3) El usuario NUNCA ve los datos extraídos ni el detalle de los cruces. Solo
+    recibe CÓDIGOS DE MOTIVO estables (`reasonCodes`), que el front traduce a
+    texto humano. El detalle es dato personal sensible y solo lo ve un admin.
+
+(4) La respuesta del submit y de /verification/identity/me nunca contiene las
+    URLs de las fotos. Si necesitás mostrar "ya subiste el frente del DNI",
+    usá los booleanos de `documents`.
+
+
+================================================================================
+2. CONFIGURACIÓN: BASE URL, TOKEN, CORS, TIMEOUTS
+================================================================================
+
+BASE URL
+  Producción: https://free-wheel-back.vercel.app
+  Local:      http://localhost:3000
+  No hay prefijo global (`/api` NO va): las rutas cuelgan de la raíz.
+
+AUTENTICACIÓN
+  Todas las rutas de /verification y /users requieren JWT:
+      Authorization: Bearer <accessToken>
+  El accessToken sale de POST /auth/login, POST /auth/register/complete,
+  POST /auth/verify-email o POST /auth/complete-profile.
+
+  OJO con el "onboardingToken": si el login devuelve `onboardingToken` en vez
+  de `accessToken` (junto a `emailVerificationRequired: true` o
+  `profileCompletionRequired: true`), esa sesión NO sirve para /verification.
+  Solo sirve para /auth/verify-email, /auth/resend-verification y
+  /auth/complete-profile. Hay que completar esos pasos para obtener el
+  accessToken real.
+
+CORS (importante — cambió hace poco)
+  La API ya no acepta cualquier origen. Se permiten:
+    · lo que diga la variable CORS_ORIGINS (si está cargada, es la lista
+      completa y estricta), o si no:
+    · FRONTEND_URL (el front de producción)
+    · http://localhost:5173, :4173, :3000 y http://127.0.0.1:5173
+    · cualquier *.vercel.app (previews)
+  Si levantás el front en otro puerto (por ejemplo Next en :3001), pedile al
+  backend que lo agregue, o vas a ver errores de CORS en consola.
+
+  NOTA: las subidas a Cloudinary NO pasan por esta política: van directo al
+  dominio api.cloudinary.com, que acepta CORS de cualquier origen.
+
+TIMEOUTS RECOMENDADOS DESDE EL FRONT
+  GET  /verification/me/status ................  10 s
+  POST /verification/identity/upload-signature.  10 s
+  POST a Cloudinary (por archivo) .............  60 s
+  POST /verification/identity/submit ..........  70 s   <-- clave
+  POST /verification/identity/review-retry ....  70 s   <-- clave
+
+CONTENT-TYPE
+  Todo JSON (`Content-Type: application/json`) salvo la subida a Cloudinary,
+  que es `multipart/form-data` (dejá que el navegador ponga el header solo
+  cuando usás FormData; NO lo escribas a mano).
+
+VALIDACIÓN ESTRICTA — LEER ESTO
+  La API tiene ValidationPipe con `whitelist: true` y
+  `forbidNonWhitelisted: true`. Traducción: si mandás UNA propiedad que no está
+  en el DTO, la request falla con 400 y un array de mensajes.
+  Consecuencia práctica: NO hagas
+      PATCH /users/me  con el objeto completo que te devolvió GET /users/me
+  porque incluye id, email, role, createdAt, etc. y te va a devolver 400.
+  Mandá SOLO los campos que estás editando.
+
+
+================================================================================
+3. MÁQUINA DE ESTADOS Y CHECKLIST
+================================================================================
+
+ENUM VerificationStatus (campo `verificationStatus` del usuario y de cada
+solicitud):
+
+  UNVERIFIED       Cuenta nueva sin nada verificado.
+  EMAIL_VERIFIED   Email confirmado.
+  PHONE_VERIFIED   Teléfono confirmado (con o sin email).
+  ID_SUBMITTED     Documentos enviados, esperando veredicto.
+  VERIFIED         Cuenta verificada. Habilita publicar / reservar / pagar.
+  REJECTED         La última solicitud fue rechazada. Se puede reenviar.
+
+IMPORTANTE: el enum es un marcador GRUESO, de un solo valor. Los ítems del
+checklist se completan de forma independiente y en cualquier orden. Por eso
+la UI NO debe manejarse con el enum sino con el `checklist` que devuelve
+GET /verification/me/status.
+
+DIAGRAMA DEL FLUJO COMPLETO
+
+   Registro (email + código) ─► email verificado + fecha de nacimiento (18+)
+             │
+             ▼
+   PATCH /users/me   { dni, cuil, address }        ← PASO B
+             │
+             ▼
+   (opcional) verificar teléfono                   ← PASO C
+             │
+             ▼
+   Por cada uno de los 4 archivos:                 ← PASO D
+     POST /verification/identity/upload-signature  → {cloudName, apiKey,
+                                                      timestamp, signature,
+                                                      folder, publicId, type}
+     POST https://api.cloudinary.com/v1_1/<cloud>/image/upload  (multipart)
+                                                   → { secure_url }
+             │
+             ▼
+   POST /verification/identity/submit  { 4 URLs }  ← corre la revisión (≤45 s)
+             │
+     ┌───────┴───────────────┬─────────────────────┐
+     ▼                       ▼                     ▼
+  VERIFIED               REJECTED             ID_SUBMITTED
+  (approved)             (rejected)           (inconclusive / pendiente)
+     │                       │                     │
+     ▼                       ▼                     ▼
+  Listo.            Mostrar reasonCodes      "En revisión". Se puede
+  Habilitar todo.   y permitir reenviar.     POST /identity/review-retry
+                                             o esperar al admin.
+
+EL CHECKLIST (lo que devuelve GET /verification/me/status → `checklist`)
+
+  emailVerified         boolean  Email confirmado.
+  phoneVerified         boolean  Teléfono confirmado.
+  documentsSubmitted    boolean  Hay una solicitud con los 4 documentos y NO
+                                 está rechazada. (Una solicitud rechazada
+                                 vuelve este campo a false: hay que reenviar.)
+  dateOfBirthProvided   boolean  Fecha de nacimiento cargada.
+  identityDataProvided  boolean  dni + cuil + address cargados.
+
+Y al lado del checklist:
+  phoneRequired    boolean  Si es false, el teléfono NO bloquea la
+                            verificación. HOY ESTÁ EN false
+                            (REQUIRE_PHONE_VERIFICATION="false"), porque
+                            mandar SMS es un servicio pago. La UI debe leer
+                            este flag y no asumir.
+  phoneCodeChannel "sms" | "email"  Por dónde llega el código del teléfono.
+                            Hoy es "email" (no hay pasarela de SMS
+                            contratada): el código del TELÉFONO llega al
+                            EMAIL de la persona. Hay que decirlo en pantalla o
+                            el usuario mira el celular y no le llega nada.
+
+
+================================================================================
+4. PASO A — REQUISITOS PREVIOS (CUENTA + EMAIL + FECHA DE NACIMIENTO)
+================================================================================
+
+Estos pasos probablemente ya estén implementados; se listan porque son
+precondición de la verificación y porque el checklist los mira.
+
+REGISTRO EN DOS PASOS
+  POST /auth/register/start
+    body: { "email": "persona@mail.com" }
+    → manda un código de 6 dígitos por email. NO crea la cuenta todavía.
+    → volver a llamarlo rota el código (sirve de "reenviar código").
+
+  POST /auth/register/complete
+    body: {
+      "email": "persona@mail.com",
+      "code": "123456",
+      "password": "min 6 caracteres",
+      "firstName": "Juan",
+      "lastName": "Pérez",
+      "displayName": "Juanpe",            // opcional
+      "phone": "+5491132895416",          // opcional, E.164 de cualquier país
+      "acceptedTerms": true,              // debe ser true
+      "dateOfBirth": "1990-02-01"         // YYYY-MM-DD, 18+ obligatorio
+    }
+    → { user, accessToken }   La cuenta nace con el email YA verificado.
+
+LOGIN
+  POST /auth/login  { email, password }
+    → { user, accessToken }                          caso normal
+    → { user, emailVerificationRequired: true, onboardingToken }
+    → { user, profileCompletionRequired: true, onboardingToken }
+
+  En los dos últimos casos, el front debe:
+    · emailVerificationRequired → pantalla de código:
+        POST /auth/verify-email  { code }        (Bearer onboardingToken)
+        POST /auth/resend-verification           (Bearer onboardingToken)
+    · profileCompletionRequired → pedir fecha de nacimiento:
+        POST /auth/complete-profile { dateOfBirth: "1990-02-01" }
+        (Bearer onboardingToken)
+  Ambos devuelven el accessToken definitivo.
+
+GOOGLE
+  GET /auth/google → redirect. Vuelve a
+      <FRONTEND_URL>/auth/google/callback?token=<jwt>
+  y si falta la fecha de nacimiento:
+      <FRONTEND_URL>/auth/google/callback?token=<jwt>&pending=complete_profile
+  En ese caso el token es un ONBOARDING token: mostrar el formulario de fecha
+  de nacimiento y llamar a POST /auth/complete-profile.
+
+TELÉFONO
+  El teléfono ahora acepta CUALQUIER PAÍS en formato E.164 (`+549...`,
+  `+34...`, `+1...`). Argentina se sigue validando en serio (54 + 9 + 10
+  dígitos); del resto solo se valida el largo (7 a 15 dígitos).
+  El backend normaliza: se puede escribir con espacios, guiones, paréntesis,
+  con `+` o con `00` adelante.
+
+
+================================================================================
+5. PASO B — DATOS DE IDENTIDAD (DNI, CUIL, DOMICILIO)
+================================================================================
+
+Este es el paso que más se olvida y sin el cual la revisión NO corre.
+
+ENDPOINT
+  PATCH /users/me
+  Authorization: Bearer <accessToken>
+  body (mandar SOLO lo que se edita):
+    {
+      "dni": "30123456",
+      "cuil": "20-30123456-3",
+      "address": "Av. Siempre Viva 742, Springfield, CABA"
+    }
+
+VALIDACIONES DEL FRONT (replicarlas para no gastar un round-trip)
+  dni      7 u 8 dígitos, SIN puntos. Regex: /^\d{7,8}$/
+           En la UI: input numérico, quitar puntos/espacios antes de mandar.
+  cuil     CUIL/CUIT de PERSONA FÍSICA con dígito verificador válido (mod 11).
+           Se acepta con o sin guiones ("20301234563" o "20-30123456-3").
+           El backend lo normaliza y lo guarda canónico.
+           Prefijos de persona aceptados: 20, 23, 24, 25, 26, 27
+           (20 = masculino, 27 = femenino, 23/24/25/26 son de desempate).
+           Los de empresa (30/33/34) se rechazan.
+  address  string, entre 5 y 200 caracteres. Debe parecerse al domicilio
+           impreso en el DNI: la revisión lo compara por tokens y exige al
+           menos 50% de coincidencia. Sugerir en la UI: "escribilo como figura
+           en tu DNI (calle, número, localidad)".
+
+CONSISTENCIA CUIL ↔ DNI
+  El CUIL embebe el DNI: los 8 dígitos del medio del CUIL SON el DNI. Si no
+  coinciden, el backend devuelve 400 CUIL_DNI_MISMATCH. Conviene chequearlo en
+  el front antes de mandar, y mostrar el error al lado del campo CUIL.
+
+RESPUESTA
+  200 con el usuario actualizado (sin password). Incluye `verificationStatus`,
+  y si este PATCH completó el último ítem del checklist y ya había documentos
+  enviados, la revisión CORRE en esta misma request y el usuario puede volver
+  ya como VERIFIED. Por eso: después de un PATCH que toque dni/cuil/address,
+  refrescá GET /verification/me/status.
+
+ERRORES ESPECÍFICOS
+  400 { code: "CUIL_DNI_MISMATCH" }      El CUIL no corresponde al DNI.
+  409 { code: "DNI_ALREADY_REGISTERED" } Ese DNI ya está en otra cuenta.
+  409 { code: "CUIL_ALREADY_REGISTERED" }Ese CUIL ya está en otra cuenta.
+  403 { code: "IDENTITY_FIELDS_LOCKED", fields: ["dni"] }
+       La cuenta ya está VERIFIED: dni/cuil/address son inmutables. La UI debe
+       mostrar esos campos en solo lectura cuando fullyVerified === true, con
+       un texto tipo "Ya verificaste tu identidad. Escribinos a soporte si
+       necesitás corregir estos datos."
+
+
+================================================================================
+6. PASO C — TELÉFONO (OPCIONAL HOY)
+================================================================================
+
+Leer `phoneRequired` de GET /verification/me/status:
+  · false (valor actual) → el teléfono NO bloquea. Mostrarlo como paso
+    opcional/recomendado, nunca como bloqueante.
+  · true → es un ítem obligatorio más del checklist.
+
+PEDIR CÓDIGO
+  POST /verification/phone/request        (sin body)
+  → 201 {
+      "requested": true,
+      "expiresAt": "2026-08-18T16:55:00.000Z",
+      "channel": "email",          // hoy: "email"; con pasarela real: "sms"
+      "sentTo": "persona@mail.com",// a dónde se mandó realmente
+      "code": "123456"             // SOLO en modo demo; normalmente ausente
+    }
+  Requiere que el usuario tenga `phone` cargado; si no: 400 "User phone is
+  required before verification".
+
+  LA UI DEBE MOSTRAR `channel` y `sentTo`. Hoy el código del teléfono llega
+  por EMAIL. Texto sugerido: "Te enviamos el código a persona@mail.com
+  (todavía no tenemos envío por SMS)."
+
+  Si viene `code` en la respuesta (modo demostración), se puede prellenar el
+  input para facilitar la prueba. NUNCA asumir que va a venir.
+
+CONFIRMAR
+  POST /verification/phone/confirm   { "code": "123456" }
+  → 201 con el MISMO objeto de GET /verification/me/status (estado actualizado).
+
+EMAIL (mismo par de endpoints, por si hace falta reverificar)
+  POST /verification/email/request
+  POST /verification/email/confirm  { "code": "123456" }
+
+REGLAS DE LOS CÓDIGOS
+  · 6 dígitos, expiran a los 10 minutos (viene `expiresAt`: mostrar cuenta
+    regresiva y habilitar "reenviar" cuando venza).
+  · Máximo 5 intentos por código. Al sexto: 403 "Verification code attempts
+    exceeded" → hay que pedir uno nuevo.
+  · Pedir un código nuevo invalida el anterior.
+
+
+================================================================================
+7. PASO D — SUBIDA DE LOS 4 DOCUMENTOS (EL FLUJO DE 3 LLAMADAS)
+================================================================================
+
+Los cuatro archivos obligatorios (slots):
+    dni      + front   → frente del DNI (el que tiene el código PDF417)
+    dni      + back    → dorso del DNI  (el que tiene el MRZ, las 3 líneas)
+    license  + front   → frente de la licencia de conducir
+    license  + back    → dorso de la licencia (el que tiene el QR)
+
+Opcional y hoy sin uso en la revisión: `selfie` (sin lado). Está reservado
+para la futura prueba de vida. Si se manda, tiene que estar firmada por el
+mismo endpoint (no se acepta una URL cualquiera).
+
+--------------------------------------------------------------------------------
+7.1 LLAMADA 1 — PEDIR LA FIRMA (una por archivo)
+--------------------------------------------------------------------------------
+  POST /verification/identity/upload-signature
+  Authorization: Bearer <accessToken>
+  body: { "document": "dni", "side": "front" }
+
+  document: "dni" | "license" | "selfie"
+  side:     "front" | "back"   — OBLIGATORIO para dni y license,
+                                 PROHIBIDO para selfie (400 si se manda).
+
+  → 201 {
+      "cloudName": "freewheel",
+      "apiKey": "123456789012345",
+      "timestamp": 1755532800,
+      "signature": "a1b2c3...",
+      "folder": "identity/<userId>",
+      "publicId": "identity/<userId>/dni_front_1755532800123_a1b2c3d4",
+      "type": "authenticated",
+      "document": "dni",
+      "side": "front"
+    }
+
+  La firma es de un solo uso lógico y el publicId es único por pedido (lleva
+  timestamp + random). Pedí una firma por archivo, justo antes de subirlo.
+  No las cachees ni las reutilices.
+
+--------------------------------------------------------------------------------
+7.2 LLAMADA 2 — SUBIR EL ARCHIVO DIRECTO A CLOUDINARY
+--------------------------------------------------------------------------------
+  POST https://api.cloudinary.com/v1_1/<cloudName>/image/upload
+  Content-Type: multipart/form-data   (lo pone el navegador solo con FormData)
+
+  Campos del FormData — TIENEN QUE SER EXACTAMENTE ESTOS, ni uno más ni uno
+  menos, porque la firma se calculó sobre folder+public_id+timestamp+type:
+
+      file        el File/Blob de la foto
+      api_key     apiKey    (de la llamada 1)
+      timestamp   timestamp (de la llamada 1)
+      signature   signature (de la llamada 1)
+      folder      folder    (de la llamada 1)
+      public_id   publicId  (de la llamada 1)
+      type        "authenticated"
+
+  NO agregues upload_preset, tags, context, transformation, eager, etc.:
+  cualquier parámetro extra firmado rompe la firma y Cloudinary devuelve
+  401 "Invalid Signature".
+
+  → 200 { ..., "secure_url": "https://res.cloudinary.com/<cloud>/image/
+           authenticated/s--xxxx--/v1755532800/identity/<uid>/dni_front_....jpg",
+          "public_id": "...", "format": "jpg", ... }
+
+  Guardá `secure_url` tal cual: es lo que se manda en el submit. El backend
+  acepta la URL con o sin la parte de firma `s--xxxx--/` y con o sin `v<num>/`.
+
+  FORMATOS ACEPTADOS POR EL BACKEND: jpg, jpeg, png, webp. Nada más (ni HEIC,
+  ni PDF). En iOS las fotos salen HEIC: convertilas a JPEG en el cliente
+  (canvas / createImageBitmap) antes de subir, o el submit devuelve 400
+  INVALID_DOCUMENT_URL.
+
+  CALIDAD DE LA IMAGEN (esto define si la verificación sale aprobada o
+  "pendiente"): la revisión tiene que leer un código de barras PDF417, un QR y
+  texto chico. Recomendaciones para la UI de captura:
+    · lado más largo entre 1600 y 2400 px; no bajar de 1280
+    · JPEG calidad 0.85–0.92; peso final 300 KB – 4 MB (máximo razonable 8 MB)
+    · NO aplicar filtros, blanco y negro, recortes agresivos ni marcas de agua
+    · el documento entero dentro del cuadro, sin dedos tapando el código
+    · sin flash directo sobre el plástico (el reflejo mata el PDF417)
+    · guía visual en pantalla con el marco del documento y el mensaje
+      "que se vea el código de barras completo"
+
+--------------------------------------------------------------------------------
+7.3 LLAMADA 3 — ENVIAR LA SOLICITUD (dispara la revisión)
+--------------------------------------------------------------------------------
+  POST /verification/identity/submit
+  Authorization: Bearer <accessToken>
+  body: {
+    "dniFrontUrl":     "https://res.cloudinary.com/.../dni_front_....jpg",
+    "dniBackUrl":      "https://res.cloudinary.com/.../dni_back_....jpg",
+    "licenseFrontUrl": "https://res.cloudinary.com/.../license_front_....jpg",
+    "licenseBackUrl":  "https://res.cloudinary.com/.../license_back_....jpg",
+    "selfieUrl":       "https://...",     // opcional
+    "notes":           "texto libre"      // opcional, máx 1000 chars
+  }
+
+  Los 4 primeros campos son OBLIGATORIOS. Cada URL debe:
+    · ser del cloud de FreeWheel
+    · estar bajo identity/<tu userId>/
+    · empezar con el prefijo del slot correcto (dni_front_, dni_back_,
+      license_front_, license_back_)
+    · existir de verdad en Cloudinary
+  Si no, 400 con INVALID_DOCUMENT_URL / DOCUMENT_SLOT_MISMATCH /
+  DOCUMENT_NOT_FOUND (ver sección 11).
+
+  ESTA LLAMADA PUEDE TARDAR HASTA ~50 SEGUNDOS. Timeout del fetch: 70 s.
+
+  → 201 {
+      "id": "uuid-de-la-solicitud",
+      "status": "VERIFIED" | "REJECTED" | "ID_SUBMITTED",
+      "createdAt": "2026-08-18T16:45:00.000Z",
+      "reviewedAt": "2026-08-18T16:45:12.000Z" | null,
+      "reasonCodes": ["DOB_MISMATCH"],      // [] si fue aprobada
+      "documents": { "dniFront": true, "dniBack": true,
+                     "licenseFront": true, "licenseBack": true }
+    }
+
+  Interpretación inmediata del `status` de la respuesta:
+    VERIFIED     → ¡listo! Refrescar el usuario y desbloquear la app.
+    REJECTED     → mostrar los reasonCodes traducidos + botón "Volver a
+                   intentar" (que reinicia la captura de fotos).
+    ID_SUBMITTED → "Estamos revisando tus documentos". Mostrar los reasonCodes
+                   como sugerencias de mejora (p. ej. "no pudimos leer el
+                   código del DNI") + botón "Reintentar revisión".
+
+--------------------------------------------------------------------------------
+7.4 EJEMPLO COMPLETO (TypeScript, framework-agnóstico)
+--------------------------------------------------------------------------------
+
+  const API = "https://free-wheel-back.vercel.app";
+
+  type Slot =
+    | { document: "dni" | "license"; side: "front" | "back" }
+    | { document: "selfie" };
+
+  async function api<T>(path: string, init: RequestInit, token: string,
+                        timeoutMs = 10000): Promise<T> {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${API}${path}`, {
+        ...init,
+        signal: ctrl.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          ...(init.headers ?? {}),
+        },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error("api"), { status: res.status, body });
+      return body as T;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  /** Firma + subida directa a Cloudinary. Devuelve la secure_url. */
+  async function uploadIdentityFile(file: File, slot: Slot, token: string) {
+    const sign = await api<{
+      cloudName: string; apiKey: string; timestamp: number;
+      signature: string; folder: string; publicId: string; type: string;
+    }>("/verification/identity/upload-signature", {
+      method: "POST",
+      body: JSON.stringify(slot),
+    }, token);
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("api_key", sign.apiKey);
+    form.append("timestamp", String(sign.timestamp));
+    form.append("signature", sign.signature);
+    form.append("folder", sign.folder);
+    form.append("public_id", sign.publicId);
+    form.append("type", "authenticated");
+    // NADA MÁS. Un campo extra invalida la firma.
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${sign.cloudName}/image/upload`,
+      { method: "POST", body: form },   // sin Content-Type manual
+    );
+    if (!res.ok) throw new Error(`Cloudinary ${res.status}`);
+    const json = await res.json();
+    return json.secure_url as string;
+  }
+
+  /** Flujo completo: 4 archivos → submit → veredicto. */
+  async function submitIdentity(files: {
+    dniFront: File; dniBack: File; licenseFront: File; licenseBack: File;
+  }, token: string) {
+    // Secuencial a propósito: hay tope de 10 firmas cada 5 minutos y permite
+    // mostrar progreso "subiendo 2 de 4".
+    const dniFrontUrl     = await uploadIdentityFile(files.dniFront,
+                              { document: "dni", side: "front" }, token);
+    const dniBackUrl      = await uploadIdentityFile(files.dniBack,
+                              { document: "dni", side: "back" }, token);
+    const licenseFrontUrl = await uploadIdentityFile(files.licenseFront,
+                              { document: "license", side: "front" }, token);
+    const licenseBackUrl  = await uploadIdentityFile(files.licenseBack,
+                              { document: "license", side: "back" }, token);
+
+    // Puede tardar hasta ~50 s: pantalla de espera con spinner.
+    return api<{
+      id: string;
+      status: "VERIFIED" | "REJECTED" | "ID_SUBMITTED";
+      reasonCodes: string[];
+      documents: Record<string, boolean>;
+      createdAt: string; reviewedAt: string | null;
+    }>("/verification/identity/submit", {
+      method: "POST",
+      body: JSON.stringify({ dniFrontUrl, dniBackUrl,
+                             licenseFrontUrl, licenseBackUrl }),
+    }, token, 70000);
+  }
+
+
+================================================================================
+8. PASO E — RESULTADO, REINTENTO Y POLLING
+================================================================================
+
+APROBADA (status VERIFIED)
+  · Refrescar GET /users/me y GET /verification/me/status.
+  · Desbloquear publicar / reservar / pagar.
+  · Poner dni/cuil/address en solo lectura (ya no se pueden editar).
+  · Mostrar el badge de "cuenta verificada" en el perfil.
+
+RECHAZADA (status REJECTED)
+  · Mostrar los reasonCodes traducidos (sección 10).
+  · El checklist vuelve `documentsSubmitted: false`: hay que volver a subir
+    las cuatro fotos desde cero (nueva firma, nueva subida, nuevo submit).
+  · Si el motivo es un dato mal cargado (DOB_MISMATCH, DNI_NUMBER_MISMATCH,
+    CUIL_*), llevá al usuario primero a corregir el perfil y después a las
+    fotos.
+  · Casos sin salida por el front (mostrar contacto a soporte):
+    UNDERAGE, DNI_EXPIRED, LICENSE_EXPIRED (el documento hay que renovarlo).
+
+PENDIENTE (status ID_SUBMITTED)
+  · Texto: "Estamos revisando tus documentos. Puede demorar hasta 24 hs."
+  · Botón "Reintentar revisión":
+        POST /verification/identity/review-retry     (sin body)
+        → 201 con el mismo objeto de GET /verification/me/status
+    Sirve cuando el motivo fue un timeout / caída del proveedor
+    (REVIEW_TIMEOUT, REVIEW_ERROR, AI_UNAVAILABLE) o cuando el usuario corrigió
+    sus datos de perfil después de enviar. NO cambia las fotos.
+    Límite: 3 intentos cada 15 minutos.
+    Si la última solicitud ya tiene veredicto: 400 REVIEW_NOT_PENDING.
+    Si nunca envió documentos: 404.
+  · Botón "Subir otras fotos" → rehacer el paso D (crea una solicitud nueva;
+    siempre gana la más reciente).
+
+POLLING
+  El resultado casi siempre llega en la respuesta del submit. Para el caso
+  pendiente (queda en manos de un admin) hacé polling suave de
+  GET /verification/me/status:
+    · cada 30 s mientras la pantalla de verificación esté abierta y visible
+    · pará después de ~10 minutos sin cambios
+    · pará si document.visibilityState === "hidden"
+    · volvé a consultar al montar la app y al volver al foco
+  NO hagas polling agresivo: el límite global es 120 requests por minuto por IP
+  y lo compartís con el resto de la app.
+
+
+================================================================================
+9. REFERENCIA DE ENDPOINTS (CONTRATOS EXACTOS)
+================================================================================
+
+Todos requieren `Authorization: Bearer <accessToken>` salvo aclaración.
+
+--------------------------------------------------------------------------------
+GET /verification/me/status
+--------------------------------------------------------------------------------
+  Es EL endpoint que maneja toda la pantalla de verificación.
+
+  → 200 {
+      "verificationStatus": "ID_SUBMITTED",
+      "fullyVerified": false,
+      "checklist": {
+        "emailVerified": true,
+        "phoneVerified": false,
+        "documentsSubmitted": true,
+        "dateOfBirthProvided": true,
+        "identityDataProvided": true
+      },
+      "emailVerifiedAt": "2026-08-01T10:00:00.000Z",
+      "phoneVerifiedAt": null,
+      "phoneRequired": false,
+      "phoneCodeChannel": "email",
+      "lastReview": {
+        "outcome": "pending",              // "approved"|"rejected"|"pending"|"none"
+        "reasonCodes": ["NO_AUTHORITATIVE_SOURCE"]
+      }
+    }
+
+  `lastReview.outcome`:
+     "none"     nunca envió documentos
+     "pending"  enviados, sin veredicto (o inconcluso, en cola del admin)
+     "approved" aprobados
+     "rejected" rechazados
+
+--------------------------------------------------------------------------------
+POST /verification/identity/upload-signature      (10 req / 5 min)
+--------------------------------------------------------------------------------
+  body  { document: "dni"|"license"|"selfie", side?: "front"|"back" }
+  → 201 { cloudName, apiKey, timestamp, signature, folder, publicId,
+          type: "authenticated", document, side }
+  400   document desconocido, falta side, o side en una selfie
+  503   Cloudinary no configurado en el servidor
+
+--------------------------------------------------------------------------------
+POST /verification/identity/submit                (5 req / 15 min)
+--------------------------------------------------------------------------------
+  body  { dniFrontUrl, dniBackUrl, licenseFrontUrl, licenseBackUrl,
+          selfieUrl?, notes? }
+  → 201 { id, status, createdAt, reviewedAt, reasonCodes, documents }
+  400   URLs inválidas / slot equivocado / archivo inexistente / campos extra
+  Puede tardar hasta ~50 s.
+
+--------------------------------------------------------------------------------
+POST /verification/identity/review-retry          (3 req / 15 min)
+--------------------------------------------------------------------------------
+  sin body
+  → 201 el mismo objeto que GET /verification/me/status
+  400   REVIEW_NOT_PENDING (la última ya tiene veredicto)
+  404   no hay documentos enviados
+  Puede tardar hasta ~50 s.
+
+--------------------------------------------------------------------------------
+GET /verification/identity/me
+--------------------------------------------------------------------------------
+  Historial de solicitudes del propio usuario, más nueva primero.
+  → 200 [
+      { "id": "...", "status": "REJECTED",
+        "createdAt": "...", "reviewedAt": "...",
+        "reasonCodes": ["DOB_MISMATCH"],
+        "documents": { "dniFront": true, "dniBack": true,
+                       "licenseFront": true, "licenseBack": true } }
+    ]
+  NUNCA devuelve las URLs de las fotos (son PII). Si necesitás mostrar
+  miniaturas de lo que subió, guardá las previews en memoria del cliente
+  durante la sesión de carga; no se pueden recuperar después.
+
+--------------------------------------------------------------------------------
+POST /verification/email/request  ·  POST /verification/email/confirm
+POST /verification/phone/request  ·  POST /verification/phone/confirm
+--------------------------------------------------------------------------------
+  request: sin body → { requested, expiresAt, channel, sentTo, code? }
+  confirm: { code: "123456" } → el objeto de GET /verification/me/status
+
+--------------------------------------------------------------------------------
+PATCH /users/me
+--------------------------------------------------------------------------------
+  Campos aceptados (todos opcionales, mandar SOLO los editados):
+    firstName, lastName, displayName, phone, dni, cuil, address,
+    profilePhotoUrl, profilePhotoVisibility ("EVERYONE"|"BOOKED"),
+    emailNotifications (boolean)
+  → 200 usuario actualizado (sin password)
+
+--------------------------------------------------------------------------------
+GET /users/me
+--------------------------------------------------------------------------------
+  → 200 {
+      id, email, firstName, lastName, displayName, phone, dateOfBirth,
+      dni, cuil, address, profilePhotoUrl, profilePhotoVisibility,
+      emailNotifications, role, status, verificationStatus,
+      emailVerifiedAt, phoneVerifiedAt, ratingAverage, ratingCount,
+      createdAt, updatedAt, ...
+    }
+
+--------------------------------------------------------------------------------
+GET /users/:id   (perfil público de otra persona)
+--------------------------------------------------------------------------------
+  → 200 { id, firstName, lastName, displayName, profilePhotoUrl,
+          ratingAverage, ratingCount, createdAt,
+          verified: true,            // booleano, no el enum
+          documentLast4: "3456" }    // últimos 4 dígitos del documento con el
+                                     // que se verificó; null si no está
+                                     // verificada
+  Úsalo para el badge "verificado" y para mostrar "DNI ••••3456" en la ficha de
+  la contraparte de una reserva.
+
+--------------------------------------------------------------------------------
+GET /health   ·   GET /health/db   ·   GET /health/env      (públicos)
+--------------------------------------------------------------------------------
+  /health/env dice qué variables están cargadas en el deploy (solo nombres y
+  true/false). Sirve para diagnosticar "¿por qué todas las verificaciones
+  quedan pendientes?" → probablemente falte GROQ_API_KEY o CLOUDINARY_*.
+
+
+================================================================================
+10. CATÁLOGO COMPLETO DE reasonCodes Y QUÉ TEXTO MOSTRAR
+================================================================================
+
+Los reasonCodes son estables y NO contienen datos personales. Vienen en:
+  · la respuesta del submit (`reasonCodes`)
+  · GET /verification/me/status → `lastReview.reasonCodes`
+  · GET /verification/identity/me → `reasonCodes` de cada solicitud
+
+Un caso APROBADO devuelve siempre `[]`.
+
+REGLA: el front debe tener un diccionario código → texto, con un FALLBACK
+genérico para códigos desconocidos ("No pudimos validar un dato de tus
+documentos. Probá con fotos más nítidas."). El backend puede agregar códigos
+nuevos sin avisar; nunca hagas un switch exhaustivo que rompa.
+
+--------------------------------------------------------------------------------
+GRUPO 1 — RECHAZO CONCLUYENTE (status REJECTED). Hay que corregir y reenviar.
+--------------------------------------------------------------------------------
+CÓDIGO                    QUÉ PASÓ                    TEXTO SUGERIDO
+SLOT_CONTENT_MISMATCH     Una foto no es del documento/lado que decía.
+                          → "Alguna foto está en el lugar equivocado. Revisá
+                             que el frente sea el frente y que el DNI no esté
+                             donde va la licencia."
+DNI_NUMBER_MISMATCH       El número del DNI del documento no coincide con el
+                          cargado en el perfil.
+                          → "El número de DNI que cargaste no coincide con el
+                             de tu documento. Corregilo en tu perfil."
+LICENSE_DNI_MISMATCH      La licencia es de otra persona (otro nro. de doc.).
+                          → "La licencia no corresponde al mismo DNI. Subí tu
+                             propia licencia."
+SURNAME_MISMATCH          El apellido no coincide.
+                          → "El apellido de tu perfil no coincide con el del
+                             documento."
+GIVEN_NAMES_MISMATCH      Los nombres no coinciden.
+                          → "Los nombres de tu perfil no coinciden con los del
+                             documento."
+DOB_MISMATCH              La fecha de nacimiento no coincide.
+                          → "La fecha de nacimiento no coincide con la de tu
+                             documento."
+UNDERAGE                  Menor de 18 según el documento.
+                          → "Tenés que ser mayor de 18 años para usar
+                             FreeWheel." (sin botón de reintento)
+DNI_EXPIRED               DNI vencido.
+                          → "Tu DNI está vencido. Renovalo y volvé a
+                             intentarlo." (sin botón de reintento inmediato)
+LICENSE_EXPIRED           Licencia vencida.
+                          → "Tu licencia de conducir está vencida."
+CUIL_INVALID              El CUIL cargado no es válido.
+                          → "El CUIL que cargaste no es válido. Revisalo."
+CUIL_DNI_MISMATCH         El CUIL no corresponde al DNI.
+                          → "El CUIL no corresponde a tu número de DNI."
+AI_DOCUMENT_MISMATCH      (modo "ai") El modelo detectó que los documentos no
+                          corresponden a la persona.
+                          → "No pudimos validar que los documentos sean tuyos."
+
+--------------------------------------------------------------------------------
+GRUPO 2 — INCONCLUSO / PENDIENTE (status ID_SUBMITTED). No es un rechazo.
+--------------------------------------------------------------------------------
+NO_AUTHORITATIVE_SOURCE   No se pudo leer ni el PDF417 del frente del DNI ni el
+                          MRZ del dorso. ES EL MÁS FRECUENTE.
+                          → "No pudimos leer el código de tu DNI. Sacá la foto
+                             con buena luz, sin reflejos y con el código
+                             completo dentro del cuadro."
+LICENSE_CODE_UNAVAILABLE  No se pudo leer el QR del dorso de la licencia.
+                          → "No pudimos leer el código del dorso de tu
+                             licencia."
+SOURCE_CONFLICT           El código y el MRZ dicen cosas distintas.
+                          → "Los datos de tu DNI no son consistentes entre sí.
+                             Lo está revisando una persona."
+ADDRESS_MISMATCH          El domicilio cargado no se parece al del DNI.
+                          → "El domicilio no coincide con el de tu DNI.
+                             Escribilo como figura en el documento."
+SEX_MISMATCH              Inconsistencia de sexo entre fuentes.
+LICENSE_NAME_MISMATCH     El nombre de la licencia no coincide del todo.
+CUIL_SEX_MISMATCH         El prefijo del CUIL no coincide con el sexo del DNI.
+CUIL_OCR_MISMATCH         El CUIL leído del documento difiere del cargado.
+DNI_ALREADY_VERIFIED      Ese documento ya verificó otra cuenta.
+                          → "Este documento ya está asociado a otra cuenta.
+                             Escribinos a soporte." (NO ofrecer reintento)
+MANUAL_REVIEW_REQUIRED    Nada concluyó; queda para el admin.
+                          → "Un integrante del equipo va a revisar tus
+                             documentos."
+REVIEW_TIMEOUT            La revisión no terminó a tiempo.
+                          → "La revisión tardó demasiado. Probá de nuevo."
+                             (mostrar el botón "Reintentar revisión")
+REVIEW_ERROR              Falló la revisión automática.
+                          → mismo texto que REVIEW_TIMEOUT
+AI_UNAVAILABLE            (modo "ai") El proveedor no respondió.
+                          → mismo texto que REVIEW_TIMEOUT
+AI_PARTIALLY_UNAVAILABLE  (modo "ai") Solo se pudieron mirar algunas fotos.
+                          → mismo texto que REVIEW_TIMEOUT
+
+  Además, cualquier código requerido que no se pudo evaluar aparece con el
+  sufijo `_UNREADABLE`, por ejemplo:
+      SLOT_CONTENT_MISMATCH_UNREADABLE
+      GIVEN_NAMES_MISMATCH_UNREADABLE
+      CUIL_INVALID_UNREADABLE
+      LICENSE_EXPIRED_UNREADABLE
+  Significa "ese dato no se pudo leer", no "ese dato está mal". Texto genérico
+  sugerido: "No pudimos leer algunos datos de tus documentos. Probá con fotos
+  más nítidas." → por eso el diccionario debe tener una regla:
+      if (code.endsWith("_UNREADABLE")) → texto genérico de foto ilegible
+
+--------------------------------------------------------------------------------
+10.1 Diccionario de arranque (copiar y pegar)
+--------------------------------------------------------------------------------
+  const MOTIVOS: Record<string, string> = {
+    SLOT_CONTENT_MISMATCH: "Alguna foto está en el lugar equivocado. Revisá que el frente sea el frente y que el DNI no esté donde va la licencia.",
+    DNI_NUMBER_MISMATCH: "El número de DNI que cargaste no coincide con el de tu documento.",
+    LICENSE_DNI_MISMATCH: "La licencia no corresponde al mismo DNI.",
+    SURNAME_MISMATCH: "El apellido de tu perfil no coincide con el del documento.",
+    GIVEN_NAMES_MISMATCH: "Los nombres de tu perfil no coinciden con los del documento.",
+    DOB_MISMATCH: "La fecha de nacimiento no coincide con la de tu documento.",
+    UNDERAGE: "Tenés que ser mayor de 18 años para usar FreeWheel.",
+    DNI_EXPIRED: "Tu DNI está vencido.",
+    LICENSE_EXPIRED: "Tu licencia de conducir está vencida.",
+    CUIL_INVALID: "El CUIL que cargaste no es válido.",
+    CUIL_DNI_MISMATCH: "El CUIL no corresponde a tu número de DNI.",
+    AI_DOCUMENT_MISMATCH: "No pudimos validar que los documentos sean tuyos.",
+    NO_AUTHORITATIVE_SOURCE: "No pudimos leer el código de tu DNI. Sacá la foto con buena luz, sin reflejos y con el código completo dentro del cuadro.",
+    LICENSE_CODE_UNAVAILABLE: "No pudimos leer el código del dorso de tu licencia.",
+    SOURCE_CONFLICT: "Los datos de tu DNI no son consistentes entre sí. Lo está revisando una persona.",
+    ADDRESS_MISMATCH: "El domicilio no coincide con el de tu DNI. Escribilo como figura en el documento.",
+    SEX_MISMATCH: "Hay una inconsistencia entre tus datos y el documento.",
+    LICENSE_NAME_MISMATCH: "El nombre de la licencia no coincide del todo con el del DNI.",
+    CUIL_SEX_MISMATCH: "El CUIL no se corresponde con los datos de tu documento.",
+    CUIL_OCR_MISMATCH: "El CUIL no coincide con el que figura en tu documento.",
+    DNI_ALREADY_VERIFIED: "Este documento ya está asociado a otra cuenta. Escribinos a soporte.",
+    MANUAL_REVIEW_REQUIRED: "Un integrante del equipo va a revisar tus documentos.",
+    REVIEW_TIMEOUT: "La revisión tardó demasiado. Probá de nuevo.",
+    REVIEW_ERROR: "No pudimos completar la revisión. Probá de nuevo.",
+    AI_UNAVAILABLE: "No pudimos completar la revisión. Probá de nuevo.",
+    AI_PARTIALLY_UNAVAILABLE: "No pudimos revisar todas las fotos. Probá de nuevo.",
+  };
+
+  const GENERICO = "No pudimos validar un dato de tus documentos. Probá con fotos más nítidas.";
+  const ILEGIBLE = "No pudimos leer algunos datos de tus documentos. Probá con fotos más nítidas.";
+
+  export function textoDeMotivo(code: string): string {
+    if (MOTIVOS[code]) return MOTIVOS[code];
+    if (code.endsWith("_UNREADABLE")) return ILEGIBLE;
+    return GENERICO;
+  }
+
+  // Códigos que NO deben ofrecer "reintentar": no se arreglan desde la app.
+  const SIN_REINTENTO = new Set([
+    "UNDERAGE", "DNI_EXPIRED", "LICENSE_EXPIRED", "DNI_ALREADY_VERIFIED",
+  ]);
+
+  // Códigos que se arreglan editando el PERFIL, no las fotos.
+  const ARREGLAR_PERFIL = new Set([
+    "DNI_NUMBER_MISMATCH", "SURNAME_MISMATCH", "GIVEN_NAMES_MISMATCH",
+    "DOB_MISMATCH", "CUIL_INVALID", "CUIL_DNI_MISMATCH", "CUIL_OCR_MISMATCH",
+    "ADDRESS_MISMATCH",
+  ]);
+
+  // Códigos que se arreglan sacando MEJORES FOTOS.
+  const ARREGLAR_FOTOS = new Set([
+    "SLOT_CONTENT_MISMATCH", "NO_AUTHORITATIVE_SOURCE",
+    "LICENSE_CODE_UNAVAILABLE", "SOURCE_CONFLICT",
+  ]);
+
+  Deducir así el call-to-action principal de la pantalla de resultado:
+    · si algún código está en SIN_REINTENTO       → "Contactar a soporte"
+    · si no, si alguno está en ARREGLAR_PERFIL    → "Corregir mis datos"
+    · si no, si alguno está en ARREGLAR_FOTOS     → "Volver a sacar las fotos"
+    · si no (timeout/error)                       → "Reintentar revisión"
+
+
+================================================================================
+11. CATÁLOGO COMPLETO DE ERRORES HTTP Y CÓDIGOS DE ERROR
+================================================================================
+
+Los errores "de negocio" vienen con esta forma:
+    { "statusCode": 400, "code": "INVALID_DOCUMENT_URL",
+      "message": "…", "slot": "dni_front" }
+Los errores de validación de DTO vienen con `message` como ARRAY de strings:
+    { "statusCode": 400, "message": ["dni debe tener 7 u 8 dígitos, sin puntos"],
+      "error": "Bad Request" }
+El front debe soportar las dos formas.
+
+--- /verification/identity/upload-signature ---
+400  "La selfie no lleva lado"                  mandaste side con document=selfie
+400  'Falta "side" ("front" o "back")…'         faltó side en dni/license
+400  message: [...]                             document fuera del enum
+401                                             token vencido/ausente
+429                                             más de 10 firmas en 5 minutos
+503  "Cloudinary no esta configurado…"          falta config en el servidor
+
+--- Cloudinary (respuesta directa de api.cloudinary.com) ---
+401  "Invalid Signature"     mandaste un campo extra, cambiaste alguno de los
+                             firmados, o reusaste una firma vieja
+400  "File size too large"   imagen demasiado grande → comprimir en el cliente
+420/429                      rate limit de Cloudinary → reintentar con backoff
+
+--- /verification/identity/submit ---
+400 INVALID_DOCUMENT_URL     La URL no es de nuestro cloud / no la firmó este
+                             endpoint / el formato no es jpg|jpeg|png|webp.
+                             Trae `slot`.
+400 DOCUMENT_SLOT_MISMATCH   La foto es de otro slot o de otra cuenta (p. ej.
+                             mandaste la URL del dorso en dniFrontUrl).
+                             Trae `slot`.
+400 DOCUMENT_NOT_FOUND       El archivo no existe en Cloudinary: la subida
+                             falló o todavía no terminó. Trae `slot`.
+                             → reintentar la subida de ese slot.
+400 message:[...]            falta una URL, no es URL con protocolo, `notes`
+                             > 1000 chars, o mandaste una propiedad de más.
+401 / 429 / 503              ídem arriba (429 = más de 5 submits en 15 min)
+
+--- /verification/identity/review-retry ---
+400 REVIEW_NOT_PENDING       La última solicitud ya tiene veredicto.
+404                          Nunca envió documentos.
+429                          Más de 3 reintentos en 15 minutos.
+
+--- /verification/{email,phone}/{request,confirm} ---
+400 "User phone is required before verification"   falta phone en el perfil
+404 "Verification code not found"                  no hay código vigente
+400 "Verification code expired"                    venció (10 min)
+403 "Verification code attempts exceeded"          5 intentos fallidos
+400 "Invalid verification code"                    código incorrecto
+
+--- PATCH /users/me ---
+400 CUIL_DNI_MISMATCH        el CUIL no corresponde al DNI
+403 IDENTITY_FIELDS_LOCKED   cuenta ya VERIFIED; trae `fields: [...]`
+409 DNI_ALREADY_REGISTERED   DNI en uso por otra cuenta
+409 CUIL_ALREADY_REGISTERED  CUIL en uso por otra cuenta
+400 message:[...]            formato de dni/cuil/phone/address inválido
+
+--- Cualquier ruta protegida por verificación ---
+403 ACCOUNT_NOT_VERIFIED     ver sección 12
+
+
+================================================================================
+12. GATING: QUÉ SE BLOQUEA SI LA CUENTA NO ESTÁ VERIFICADA
+================================================================================
+
+El backend responde 403 con este cuerpo:
+
+  {
+    "statusCode": 403,
+    "code": "ACCOUNT_NOT_VERIFIED",
+    "message": "Tu cuenta debe estar verificada (teléfono, DNI y licencia) para realizar esta acción",
+    "verificationStatus": "UNVERIFIED"
+  }
+
+QUÉ DEBE HACER EL FRONT
+  Interceptor global de respuestas: si status === 403 y body.code ===
+  "ACCOUNT_NOT_VERIFIED", redirigir a /verificacion (o abrir el modal de
+  verificación) con un mensaje contextual del tipo "Para reservar un auto
+  necesitás verificar tu identidad".
+
+  Además, ADELANTARSE: con `fullyVerified === false` de
+  GET /verification/me/status, deshabilitar/ocultar los botones de las
+  acciones bloqueadas y mostrar un CTA "Verificá tu cuenta". El 403 es la red
+  de seguridad, no la UX.
+
+RUTAS QUE EXIGEN CUENTA VERIFICADA (todas las marcadas con
+@RequireVerifiedAccount en el backend):
+
+  Publicaciones (listings)
+    POST   /listings
+    PATCH  /listings/:id
+    DELETE /listings/:id
+    POST   /listings/:id/availability-blocks
+    DELETE /listings/:id/availability-blocks/:blockId
+    POST   /listings/:id/price-change
+    POST   /listings/:id/price-change/confirm
+    DELETE /listings/:id/price-change
+  Vehículos
+    POST   /vehicles
+    PATCH  /vehicles/:id
+    DELETE /vehicles/:id
+  Reservas (bookings)
+    POST   /bookings                        (crear solicitud)
+    PATCH  /bookings/:id/accept
+    PATCH  /bookings/:id/reject
+    PATCH  /bookings/:id/cancel
+    PATCH  /bookings/:id/ready-for-pickup
+    POST   /bookings/:id/confirm-pickup
+    POST   /bookings/:id/confirm-return
+    (GET /bookings/me y GET /bookings/:id NO exigen verificación)
+  Pagos
+    todas las rutas de /payments (seña, saldo, hold de garantía, cuenta de
+    cobro, etc.)
+  Contratos
+    GET /contracts/bookings/:id
+
+NO exigen verificación: navegar el catálogo, ver publicaciones, el chat, el
+perfil, los favoritos y el chatbot.
+
+
+================================================================================
+13. REGLAS DE PRIVACIDAD Y SEGURIDAD QUE EL FRONT DEBE RESPETAR
+================================================================================
+
+1. NUNCA persistas las URLs ni las imágenes de los documentos en
+   localStorage / sessionStorage / IndexedDB / un store con persistencia.
+   Mantenelas en memoria durante el flujo de carga y descartalas al terminar.
+
+2. NUNCA muestres las fotos del DNI o de la licencia en el perfil, en el chat
+   ni en la ficha de la contraparte. El backend directamente no las devuelve.
+   Para dar confianza usá `verified` y `documentLast4` de GET /users/:id.
+
+3. No loguees en consola ni mandes a servicios de analytics/monitoreo
+   (Sentry, LogRocket, Hotjar, etc.) el dni, el cuil, el domicilio, las URLs
+   de Cloudinary ni el contenido de los errores de verificación. Si usás
+   session replay, ENMASCARÁ toda la pantalla de verificación.
+
+4. Los reasonCodes son códigos; el texto humano lo pone el front. No pidas al
+   backend "el detalle" del rechazo: no lo va a dar, es dato sensible y solo
+   lo ve un admin.
+
+5. Las URLs de Cloudinary de los documentos son `authenticated`: si las abrís
+   en una pestaña devuelven 401. No intentes previsualizarlas después de
+   subirlas; usá el File/Blob local para la preview.
+
+6. La cámara: pedí el permiso justo antes de usarla, no al cargar la app, y
+   ofrecé siempre la alternativa de "subir desde la galería".
+
+7. Antes de subir, mostrá un aviso claro de para qué se usan los documentos y
+   quién los ve (revisión automática + un administrador si hace falta), con
+   link a los términos. Es un requisito de la Ley 25.326.
+
+
+================================================================================
+14. LÍMITES DE USO (RATE LIMITS) Y QUÉ HACER CON EL 429
+================================================================================
+
+  Global (toda la API, por IP) ............ 120 requests / 60 s
+  POST /verification/identity/upload-signature .. 10 / 5 min
+  POST /verification/identity/submit ............  5 / 15 min
+  POST /verification/identity/review-retry ......  3 / 15 min
+
+Cuatro archivos = 4 firmas, así que hay margen para 2 intentos completos de
+carga cada 5 minutos. Si el usuario borra y vuelve a elegir fotos muchas veces
+puede chocar con el límite: pedí la firma SOLO en el momento de subir, no al
+seleccionar el archivo.
+
+Ante un 429: mostrar "Probaste demasiadas veces seguidas. Esperá unos minutos
+e intentá de nuevo", deshabilitar el botón y hacer backoff (no reintentar
+automáticamente en loop).
+
+
+================================================================================
+15. PANTALLAS SUGERIDAS Y CHECKLIST DE IMPLEMENTACIÓN
+================================================================================
+
+PANTALLA 1 — "Verificá tu cuenta" (hub)
+  Fuente de datos: GET /verification/me/status
+  Muestra la lista de pasos con su tilde:
+    ✓ Email verificado
+    ○ Datos personales (DNI, CUIL, domicilio)      → Pantalla 2
+    ○ Teléfono (opcional)                          → Pantalla 3
+    ○ Documentos (DNI y licencia)                  → Pantalla 4
+  · Ocultar el paso de teléfono, o marcarlo "opcional", según `phoneRequired`.
+  · Barra de progreso = ítems del checklist cumplidos / total aplicable.
+  · Si `fullyVerified` → estado final con el badge de verificado.
+  · Si `lastReview.outcome === "pending"` → banner "Estamos revisando tus
+    documentos" + botón "Reintentar revisión".
+  · Si `lastReview.outcome === "rejected"` → banner rojo con los motivos.
+
+PANTALLA 2 — Datos personales
+  Formulario: DNI, CUIL, domicilio. Validación en cliente (regex del DNI,
+  checksum del CUIL, coherencia CUIL↔DNI). PATCH /users/me con SOLO esos
+  campos. Solo lectura si `fullyVerified`.
+
+PANTALLA 3 — Teléfono
+  Input E.164 con selector de país → PATCH /users/me { phone } →
+  POST /verification/phone/request → input de 6 dígitos con cuenta regresiva
+  (`expiresAt`) y botón "reenviar" → POST /verification/phone/confirm.
+  Mostrar `channel`/`sentTo` ("te lo mandamos a tu email").
+
+PANTALLA 4 — Documentos (wizard de 4 pasos)
+  Un paso por slot, en este orden: frente DNI → dorso DNI → frente licencia →
+  dorso licencia. En cada paso:
+    · ilustración de referencia del documento
+    · botón "Sacar foto" (capture="environment") y "Elegir de la galería"
+    · preview local + "Repetir foto"
+    · validación en cliente: tipo image/*, convertir HEIC→JPEG, redimensionar
+      a ~2000 px de lado mayor, calidad 0.9, avisar si pesa > 8 MB
+  Al completar los 4: pantalla de confirmación con el aviso de privacidad y el
+  botón "Enviar para verificar".
+
+PANTALLA 5 — Revisando (bloqueante)
+  Spinner + "Estamos revisando tus documentos. Puede tardar hasta un minuto,
+  no cierres esta pantalla." Sin botón de cancelar (la request ya salió).
+  Si el fetch corta por timeout del cliente: NO asumir error → consultar
+  GET /verification/me/status, porque el submit puede haber terminado bien.
+
+PANTALLA 6 — Resultado
+  Tres variantes (aprobado / rechazado / en revisión) según la sección 8, con
+  el CTA que corresponda según la sección 10.1.
+
+CHECKLIST DE IMPLEMENTACIÓN
+  [ ] Cliente HTTP con base URL, Bearer token y manejo de 401 (relogin)
+  [ ] Interceptor de 403 ACCOUNT_NOT_VERIFIED → ruta de verificación
+  [ ] Store/hook `useVerificationStatus()` con GET /verification/me/status,
+      revalidación al montar, al volver al foco y tras cada mutación
+  [ ] Diccionario de reasonCodes con fallback y regla _UNREADABLE
+  [ ] Formulario de datos personales con validación de CUIL en cliente
+  [ ] Wizard de 4 fotos con compresión y conversión HEIC
+  [ ] `uploadIdentityFile()` (firma + Cloudinary) con progreso por archivo
+  [ ] `submitIdentity()` con timeout de 70 s y pantalla de espera
+  [ ] Pantalla de resultado con los 3 estados y sus CTAs
+  [ ] Botón "Reintentar revisión" (review-retry) visible solo si pending
+  [ ] Polling suave de status mientras la solicitud está pendiente
+  [ ] Deshabilitar publicar/reservar/pagar si !fullyVerified, con CTA
+  [ ] Badge "verificado" + `documentLast4` en el perfil público
+  [ ] Enmascarar la pantalla de verificación en session replay/analytics
+  [ ] Manejo de 429 con mensaje y backoff
+
+
+================================================================================
+16. CASOS DE PRUEBA / QA
+================================================================================
+ 1. Cuenta nueva → el hub muestra los 4 ítems, con email en verde.
+ 2. Enviar los 4 documentos SIN cargar dni/cuil/address → 201 pero queda
+    pendiente para siempre y `identityDataProvided:false`. La UI tiene que
+    haber impedido llegar ahí.
+ 3. Mandar la URL del dorso del DNI en `dniFrontUrl` → 400
+    DOCUMENT_SLOT_MISMATCH con `slot: "dni_front"`.
+ 4. Mandar una URL de otro dominio → 400 INVALID_DOCUMENT_URL.
+ 5. Mandar una URL bien formada de un archivo que no se llegó a subir → 400
+    DOCUMENT_NOT_FOUND.
+ 6. Agregar un campo extra al body del submit → 400 con array de mensajes.
+ 7. CUIL con dígito verificador mal → 400 de validación en PATCH /users/me.
+ 8. CUIL válido pero de otro DNI → 400 CUIL_DNI_MISMATCH.
+ 9. DNI ya usado por otra cuenta → 409 DNI_ALREADY_REGISTERED.
+10. Cuenta ya verificada intentando editar el DNI → 403
+    IDENTITY_FIELDS_LOCKED.
+11. Foto borrosa del frente del DNI → status ID_SUBMITTED con
+    NO_AUTHORITATIVE_SOURCE: la UI NO debe decir "rechazado".
+12. Fecha de nacimiento distinta a la del DNI → REJECTED con DOB_MISMATCH y
+    CTA "Corregir mis datos".
+13. Submit que tarda 45 s → verificar que el cliente NO aborta.
+14. Perder la conexión durante el submit → al volver, GET
+    /verification/me/status refleja el estado real (no reenviar a ciegas).
+15. 6 submits en 15 minutos → 429 con mensaje amigable.
+16. review-retry sobre una solicitud ya resuelta → 400 REVIEW_NOT_PENDING.
+17. Intentar POST /bookings sin verificar → 403 ACCOUNT_NOT_VERIFIED y
+    redirección al hub.
+18. Después de aprobarse: los botones de publicar/reservar/pagar quedan
+    habilitados sin recargar la página (revalidar el status).
+
+
+================================================================================
+17. PANEL DE ADMINISTRACIÓN (SOLO SI EL FRONT TIENE ROL ADMIN)
+================================================================================
+Requieren token de un usuario con role === "ADMIN".
+
+  GET   /admin/verifications
+        Lista todas las solicitudes con su usuario, más nueva primero.
+  GET   /admin/verifications/:id
+        Detalle de una solicitud.
+  GET   /admin/verifications/:id/documents
+        → { id, userId, status,
+            documents: { dniFront, dniBack, licenseFront, licenseBack },
+                        // URLs FIRMADAS y EFÍMERAS: sirven para mostrar la
+                        // imagen ahora, NO se guardan ni se comparten
+            extracted,   // lo leído de cada fuente (PII)
+            matchReport  // el reporte de cruces, check por check (PII)
+          }
+        Cada acceso queda auditado. En la UI: no descargar, no cachear, no
+        abrir en pestaña nueva que quede en el historial.
+  PATCH /admin/verifications/:id/review
+        body { "status": "VERIFIED" | "REJECTED", "notes": "opcional" }
+        Cualquier otro status → 400.
+
+  `matchReport` tiene la forma:
+      { outcome, checks: [{ code, result: "pass"|"fail"|"unavailable",
+                            detail? }], reasonCodes, documentNumber,
+        licenseExpiresAt }
+  Una tabla de checks con semáforo (verde/rojo/gris) es la mejor vista para
+  que el admin decida en 5 segundos.
+
+
+================================================================================
+18. PREGUNTAS FRECUENTES Y ERRORES TÍPICOS DE INTEGRACIÓN
+================================================================================
+
+P: Subí las 4 fotos, el submit devolvió 201, pero la cuenta sigue sin
+   verificarse y `lastReview.reasonCodes` está vacío.
+R: El checklist no estaba completo, así que la revisión ni corrió. Mirá
+   `checklist.identityDataProvided` — casi siempre faltan dni/cuil/address.
+
+P: Cloudinary me devuelve 401 "Invalid Signature".
+R: Estás mandando un campo de más (o de menos) en el FormData, o cambiaste el
+   valor de alguno de los firmados, o reusaste una firma de un pedido
+   anterior. Los campos son exactamente: file, api_key, timestamp, signature,
+   folder, public_id, type.
+
+P: El submit me tira 400 DOCUMENT_NOT_FOUND.
+R: La subida a Cloudinary no terminó bien. Verificá que estás esperando la
+   respuesta de Cloudinary y usando su `secure_url`, no una URL armada a mano.
+
+P: ¿Puedo subir las 4 fotos en paralelo?
+R: Sí, pero pedí las 4 firmas primero (o de a una) y tené en cuenta el límite
+   de 10 firmas cada 5 minutos. Secuencial es más simple y da mejor UX de
+   progreso.
+
+P: PATCH /users/me me devuelve 400 con un array larguísimo de mensajes.
+R: Estás mandando el objeto de usuario completo. Mandá solo los campos que
+   editás: la API rechaza propiedades desconocidas.
+
+P: El código del teléfono no llega al celular.
+R: Es lo esperado hoy: `phoneCodeChannel === "email"`. No hay pasarela de SMS
+   contratada, así que el código va al email de la persona. Mostralo en
+   pantalla usando `channel` y `sentTo`.
+
+P: ¿Cuánto tarda la verificación?
+R: Si todo se lee bien, entre 5 y 30 segundos, dentro de la misma request del
+   submit. Si algo queda inconcluso, depende de un admin: comunicá "hasta
+   24 hs".
+
+P: ¿Qué pasa si el usuario envía documentos dos veces?
+R: Se crea una solicitud nueva; siempre manda la más reciente. El historial
+   queda en GET /verification/identity/me.
+
+P: ¿Puedo mostrar el DNI de la otra parte de una reserva?
+R: Solo los últimos 4 dígitos, y solo si está verificada: `documentLast4` de
+   GET /users/:id. Nada más.
+
+P: ¿Se puede probar todo el circuito sin documentos reales?
+R: En un entorno con `IDENTITY_REVIEW_MODE=auto_approve` toda solicitud se
+   aprueba (solo desarrollo/tests). Pedile eso al backend para un ambiente de
+   staging; en producción el modo es `document_ai`.
+
+--------------------------------------------------------------------------------
+CONTACTO / DÓNDE MIRAR SI ALGO NO CIERRA
+--------------------------------------------------------------------------------
+  README.md              → sección "Verificación de identidad (DNI + licencia)"
+  backend.md             → detalle técnico módulo por módulo
+  VARIABLES-VERCEL.md    → qué variables necesita el deploy
+  GET /health/env        → qué hay cargado en el deploy ahora mismo
+  src/verification/      → el código del flujo completo
+
+================================================================================
+FIN DEL DOCUMENTO
+================================================================================
