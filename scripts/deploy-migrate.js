@@ -167,7 +167,44 @@ async function hasMigrationHistory() {
   }
 }
 
+/**
+ * Arreglos estructurales que `db push` no sabe hacer solo, corridos ANTES del
+ * push.
+ *
+ * El caso que los trajo: para llegar al schema nuevo había que borrar tres
+ * columnas de Listing, y una publicación las tenía cargadas. `db push` se negó
+ * —bien negado— y la base quedó sin la columna nueva mientras la API que la
+ * consulta ya estaba publicada: 500 en /listings.
+ *
+ * Un `--accept-data-loss` acá habría borrado esos datos sin que nadie los mire.
+ * Lo que corresponde es mover el dato a donde va y recién después dejar que el
+ * push encuentre la columna vacía y la saque sin drama.
+ *
+ * Los archivos de prisma/premigrate corren en orden de nombre y TIENEN que
+ * poder correr en todos los deploys: preguntan antes de tocar nada.
+ */
+function preMigrate() {
+  const dir = path.join(__dirname, "..", "prisma", "premigrate");
+  if (!fs.existsSync(dir)) return;
+
+  const archivos = fs
+    .readdirSync(dir)
+    .filter((nombre) => nombre.endsWith(".sql"))
+    .sort();
+
+  for (const archivo of archivos) {
+    run(
+      `Preparando la base: ${archivo}`,
+      `db execute --url "${process.env.DATABASE_URL}" ` +
+        `--file prisma/premigrate/${archivo}`,
+    );
+  }
+}
+
 async function main() {
+  // Va antes de todo: si esto no corre, el push que viene abajo se planta.
+  preMigrate();
+
   const withHistory = await hasMigrationHistory();
   let updated = false;
 
