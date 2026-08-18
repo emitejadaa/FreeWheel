@@ -3,12 +3,16 @@
  * Pone la base al día durante el deploy, sin que nadie tenga que correr nada a mano.
  *
  * ── Por qué existe este archivo ──────────────────────────────────────────────
- * vercel.json usa el formato viejo con "builds", y cuando ese campo está presente
- * Vercel IGNORA "buildCommand". O sea: el `prisma migrate deploy` que estaba
- * configurado ahí nunca se ejecutó y la base quedó sin las tablas y columnas
- * nuevas. El síntoma era error 500 en /listings y /favorites, porque Prisma
- * consultaba columnas que no existían. El paso "install" sí corre siempre, así
- * que la actualización va enganchada al postinstall.
+ * vercel.json usaba el formato viejo con "builds", y cuando ese campo está
+ * presente Vercel IGNORA "buildCommand". O sea: el `prisma migrate deploy` que
+ * estaba configurado ahí nunca se ejecutó y la base quedó sin las tablas y
+ * columnas nuevas. El síntoma era error 500 en /listings y /favorites, porque
+ * Prisma consultaba columnas que no existían. El paso "install" sí corre
+ * siempre, así que la actualización va enganchada al postinstall.
+ *
+ * vercel.json ya no usa "builds", así que hoy el buildCommand sí se ejecuta;
+ * por eso quedó en `npm run build` y no repite las migraciones. La base la
+ * sigue poniendo al día este archivo, que corre antes y sabe elegir el camino.
  *
  * ── Por qué no alcanza con `prisma migrate deploy` ───────────────────────────
  * El historial de migraciones de este repo NO arranca de cero: la migración más
@@ -26,6 +30,18 @@
  *       → `prisma db push`: lleva la base a lo que dice el schema sin mirar el
  *         historial. Va SIN --accept-data-loss a propósito: si un cambio
  *         implicara borrar datos, Prisma se niega y no lo toca.
+ *
+ * ── El único aviso que sí se acepta ──────────────────────────────────────────
+ * Prisma mete en la misma bolsa de "puede haber pérdida de datos" a agregar una
+ * constraint única, y no es lo mismo: agregarla no borra nada, o entra o falla
+ * entera. Con dni y cuil únicos en el schema, db push cortaba pidiendo
+ * --accept-data-loss y la base se quedaba sin la unicidad que impide que un
+ * mismo documento verifique dos cuentas.
+ *
+ * Así que se lee la salida y se reintenta con --accept-data-loss SOLO si todos
+ * los avisos son de constraints únicas. Alcanza con que aparezca uno que borra
+ * (una columna, una tabla, un tipo que se recrea) para no reintentar: eso hay
+ * que resolverlo a mano, no en un deploy automático.
  *
  * Al final se corre el backfill de la categoría de los autos ya publicados, que
  * es idempotente (solo toca filas en NULL).
@@ -80,16 +96,53 @@ const PRISMA = (() => {
   return fs.existsSync(bin) ? `"${bin}"` : "npx --no-install prisma";
 })();
 
-/** Corre un comando de Prisma. Devuelve true si terminó bien. */
+/**
+ * Corre un comando de Prisma. Devuelve `{ ok, output }`: la salida se captura
+ * para poder mirarla (ver `soloAvisosDeConstraintUnica`) y se reimprime tal
+ * cual, así el log del deploy sigue mostrando lo mismo que antes.
+ */
 function run(label, args) {
   console.log(`[migrate] ${label}`);
   try {
-    execSync(`${PRISMA} ${args}`, { stdio: "inherit", env: process.env });
-    return true;
-  } catch {
+    const stdout = execSync(`${PRISMA} ${args}`, {
+      env: process.env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (stdout) process.stdout.write(stdout);
+    return { ok: true, output: stdout || "" };
+  } catch (error) {
+    const output = `${error.stdout || ""}${error.stderr || ""}`;
+    if (output) process.stdout.write(output);
     console.error(`[migrate] Falló: prisma ${args}`);
-    return false;
+    return { ok: false, output };
   }
+}
+
+/**
+ * Prisma lista los avisos como viñetas ("  • ..."). Devuelve true solo si el
+ * comando cortó pidiendo --accept-data-loss, hubo al menos un aviso, y TODOS
+ * son "se va a agregar una constraint única" —el único que no borra nada—.
+ *
+ * Si el formato de la salida cambiara y no se reconociera ninguna viñeta, da
+ * false: no reintentar deja la base sin actualizar, que es el lado seguro.
+ */
+function soloAvisosDeConstraintUnica(output) {
+  if (!output.includes("--accept-data-loss")) return false;
+
+  const avisos = output
+    .split("\n")
+    .map((linea) => linea.trim())
+    .filter((linea) => linea.startsWith("•"));
+
+  return (
+    avisos.length > 0 &&
+    avisos.every((aviso) =>
+      /^•\s*A unique constraint covering the columns .* will be added/i.test(
+        aviso,
+      ),
+    )
+  );
 }
 
 /**
@@ -120,7 +173,7 @@ async function main() {
 
   if (withHistory) {
     console.log("[migrate] La base tiene historial de migraciones.");
-    updated = run("Aplicando migraciones pendientes...", "migrate deploy");
+    updated = run("Aplicando migraciones pendientes...", "migrate deploy").ok;
     if (!updated) {
       console.warn(
         "[migrate] No se pudieron aplicar. Segundo intento: sincronizar el " +
@@ -135,10 +188,23 @@ async function main() {
   }
 
   if (!updated) {
-    updated = run(
+    const push = run(
       "Sincronizando schema (db push)...",
       "db push --skip-generate",
     );
+    updated = push.ok;
+
+    if (!updated && soloAvisosDeConstraintUnica(push.output)) {
+      console.warn(
+        "[migrate] El único cambio marcado como riesgoso es agregar una " +
+          "constraint única, que no borra datos: se reintenta aceptándolo. " +
+          "Si hubiera duplicados, el comando falla y no toca nada.",
+      );
+      updated = run(
+        "Reintentando (db push --accept-data-loss)...",
+        "db push --skip-generate --accept-data-loss",
+      ).ok;
+    }
   }
 
   if (!updated) {
