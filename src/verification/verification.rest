@@ -210,3 +210,86 @@ Authorization: Bearer {{accessToken}}
 ### checklist de documentos presentes y reasonCodes si fue rechazada).
 GET {{baseUrl}}/verification/identity/me
 Authorization: Bearer {{accessToken}}
+
+### ── Diagnóstico de la verificación (src/verification/diagnostics/) ─────────
+### Corren el MISMO pipeline que la revisión real pero no escriben nada: no
+### cambian el estado de la cuenta ni dejan registro de auditoría. Están para
+### ver qué parte falla cuando algo no anda: devuelven el contenido crudo de
+### los códigos, el texto que leyó el modelo con la posición de cada dato, cada
+### etapa con lo que tardó y cada error con su motivo y su sugerencia.
+###
+### OJO: hoy solo piden sesión (no rol de administrador) y devuelven los datos
+### personales completos del documento que se les manda. Es a propósito para
+### esta etapa de prueba; antes de producción hay que cerrarlos.
+
+### 11. Las tablas de referencia: cómo se llama cada fuente, qué fuente gana en
+### cada campo, y qué códigos rechazan o mandan a revisión manual.
+GET {{baseUrl}}/verification/diagnose/info
+Authorization: Bearer {{accessToken}}
+
+### 12. Todo lo que se puede leer de UNA foto, mandada en base64.
+### `image` es un dataURL (data:image/jpeg;base64,...). Pegá uno real para
+### probar de verdad; el de abajo es un PNG de 1x1 y solo sirve para ver la
+### forma de la respuesta y los mensajes de error.
+### `withBoxes` le pide al modelo dónde está cada dato en la foto.
+POST {{baseUrl}}/verification/diagnose/document
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "slot": "dni_front",
+  "withBoxes": true,
+  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+}
+
+### 13. La misma lectura pero sobre un documento YA SUBIDO por esta cuenta.
+### Evita el límite de 4,5 MB del cuerpo del request. Solo acepta documentos
+### propios: una URL de otra cuenta devuelve 403 ASSET_NOT_OWNED.
+POST {{baseUrl}}/verification/diagnose/document
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "slot": "dni_front",
+  "url": "{{dniFrontUrl}}"
+}
+
+### 14. El cruce de todo contra los datos del formulario.
+### `documents` lleva una clave por slot con lo que devolvió el request #12 o
+### #13 (los campos `codes` y `ocr` tal cual). Los códigos se vuelven a
+### interpretar acá desde su payload crudo: lo que decide es el backend.
+### `profile` es opcional: sin él se usan los datos de la cuenta, y con él se
+### puede probar la comparación sin editar el perfil.
+POST {{baseUrl}}/verification/diagnose/compare
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "documents": {
+    "dni_front": {
+      "codes": {
+        "codes": [
+          {
+            "payload": "00123456789@PEREZ@JUAN CARLOS@M@12345678@A@01/02/1990@05/03/2015"
+          }
+        ]
+      },
+      "ocr": {
+        "classifiedAs": "dni_front",
+        "fields": {
+          "lastName": { "raw": "PEREZ" },
+          "firstName": { "raw": "JUAN CARLOS" },
+          "documentNumber": { "raw": "12.345.678" }
+        }
+      }
+    }
+  },
+  "profile": {
+    "firstName": "Juan Carlos",
+    "lastName": "Perez",
+    "dateOfBirth": "1990-02-01",
+    "dni": "12345678",
+    "cuil": "20123456786",
+    "address": "Av. Siempre Viva 742"
+  }
+}
