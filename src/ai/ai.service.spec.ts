@@ -466,3 +466,106 @@ describe("AiService.inspectDocument", () => {
     expect((await service.health()).lastVisionSample).toBeUndefined();
   });
 });
+
+/**
+ * CUANDO EL QUE FALLA ES EL PROVEEDOR
+ *
+ * El fallo llegaba como "el modelo de visión no contestó" y nada más. Pero
+ * "no contestó" puede ser la clave sin cuota, la imagen demasiado grande o un
+ * parámetro que ese modelo no acepta, y cada una se arregla distinto. El
+ * cuerpo del error de Groq dice exactamente cuál es: acá se fija que ese
+ * cuerpo llegue hasta arriba en vez de perderse.
+ */
+describe("AiService cuando Groq devuelve un error", () => {
+  const config = {
+    get: (name: string) =>
+      name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined,
+  } as unknown as ConfigService;
+
+  const IMAGEN = "data:image/jpeg;base64,AAAA";
+  const JSON_OK = '{"corresponde": true, "legible": true}';
+
+  /** Groq contesta lo que se le indique para cada modelo. */
+  function conEstados(
+    porModelo: Record<string, { status: number; body: string } | string>,
+    porDefecto: { status: number; body: string } | string = JSON_OK,
+  ) {
+    global.fetch = jest.fn((_url: string, init?: { body?: string }) => {
+      const pedido = JSON.parse(init?.body ?? "{}") as { model?: string };
+      const respuesta = porModelo[String(pedido.model)] ?? porDefecto;
+
+      if (typeof respuesta !== "string") {
+        return Promise.resolve({
+          ok: false,
+          status: respuesta.status,
+          text: () => Promise.resolve(respuesta.body),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ choices: [{ message: { content: respuesta } }] }),
+      });
+    }) as unknown as typeof fetch;
+
+    return new AiService(config);
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("devuelve el código y el cuerpo con los que contestó el proveedor", async () => {
+    const service = conEstados(
+      {},
+      {
+        status: 429,
+        body: '{"error":{"message":"Rate limit reached for model"}}',
+      },
+    );
+
+    const answer = await service.visionStructuredDetailed(IMAGEN, "leé esto");
+
+    expect(answer.ok).toBe(false);
+    if (answer.ok) return;
+    expect(answer.code).toBe("upstream_error");
+    expect(answer.upstream?.status).toBe(429);
+    expect(answer.upstream?.detail).toContain("Rate limit reached");
+  });
+
+  it("corta enseguida si el problema es la clave o la cuota", async () => {
+    // A todos los modelos les va a pasar lo mismo: probarlos solo hace esperar.
+    const service = conEstados({}, { status: 401, body: "invalid api key" });
+
+    const answer = await service.visionStructuredDetailed(IMAGEN, "leé esto");
+
+    expect(answer.ok).toBe(false);
+    if (answer.ok) return;
+    expect(answer.triedModels).toHaveLength(1);
+  });
+
+  it("prueba el siguiente modelo cuando el error puede ser de ese modelo", async () => {
+    // Un 400 puede ser el tamaño de la imagen o un parámetro que ese modelo no
+    // acepta: cortar en el primero dejaba los de respaldo sin usar.
+    const service = conEstados({
+      "qwen/qwen3.6-27b": { status: 400, body: "image exceeds size limit" },
+    });
+
+    const answer = await service.visionStructuredDetailed(IMAGEN, "leé esto");
+
+    expect(answer.ok).toBe(true);
+    if (!answer.ok) return;
+    expect(answer.model).not.toBe("qwen/qwen3.6-27b");
+  });
+
+  it("si fallan todos, informa el último error del proveedor", async () => {
+    const service = conEstados({}, { status: 400, body: "bad request" });
+
+    const answer = await service.visionStructuredDetailed(IMAGEN, "leé esto");
+
+    expect(answer.ok).toBe(false);
+    if (answer.ok) return;
+    expect(answer.triedModels.length).toBeGreaterThan(1);
+    expect(answer.upstream?.detail).toContain("bad request");
+  });
+});

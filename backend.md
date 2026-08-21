@@ -1532,6 +1532,8 @@ GMAIL_USER=""
 GMAIL_APP_PASSWORD=""
 SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
+# CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
+CORS_STRICT=""
 # Verificacion de identidad: document_ai (produccion) | manual | auto_approve
 IDENTITY_REVIEW_MODE="auto_approve"
 IDENTITY_REVIEW_TIMEOUT_MS=45000

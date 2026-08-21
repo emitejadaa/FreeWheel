@@ -30,6 +30,17 @@ const MAX_TOKENS: Record<DocumentSlot, number> = {
 const BOX_ALLOWANCE = 1.6;
 
 /**
+ * Tope de la imagen que se le manda al modelo.
+ *
+ * Groq acepta hasta 4 MB por imagen cuando viaja en base64, y pasarse no da un
+ * error que se entienda: contesta un 400 genérico y desde afuera se ve igual
+ * que "el modelo no anda". En la revisión real esto nunca pasa porque las
+ * fotos se bajan ya achicadas de Cloudinary; en el diagnóstico, en cambio, la
+ * foto va tal cual la eligió la persona, y una del celular se pasa fácil.
+ */
+const MAX_VISION_BYTES = 4 * 1024 * 1024;
+
+/**
  * MÓDULO 1 · lectura del texto impreso con el modelo de visión.
  *
  * Lo que el modelo hace acá es UNA sola cosa: mirar una foto y decir qué dice,
@@ -65,6 +76,18 @@ export class DocumentOcrService {
     // El modelo recibe la imagen que ya descargamos, no una URL: así ningún
     // tercero necesita acceso a los documentos del usuario.
     const dataUrl = `data:${mimeType};base64,${Buffer.from(imageBytes).toString("base64")}`;
+
+    // Se corta ACÁ, con un mensaje que dice qué pasa, en vez de dejar que el
+    // proveedor conteste un 400 que no explica nada.
+    if (dataUrl.length > MAX_VISION_BYTES) {
+      return parseFail(
+        verificationError(
+          "IMAGE_TOO_LARGE",
+          { bytes: dataUrl.length, limit: MAX_VISION_BYTES },
+          "el tope lo pone el proveedor de visión para las imágenes en base64",
+        ),
+      );
+    }
     const maxTokens = Math.round(
       MAX_TOKENS[slot] * (options.withBoxes ? BOX_ALLOWANCE : 1),
     );
@@ -76,23 +99,37 @@ export class DocumentOcrService {
     );
 
     if (!answer.ok) {
+      if (answer.code === "not_configured") {
+        return parseFail(verificationError("OCR_NOT_CONFIGURED"));
+      }
+
+      const probados = `modelos probados: ${answer.triedModels.join(", ")}`;
+
+      if (answer.code === "unreadable") {
+        return parseFail(
+          verificationError(
+            "OCR_RESPONSE_NOT_JSON",
+            { slot, sample: answer.sample ?? undefined },
+            probados,
+          ),
+        );
+      }
+
+      // Lo que contestó el proveedor viaja tal cual: es la única forma de
+      // distinguir "la clave se quedó sin cuota" de "la imagen es muy grande"
+      // de "ese modelo no existe más", que se arreglan de maneras distintas.
+      const upstream = answer.upstream;
       return parseFail(
-        answer.code === "not_configured"
-          ? verificationError("OCR_NOT_CONFIGURED")
-          : answer.code === "unreadable"
-            ? verificationError(
-                "OCR_RESPONSE_NOT_JSON",
-                { slot, sample: answer.sample ?? undefined },
-                `modelos probados: ${answer.triedModels.join(", ")}`,
-              )
-            : verificationError(
-                "OCR_MODEL_UNAVAILABLE",
-                {
-                  slot,
-                  cause: `no contestó ninguno de ${answer.triedModels.length} modelos`,
-                },
-                `modelos probados: ${answer.triedModels.join(", ")}`,
-              ),
+        verificationError(
+          "OCR_MODEL_UNAVAILABLE",
+          {
+            slot,
+            cause: upstream
+              ? `${upstream.model} respondió ${upstream.status ?? "sin código"}`
+              : `no contestó ninguno de ${answer.triedModels.length} modelos`,
+          },
+          upstream ? `${upstream.detail} · ${probados}` : probados,
+        ),
       );
     }
 

@@ -113,6 +113,20 @@ describe("DocumentOcrService.read", () => {
     expect(result.data.model).toBe("modelo-x");
   });
 
+  it("no le manda al modelo una imagen más grande de la que acepta", async () => {
+    // Groq corta en 4 MB para las imágenes en base64 y contesta un 400
+    // genérico. Cortar acá da un mensaje que se entiende y ahorra el viaje.
+    const { service, visionStructuredDetailed } = contesta(ok(RESPUESTA));
+
+    const result = await service.read("dni_front", new Uint8Array(5_000_000));
+
+    expect(visionStructuredDetailed).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("IMAGE_TOO_LARGE");
+    expect(result.error.detail).toContain("proveedor de visión");
+  });
+
   it("no llama al modelo con una imagen vacía", async () => {
     const { service, visionStructuredDetailed } = contesta(ok(RESPUESTA));
 
@@ -144,6 +158,27 @@ describe("DocumentOcrService.read", () => {
       expect(result.error.code).toBe("OCR_MODEL_UNAVAILABLE");
       expect(result.error.message).toContain("2 modelos");
       expect(result.error.detail).toContain("modelo-y");
+    });
+
+    it("repite qué contestó el proveedor, que es donde dice qué arreglar", async () => {
+      // "no contestó" no alcanza: 401 es la clave, 429 la cuota y 400 suele
+      // ser el tamaño de la imagen. El cuerpo del error lo dice y tiene que
+      // llegar hasta la pantalla.
+      const { service } = contesta(
+        falla("upstream_error", {
+          upstream: {
+            model: "qwen/qwen3.6-27b",
+            status: 429,
+            detail: '{"error":{"message":"Rate limit reached"}}',
+          },
+        }),
+      );
+
+      const result = await service.read("dni_front", BYTES);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("qwen/qwen3.6-27b respondió 429");
+      expect(result.error.detail).toContain("Rate limit reached");
     });
 
     it("distingue que haya contestado cualquier cosa, y muestra qué", async () => {

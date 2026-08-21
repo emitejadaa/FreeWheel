@@ -296,8 +296,10 @@ const CATALOG: Record<VerificationErrorCode, Entry> = {
     message: (c) =>
       `El modelo de visión no contestó${c.cause ? `: ${c.cause}` : ""}.`,
     hint:
-      "Mirá GET /ai/health (como administrador) para ver qué contestó Groq la " +
-      "última vez y qué modelos ofrece hoy.",
+      "En `detail` está lo que contestó el proveedor, que es donde dice qué " +
+      "arreglar: 401 la clave no sirve, 429 se agotó la cuota, 400 por el " +
+      "tamaño de la imagen o por un parámetro que ese modelo no acepta. " +
+      "GET /ai/health (como administrador) muestra además qué modelos ofrece hoy.",
   },
   OCR_RESPONSE_NOT_JSON: {
     message: (c) =>

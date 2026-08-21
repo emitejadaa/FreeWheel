@@ -37,7 +37,8 @@ y el login funcionan). No hace falta tocarlas.
 |---|---|---|
 | `GROQ_API_KEY` | La clave de una cuenta de Groq. Empieza con `gsk_`. | La verificación de identidad **sigue funcionando**: se apoya en el código PDF417 del DNI cruzado contra los datos del formulario. Lo que se pierde es la lectura del texto impreso (domicilio, vencimientos), el chatbot y la revisión de las fotos de los autos. |
 | `GROQ_VISION_MODEL` | *Opcional.* El nombre exacto de un modelo que mire imágenes. Se pueden poner varios separados por coma y se usan en ese orden. | Se usan los del código, con `qwen/qwen3.6-27b` primero. |
-| `DEMO_ORIGINS` | *Opcional y temporal.* Orígenes extra habilitados para llamar a la API desde un navegador, además de `CORS_ORIGINS`. Para el banco de pruebas de verificación: `http://localhost:8080`. | El HTML de prueba abierto en tu máquina no puede hablar con el backend desplegado. |
+| `CORS_STRICT` | *Opcional.* Con `"true"` vuelve la lista blanca de orígenes. | **La API contesta a cualquier origen** (así está hoy, a propósito, para poder probar sin trabas). |
+| `DEMO_ORIGINS` | *Opcional.* Orígenes extra, solo cuando `CORS_STRICT="true"`. | Nada: sin `CORS_STRICT` ya está todo permitido. |
 
 ### Probar la verificación de documentos
 
@@ -47,10 +48,14 @@ los códigos, el texto que leyó el modelo con la posición de cada dato, la
 matriz de comparación fuente por fuente y el veredicto. No escribe nada: no
 cambia el estado de ninguna cuenta.
 
-1. Cargar `DEMO_ORIGINS="http://localhost:8080"` en Vercel y redeployar.
-2. En la carpeta donde esté el archivo: `python3 -m http.server 8080`.
-3. Abrir `http://localhost:8080/verificacion-demo.html`, poner la URL del
+1. En la carpeta donde esté el archivo: `python3 -m http.server 8080`.
+2. Abrir `http://localhost:8080/verificacion-demo.html`, poner la URL del
    backend y entrar con una cuenta.
+
+No hace falta configurar nada de CORS: la API contesta a cualquier origen. El
+archivo trae además una sección que prueba el lector de códigos **sin backend**,
+con la misma librería (zxing-wasm), para poder separar un problema de la foto de
+uno del servidor.
 
 Los endpoints que usa (`POST /verification/diagnose/document`,
 `POST /verification/diagnose/compare`, `GET /verification/diagnose/info`) piden

@@ -3,8 +3,12 @@ import { createCorsOptions } from "./cors.config";
 /**
  * Quién puede llamar a la API desde un navegador.
  *
- * Antes era "cualquiera" (origin: true). Estas pruebas fijan la lista, porque un
- * `origin` de más no se ve en ninguna pantalla: se nota el día que alguien usa
+ * HOY está abierto a cualquiera, a propósito, mientras se prueba la
+ * verificación de documentos desde un HTML suelto. La lista blanca sigue
+ * existiendo y se enciende con CORS_STRICT="true"; estas pruebas fijan las dos
+ * cosas: que sin la variable no rebote nada, y que con ella la lista funcione
+ * exactamente como antes. Lo segundo importa porque el día que esto se cierre,
+ * un `origin` de más no se ve en ninguna pantalla: se nota cuando alguien usa
  * las rutas públicas —el chatbot, que gasta cuota de nuestra API key— desde el
  * navegador de los visitantes de otro sitio.
  */
@@ -36,8 +40,9 @@ describe("CORS", () => {
     return resultado === true;
   }
 
-  describe("sin CORS_ORIGINS (el modo de todos los días)", () => {
+  describe("con CORS_STRICT y sin CORS_ORIGINS", () => {
     beforeEach(() => {
+      process.env.CORS_STRICT = "true";
       process.env.CORS_ORIGINS = "";
       process.env.FRONTEND_URL = "https://freewheel-5a.vercel.app";
     });
@@ -77,8 +82,9 @@ describe("CORS", () => {
     });
   });
 
-  describe("con CORS_ORIGINS cargada (modo estricto)", () => {
+  describe("con CORS_STRICT y CORS_ORIGINS cargada", () => {
     beforeEach(() => {
+      process.env.CORS_STRICT = "true";
       process.env.CORS_ORIGINS =
         "https://freewheel.com.ar, https://www.freewheel.com.ar";
       process.env.FRONTEND_URL = "https://freewheel-5a.vercel.app";
@@ -131,6 +137,7 @@ describe("createCorsOptions con DEMO_ORIGINS", () => {
   }
 
   it("se suma a la lista estricta de producción", () => {
+    process.env.CORS_STRICT = "true";
     process.env.CORS_ORIGINS = "https://freewheel.app";
     process.env.DEMO_ORIGINS = "http://localhost:8080";
 
@@ -140,6 +147,7 @@ describe("createCorsOptions con DEMO_ORIGINS", () => {
   });
 
   it("acepta varios separados por coma", () => {
+    process.env.CORS_STRICT = "true";
     process.env.CORS_ORIGINS = "https://freewheel.app";
     process.env.DEMO_ORIGINS = "http://localhost:8080, http://127.0.0.1:8080";
 
@@ -147,6 +155,7 @@ describe("createCorsOptions con DEMO_ORIGINS", () => {
   });
 
   it("sin la variable, no cambia nada", () => {
+    process.env.CORS_STRICT = "true";
     process.env.CORS_ORIGINS = "https://freewheel.app";
     delete process.env.DEMO_ORIGINS;
 
@@ -154,9 +163,85 @@ describe("createCorsOptions con DEMO_ORIGINS", () => {
   });
 
   it("el puerto del front de prueba ya está en los orígenes de desarrollo", () => {
+    process.env.CORS_STRICT = "true";
     delete process.env.CORS_ORIGINS;
     delete process.env.DEMO_ORIGINS;
 
     expect(permite("http://localhost:8080")).toBe(true);
+  });
+});
+
+/**
+ * EL MODO DE HOY: ABIERTO
+ *
+ * Se abrió a propósito para poder probar la verificación de documentos desde
+ * un HTML suelto sin tener que cargar una variable y redeployar cada vez que
+ * cambia el puerto. Estas pruebas fijan que sea EFECTIVAMENTE abierto —que no
+ * quede ninguna combinación de variables que lo cierre por accidente— y que
+ * `credentials` siga reflejando el origen en vez de mandar un "*" literal,
+ * que el propio navegador rechaza.
+ */
+describe("CORS abierto (sin CORS_STRICT)", () => {
+  const ORIGINALES = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINALES };
+  });
+
+  function permite(origen: string | undefined): boolean {
+    const decidir = createCorsOptions().origin as (
+      origen: string | undefined,
+      callback: (error: Error | null, permitido?: boolean) => void,
+    ) => void;
+    let resultado: boolean | undefined;
+    decidir(origen, (_error, permitido) => {
+      resultado = permitido;
+    });
+    return resultado === true;
+  }
+
+  beforeEach(() => {
+    delete process.env.CORS_STRICT;
+  });
+
+  it("permite cualquier sitio", () => {
+    expect(permite("https://freewheel.com.ar")).toBe(true);
+    expect(permite("http://localhost:9999")).toBe(true);
+    expect(permite("https://un-sitio-cualquiera.example")).toBe(true);
+    expect(permite("null")).toBe(true);
+  });
+
+  it("permite igual sin cabecera Origin (curl, Postman, webhooks)", () => {
+    expect(permite(undefined)).toBe(true);
+  });
+
+  it("CORS_ORIGINS cargada ya no cierra nada por su cuenta", () => {
+    // Es el caso que trababa: la variable estaba puesta en el deploy y
+    // convertía la lista en la única permitida, sin que nadie lo pidiera.
+    process.env.CORS_ORIGINS = "https://freewheel.com.ar";
+    expect(permite("http://localhost:8080")).toBe(true);
+  });
+
+  it("no manda un asterisco: con credentials el navegador lo rechazaría", () => {
+    const opciones = createCorsOptions();
+    expect(opciones.credentials).toBe(true);
+    expect(opciones.origin).toBeInstanceOf(Function);
+  });
+
+  it('CORS_STRICT="true" devuelve la lista blanca', () => {
+    process.env.CORS_STRICT = "true";
+    process.env.CORS_ORIGINS = "https://freewheel.com.ar";
+
+    expect(permite("https://freewheel.com.ar")).toBe(true);
+    expect(permite("https://un-sitio-cualquiera.example")).toBe(false);
+  });
+
+  it("cualquier otro valor de CORS_STRICT no cierra nada", () => {
+    // Que un "1" o un "yes" cierren la API sin querer sería peor que abrirla.
+    for (const valor of ["1", "yes", "TRUE ", "false", ""]) {
+      process.env.CORS_STRICT = valor;
+      const cerrado = !permite("https://un-sitio-cualquiera.example");
+      expect(cerrado).toBe(valor.trim().toLowerCase() === "true");
+    }
   });
 });

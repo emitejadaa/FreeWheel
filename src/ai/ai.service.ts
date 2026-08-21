@@ -46,6 +46,13 @@ const DEFAULT_VISION_MODELS = [
   "meta-llama/llama-4-maverick-17b-128e-instruct",
 ];
 
+/**
+ * Códigos con los que no tiene sentido probar otro modelo: son de la clave o
+ * de la cuenta (sin autorización, sin crédito, sin cuota), así que todos los
+ * modelos van a contestar lo mismo.
+ */
+const FATAL_STATUS = new Set([401, 402, 403, 429]);
+
 /** Errores de Groq que significan "ese modelo ya no existe": probar el siguiente. */
 const MODEL_GONE = /model_not_found|decommission|does not exist|not found/i;
 
@@ -277,6 +284,13 @@ export interface VisionFailure {
   durationMs: number;
   /** Todos los modelos que se probaron, en orden. */
   triedModels: string[];
+  /**
+   * Lo que contestó el proveedor cuando el fallo fue suyo: el código HTTP y el
+   * cuerpo del error, que es donde dice qué hay que arreglar (clave sin cuota,
+   * imagen demasiado grande, parámetro no soportado). Sin esto, el fallo
+   * llegaba como "no contestó" y no había forma de saber por qué.
+   */
+  upstream?: { model: string; status?: number; detail: string };
 }
 
 /** Lo que contesta GET /ai/health. */
@@ -346,6 +360,12 @@ const asDate = (value: unknown): string | null => {
     ? null
     : text;
 };
+
+/** Recorte de una respuesta del proveedor, para poder mostrarla en una línea. */
+function sampleOf(texto: string): string {
+  const limpio = texto.replace(/\s+/g, " ").trim();
+  return limpio.length > 300 ? `${limpio.slice(0, 300)}…` : limpio;
+}
 
 @Injectable()
 export class AiService {
@@ -427,6 +447,7 @@ export class AiService {
 
     let contestoSinJson = false;
     let ultimaMuestra: string | null = null;
+    let upstream: VisionFailure["upstream"];
 
     for (const model of this.visionModels()) {
       triedModels.push(model);
@@ -440,16 +461,28 @@ export class AiService {
 
       // El modelo ya no existe: el siguiente de la lista.
       if (answer.kind === "unusable_model") continue;
-      // El problema no es el modelo (clave, cuota, imagen): reintentar no sirve.
+
       if (answer.kind === "error") {
-        return {
-          ok: false,
-          code: "upstream_error",
-          model,
-          sample: null,
-          durationMs: Date.now() - started,
-          triedModels,
-        };
+        upstream = { model, status: answer.status, detail: answer.detail };
+        this.lastVisionSample = sampleOf(answer.detail);
+
+        // Con la clave o la cuota no hay nada que hacer: le va a pasar lo
+        // mismo a todos los modelos, y probarlos solo hace esperar de más.
+        // Cualquier otro error puede ser de ESE modelo (no acepta el tamaño
+        // de la imagen, no acepta un parámetro), así que se prueba el
+        // siguiente: cortar en el primero dejaba sin usar los de respaldo.
+        if (answer.status && FATAL_STATUS.has(answer.status)) {
+          return {
+            ok: false,
+            code: "upstream_error",
+            model,
+            sample: this.lastVisionSample,
+            durationMs: Date.now() - started,
+            triedModels,
+            upstream,
+          };
+        }
+        continue;
       }
 
       if (!options.requireJson || findJsonObject(answer.content)) {
@@ -486,9 +519,10 @@ export class AiService {
 
     const fallo = {
       model: triedModels[triedModels.length - 1] ?? null,
-      sample: ultimaMuestra,
+      sample: ultimaMuestra ?? this.lastVisionSample,
       durationMs: Date.now() - started,
       triedModels,
+      ...(upstream ? { upstream } : {}),
     };
 
     if (contestoSinJson) return { ok: false, code: "unreadable", ...fallo };
@@ -523,7 +557,7 @@ export class AiService {
   ): Promise<
     | { kind: "content"; content: string; raw: string; truncated: boolean }
     | { kind: "unusable_model" }
-    | { kind: "error" }
+    | { kind: "error"; status?: number; detail: string }
   > {
     try {
       const res = await fetch(GROQ_URL, {
@@ -598,12 +632,12 @@ export class AiService {
 
       return res.status === 404 || MODEL_GONE.test(detail)
         ? { kind: "unusable_model" }
-        : { kind: "error" };
+        : { kind: "error", status: res.status, detail };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.lastVisionError = `${model} → ${message}`;
       this.logger.error(`Groq visión (${model}) falló: ${message}`);
-      return { kind: "error" };
+      return { kind: "error", detail: message };
     }
   }
 
