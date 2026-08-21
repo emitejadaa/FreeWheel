@@ -1,0 +1,171 @@
+### auth.rest — Registro, login, JWT, OAuth, verificación de email, reset de password
+### Módulo: src/auth/auth.controller.ts (AuthModule)
+###
+### Elegí entorno con "Switch Environment" (local/production) — ver .vscode/settings.json
+### y REST_CLIENT.md en la raíz. Todas las rutas de este archivo son PÚBLICAS salvo
+### donde se indica "Onboarding" o "JWT".
+###
+### Flujo recomendado para levantar una cuenta de prueba de punta a punta:
+###   1) Request #1 (register/start) → manda el código de 6 dígitos al email.
+###      En entornos no productivos el código NO viaja en la respuesta HTTP: se
+###      loguea en la consola del server (`npm run start:dev`). Copialo de ahí.
+###   2) Pegá el código en @registerCode y corré Request #2 (register/complete).
+###      Ya devuelve `accessToken`: la cuenta queda ACTIVE y con email verificado
+###      (no hace falta pasar por login para el flujo feliz).
+###   3) El resto de los .rest (users, vehicles, listings, bookings, ...) hacen su
+###      propio register/complete al principio, así que podés correr cada archivo
+###      de forma independiente sin depender de este.
+###
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+@email = auth-test-{{$timestamp}}@test.local
+@password = TestPass123!
+### Código de 6 dígitos recibido por email/consola tras el request #1.
+@registerCode = 000000
+@dateOfBirth = 1995-05-20
+
+### ────────────────────────────────────────────────────────────────────────
+### Registro en dos pasos
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Paso 1: solo el email — envía el código, NO crea el usuario todavía
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}"
+}
+
+### 2. Paso 2: código + payload completo — crea la cuenta ya verificada
+### ⚠️ Actualizá @registerCode arriba con el código real antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "displayName": "Ana G.",
+  "phone": "+5491132895416",
+  "acceptedTerms": true,
+  "dateOfBirth": "{{dateOfBirth}}"
+}
+
+### Token de sesión completo obtenido en el paso anterior.
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Login
+### ────────────────────────────────────────────────────────────────────────
+
+### 3. Login email/password.
+### Si el email no está verificado o falta la fecha de nacimiento, la respuesta
+### NO trae `accessToken`: trae `onboardingToken` + un flag
+### (`emailVerificationRequired` / `profileCompletionRequired`).
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+@loginAccessToken = {{login.response.body.$.accessToken}}
+@onboardingToken = {{login.response.body.$.onboardingToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Onboarding (token corto, scope "onboarding" — lo devuelve login/Google
+### cuando falta verificar el email o completar la fecha de nacimiento)
+### ────────────────────────────────────────────────────────────────────────
+
+### 4. Completa la fecha de nacimiento (18+) — cuentas Google/legacy sin fecha.
+### Requiere @onboardingToken (o un accessToken completo: el guard acepta ambos).
+POST {{baseUrl}}/auth/complete-profile
+Content-Type: {{contentType}}
+Authorization: Bearer {{onboardingToken}}
+
+{
+  "dateOfBirth": "{{dateOfBirth}}"
+}
+
+### 5. Confirma el email de una cuenta legacy con el código recibido.
+POST {{baseUrl}}/auth/verify-email
+Content-Type: {{contentType}}
+Authorization: Bearer {{onboardingToken}}
+
+{
+  "code": "{{registerCode}}"
+}
+
+### 6. Reenvía el código de verificación de email (sin body).
+POST {{baseUrl}}/auth/resend-verification
+Authorization: Bearer {{onboardingToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Recuperación de contraseña
+### ────────────────────────────────────────────────────────────────────────
+
+### 7. Solicita el reset — manda un link/token al email (se loguea en consola
+### en entornos no productivos).
+POST {{baseUrl}}/auth/forgot-password
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}"
+}
+
+### 8. Confirma el reset con el token recibido (token + userId salen del link).
+@resetToken = pega-aca-el-token-del-email
+@resetUserId = 00000000-0000-0000-0000-000000000000
+POST {{baseUrl}}/auth/reset-password
+Content-Type: {{contentType}}
+
+{
+  "token": "{{resetToken}}",
+  "userId": "{{resetUserId}}",
+  "newPassword": "NewPass123!"
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### Google OAuth (no se puede "disparar" desde REST Client: son redirects de
+### navegador con consentimiento interactivo de Google — abrí la URL en el
+### browser, no con el botón "Send Request")
+### ────────────────────────────────────────────────────────────────────────
+
+### 9. Inicia el flujo — abrir en el navegador, redirige a Google.
+# GET {{baseUrl}}/auth/google
+
+### 10. Callback de Google — lo llama Google, no un cliente manual. Si falta la
+### fecha de nacimiento redirige al front con ?pending=complete_profile.
+# GET {{baseUrl}}/auth/google/callback?code=...&state=...
+
+### ────────────────────────────────────────────────────────────────────────
+### Cambio de email (requiere sesión completa — JWT)
+### ────────────────────────────────────────────────────────────────────────
+
+@newEmail = auth-test-new-{{$timestamp}}@test.local
+
+### 11. Paso 1: pide el cambio — el código va a la dirección NUEVA.
+POST {{baseUrl}}/auth/request-email-change
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "newEmail": "{{newEmail}}"
+}
+
+### 12. Paso 2: confirma con el código de 6 dígitos recibido en el email nuevo.
+@emailChangeCode = 000000
+POST {{baseUrl}}/auth/confirm-email-change
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "{{emailChangeCode}}"
+}

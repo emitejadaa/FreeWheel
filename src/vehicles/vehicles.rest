@@ -1,0 +1,112 @@
+### vehicles.rest — CRUD de vehículos con ownership
+### Módulo: src/vehicles/vehicles.controller.ts (VehiclesModule)
+###
+### GET /vehicles/:id es público. GET /vehicles/me requiere JWT. POST/PATCH/DELETE
+### requieren JWT + cuenta VERIFICADA (JwtAuthGuard, VerifiedAccountGuard,
+### @RequireVerifiedAccount — teléfono + DNI + licencia aprobados). Sin cuenta
+### verificada estos tres devuelven 403 { code: "ACCOUNT_NOT_VERIFIED" }.
+### Para levantar una cuenta VERIFIED rápido en local: IDENTITY_REVIEW_MODE=auto_approve
+### en .env y completar el flujo de src/verification/verification.rest, o forzarlo
+### desde src/admin/admin.rest (PATCH /admin/verifications/:id/review).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta de prueba (detalle del flujo en src/auth/auth.rest) ──────
+@email = vehicles-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Carla",
+  "lastName": "Owner",
+  "acceptedTerms": true,
+  "dateOfBirth": "1992-07-15"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Crea un vehículo propio (todos los campos opcionales incluidos).
+### Requiere cuenta verificada.
+# @name createVehicle
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "brand": "Toyota",
+  "model": "Corolla",
+  "year": 2021,
+  "category": "SEDAN",
+  "plate": "AB123CD",
+  "color": "Gris",
+  "seats": 5,
+  "transmission": "AUTOMATIC",
+  "fuelType": "GASOLINE",
+  "drivetrain": "FRONT",
+  "bluetooth": true,
+  "rearCamera": true,
+  "parkingSensors": false,
+  "fuelConsumptionLitersPer100Km": 7.2,
+  "doors": 4,
+  "trunkCapacityLiters": 470,
+  "widthMm": 1780,
+  "lengthMm": 4630,
+  "heightMm": 1435,
+  "weightKg": 1320,
+  "horsePower": 140,
+  "engineDisplacementCC": 2000,
+  "observations": "Service al día, aire acondicionado frío."
+}
+
+@vehicleId = {{createVehicle.response.body.$.id}}
+
+### 2. Vehículo mínimo (solo campos obligatorios: brand, model, year).
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "brand": "Honda",
+  "model": "Civic",
+  "year": 2019
+}
+
+### 3. Lista los vehículos propios.
+GET {{baseUrl}}/vehicles/me
+Authorization: Bearer {{accessToken}}
+
+### 4. Lee un vehículo público por id (sin auth).
+GET {{baseUrl}}/vehicles/{{vehicleId}}
+
+### 5. Actualiza el vehículo propio (PATCH parcial — cualquier subconjunto de
+### los campos de creación).
+PATCH {{baseUrl}}/vehicles/{{vehicleId}}
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "color": "Negro",
+  "observations": "Cubiertas nuevas."
+}
+
+### 6. Elimina el vehículo propio (falla si tiene listings asociados).
+DELETE {{baseUrl}}/vehicles/{{vehicleId}}
+Authorization: Bearer {{accessToken}}

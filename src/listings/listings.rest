@@ -1,0 +1,179 @@
+### listings.rest — Publicaciones, catálogo público, disponibilidad y cambio de precio
+### Módulo: src/listings/listings.controller.ts (ListingsModule + AvailabilityModule)
+### Incluye también los endpoints de disponibilidad (src/availability) porque se
+### exponen bajo el mismo prefijo /listings/:id/... en este controller.
+###
+### POST/PATCH/DELETE de listing, availability-blocks (crear/borrar) y price-change
+### (request/confirm) requieren JWT + cuenta VERIFICADA. GET del catálogo es público.
+### Ver src/verification/verification.rest o src/admin/admin.rest para dejar una
+### cuenta VERIFIED en local (IDENTITY_REVIEW_MODE=auto_approve).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta + vehículo propio (detalle del flujo en src/auth/auth.rest) ──
+@email = listings-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Carla",
+  "lastName": "Owner",
+  "acceptedTerms": true,
+  "dateOfBirth": "1992-07-15"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+# @name createVehicle
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "brand": "Toyota",
+  "model": "Corolla",
+  "year": 2021,
+  "category": "SEDAN"
+}
+
+@vehicleId = {{createVehicle.response.body.$.id}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Publicación (CRUD)
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Crea un listing para el vehículo propio.
+### locationText + latitude + longitude describen UN punto y viajan juntos.
+### deliveryRadiusM: metros a la redonda que el dueño lleva el auto (0 = retira
+### en el lugar, default; máximo 200000).
+# @name createListing
+POST {{baseUrl}}/listings
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "vehicleId": "{{vehicleId}}",
+  "title": "Toyota Corolla 2021 - Impecable",
+  "description": "Auto full equipo, service al día, ideal para viajes largos o uso diario.",
+  "pricePerDay": 15000,
+  "locationText": "Av. Corrientes 1234, CABA",
+  "latitude": -34.6037,
+  "longitude": -58.3816,
+  "deliveryRadiusM": 5000,
+  "status": "ACTIVE"
+}
+
+@listingId = {{createListing.response.body.$.id}}
+
+### 2. Catálogo público — listings ACTIVE con filtros y paginación.
+GET {{baseUrl}}/listings?page=1&limit=20&sort=newest
+    &locationText=CABA&minPrice=1000&maxPrice=50000
+    &brand=Toyota&model=Corolla
+    &category=SEDAN&transmission=AUTOMATIC&fuelType=GASOLINE&minSeats=4
+    &startDate=2026-09-01&endDate=2026-09-05
+
+### 3. Catálogo público sin filtros (defaults: page=1, limit=20, sort=newest).
+GET {{baseUrl}}/listings
+
+### 4. Lista los listings propios (cualquier estado, incluido DRAFT/PAUSED).
+GET {{baseUrl}}/listings/me
+Authorization: Bearer {{accessToken}}
+
+### 5. Obtiene un listing (público; con auth opcional el dueño también ve los
+### suyos en DRAFT/PAUSED).
+GET {{baseUrl}}/listings/{{listingId}}
+Authorization: Bearer {{accessToken}}
+
+### 6. Actualiza el listing propio (PATCH parcial — mismos campos que la
+### creación; locationText/latitude/longitude viajan juntos o ninguno).
+PATCH {{baseUrl}}/listings/{{listingId}}
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "title": "Toyota Corolla 2021 - Impecable (actualizado)",
+  "deliveryRadiusM": 10000
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### Disponibilidad
+### ────────────────────────────────────────────────────────────────────────
+
+### 7. Consulta disponibilidad de un listing en un rango de fechas (público).
+GET {{baseUrl}}/listings/{{listingId}}/availability?startDate=2026-09-01&endDate=2026-09-10
+
+### 8. Crea un bloqueo manual (el owner impide reservas en ese rango).
+# @name createBlock
+POST {{baseUrl}}/listings/{{listingId}}/availability-blocks
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "startDate": "2026-12-20",
+  "endDate": "2026-12-31",
+  "reason": "Vacaciones — auto no disponible"
+}
+
+@blockId = {{createBlock.response.body.$.id}}
+
+### 9. Lista los bloqueos manuales del listing (dueño).
+GET {{baseUrl}}/listings/{{listingId}}/availability-blocks
+Authorization: Bearer {{accessToken}}
+
+### 10. Elimina un bloqueo manual.
+DELETE {{baseUrl}}/listings/{{listingId}}/availability-blocks/{{blockId}}
+Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Cambio de precio (con confirmación por código, no es un PATCH directo)
+### ────────────────────────────────────────────────────────────────────────
+
+### 11. Estado: si se puede cambiar el precio ahora y, si no, por qué
+### (cooldown de PRICE_CHANGE_COOLDOWN_HOURS o reservas en curso).
+GET {{baseUrl}}/listings/{{listingId}}/price-change
+Authorization: Bearer {{accessToken}}
+
+### 12. Paso 1: pide el cambio de precio — sale un código de 6 dígitos al email.
+POST {{baseUrl}}/listings/{{listingId}}/price-change
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "pricePerDay": 18000
+}
+
+### 13. Paso 2: confirma con el código y el precio nuevo queda aplicado.
+@priceChangeCode = 000000
+POST {{baseUrl}}/listings/{{listingId}}/price-change/confirm
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "{{priceChangeCode}}"
+}
+
+### 14. Descarta el cambio de precio pendiente (sin confirmar).
+DELETE {{baseUrl}}/listings/{{listingId}}/price-change
+Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 15. Soft delete del listing propio (queda en estado DELETED).
+DELETE {{baseUrl}}/listings/{{listingId}}
+Authorization: Bearer {{accessToken}}
