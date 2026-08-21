@@ -1166,7 +1166,26 @@ Pasos:
    valida cloud, tipo de entrega, carpeta, slot y existencia de cada asset;
    persiste la URL canonica sin firma y crea la solicitud en `ID_SUBMITTED`.
 5. Si el checklist esta completo (email + telefono + fecha de nacimiento +
-   datos de identidad + 4 documentos), corre la revision:
+   datos de identidad + 4 documentos), corre la revision. Son **tres modulos
+   separados**, cada uno testeable por su cuenta, que orquesta
+   `IdentityVerificationPipeline`:
+
+   | modulo | que hace | depende de un modelo |
+   | --- | --- | --- |
+   | `extraction/ocr/` | lee el texto impreso y dice que dato es cada cosa | si |
+   | `extraction/code-extraction.service.ts` | decodifica PDF417 / QR / MRZ | no |
+   | `matching/field-comparison.ts` | cruza cada dato contra cada fuente | no |
+
+   Al modelo se le pide UNA sola cosa: transcribir lo que ve e identificar cada
+   dato. El prompt le prohibe explicitamente comparar o validar contra
+   cualquier otra fuente; eso lo hace el tercer modulo, en codigo.
+
+   Cada etapa queda registrada con lo que tardo y, si fallo, con un error del
+   catalogo (`errors/verification-errors.ts`): codigo estable, mensaje que dice
+   que paso y pista que dice que hacer. Ese rastro se guarda en la columna
+   `extracted` bajo `trace`.
+
+   El detalle de los pasos:
    - descarga las cuatro imagenes desde el almacenamiento privado;
    - decodifica el **PDF417** del DNI (fuente autoritativa) y el **QR/PDF417**
      de la licencia, reintentando con variantes de la imagen (ampliada, escala
@@ -1228,6 +1247,35 @@ cuentas esperando a un admin.
 Antifraude: `User.dni` y `User.cuil` son unicos, la aprobacion revalida dentro
 de la transaccion que el documento no verifique ya otra cuenta, y los campos
 que respaldan la identidad quedan inmutables una vez `VERIFIED`.
+
+#### Matriz de comparacion
+
+`matchReport.matrix` trae, para cada dato comparable (`lastName`, `firstName`,
+`documentNumber`, `birthDate`, `sex`, `cuil`, `address`, `dniExpiry`,
+`licenseExpiry`), que dijo cada fuente (`form`, `pdf417_dni`, `mrz`,
+`license_code` y el OCR de cada uno de los cuatro lados), con el texto tal cual
+esta impreso y el normalizado, si coinciden entre si, y de donde sale el valor
+que se toma por bueno. La precedencia entre fuentes esta declarada en
+`FIELD_PRECEDENCE`, con dos asimetrias a proposito: el vencimiento del DNI sale
+del MRZ antes que del texto impreso, y el de la licencia al reves.
+
+La matriz es EVIDENCIA, no decision: cada check conserva su propio criterio (el
+domicilio se compara por parecido, los nombres admiten un segundo nombre de
+mas, los vencimientos se miran contra la fecha de hoy).
+
+#### Diagnostico (solo para probar)
+
+| Ruta | Que hace |
+| --- | --- |
+| `POST /verification/diagnose/document` | Todo lo que se puede leer de UNA foto: codigos con su payload crudo, texto leido con la posicion de cada dato, etapas y errores. Acepta `image` (dataURL) o `url` (un documento propio ya subido). |
+| `POST /verification/diagnose/compare` | La matriz, los checks y el veredicto a partir de lo que devolvio el endpoint anterior. Los codigos se vuelven a interpretar desde su payload crudo: decide el backend, no el cliente. |
+| `GET /verification/diagnose/info` | Las tablas de referencia (fuentes, precedencia, que codigos rechazan y cuales mandan a revision). |
+
+Corren el mismo pipeline que la revision real y **no escriben ninguna fila**:
+no cambian el estado de la cuenta ni dejan registro de auditoria. Hoy piden
+sesion pero no rol de administrador, y devuelven datos personales completos del
+documento que se les manda: **antes de produccion hay que cerrarlos** (esta
+anotado en el encabezado de `diagnostics.controller.ts`).
 
 ### Flujo De Reserva Actual
 
