@@ -1,0 +1,161 @@
+### reports.rest — Reportes de publicaciones/usuarios y su resolución por admin
+### Módulo: src/reports/reports.controller.ts (ReportsModule)
+### create/listMine requieren JWT. Las rutas admin/* requieren JWT + RolesGuard
+### + @Roles(ADMIN) — ver la nota de src/admin/admin.rest para promover un
+### usuario a ADMIN en local.
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: reportante + owner con listing (ver auth.rest/listings.rest) ────
+
+@reporterEmail = report-user-{{$timestamp}}@test.local
+@ownerEmail = report-owner-{{$timestamp}}@test.local
+@password = TestPass123!
+@reporterCode = 000000
+@ownerCode = 000000
+
+# @name reporterRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{reporterEmail}}" }
+
+### ⚠️ Copiá el código del reportante de la consola del server antes de seguir.
+# @name reporterRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{reporterEmail}}",
+  "code": "{{reporterCode}}",
+  "password": "{{password}}",
+  "firstName": "Diego",
+  "lastName": "Reporter",
+  "acceptedTerms": true,
+  "dateOfBirth": "1991-02-02"
+}
+
+@accessToken = {{reporterRegisterComplete.response.body.$.accessToken}}
+
+# @name ownerRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{ownerEmail}}" }
+
+### ⚠️ Copiá el código del owner de la consola del server antes de seguir.
+# @name ownerRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{ownerEmail}}",
+  "code": "{{ownerCode}}",
+  "password": "{{password}}",
+  "firstName": "Carla",
+  "lastName": "Owner",
+  "acceptedTerms": true,
+  "dateOfBirth": "1992-07-15"
+}
+
+@ownerToken = {{ownerRegisterComplete.response.body.$.accessToken}}
+@ownerUserId = {{ownerRegisterComplete.response.body.$.user.id}}
+
+### El owner necesita cuenta VERIFIED para publicar (ver verification.rest).
+
+# @name createVehicle
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{ "brand": "Toyota", "model": "Corolla", "year": 2021, "category": "SEDAN" }
+
+@vehicleId = {{createVehicle.response.body.$.id}}
+
+# @name createListing
+POST {{baseUrl}}/listings
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{
+  "vehicleId": "{{vehicleId}}",
+  "title": "Toyota Corolla 2021",
+  "description": "Auto full equipo, service al día, ideal para viajes largos.",
+  "pricePerDay": 15000,
+  "locationText": "Av. Corrientes 1234, CABA",
+  "latitude": -34.6037,
+  "longitude": -58.3816,
+  "status": "ACTIVE"
+}
+
+@listingId = {{createListing.response.body.$.id}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Reporta una publicación (evidenceUrls: al menos 1, hasta 5).
+# @name createReport
+POST {{baseUrl}}/reports
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "targetType": "LISTING",
+  "listingId": "{{listingId}}",
+  "reason": "Fotos no corresponden al auto",
+  "details": "Las fotos de la publicación muestran un modelo distinto al que figura en la descripción y no coincide con la patente informada.",
+  "evidenceUrls": [
+    "https://res.cloudinary.com/demo/image/upload/v1/evidence/sample1.jpg"
+  ]
+}
+
+@reportId = {{createReport.response.body.$.id}}
+
+### 2. Reporta a una persona (targetUserId en vez de listingId).
+POST {{baseUrl}}/reports
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "targetType": "USER",
+  "targetUserId": "{{ownerUserId}}",
+  "reason": "No se presentó a la entrega",
+  "details": "Coordinamos el retiro para las 10hs y el dueño no contestó ni se presentó, ni avisó cancelación.",
+  "evidenceUrls": [
+    "https://res.cloudinary.com/demo/image/upload/v1/evidence/chat-screenshot.jpg"
+  ]
+}
+
+### 3. Los reportes que hizo quien consulta, con su estado.
+GET {{baseUrl}}/reports/me
+Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Panel de administración (requiere rol ADMIN — ver nota arriba)
+### ────────────────────────────────────────────────────────────────────────
+
+@adminToken = {{accessToken}}
+
+### 4. Lista todos los reportes (sin filtro).
+GET {{baseUrl}}/admin/reports
+Authorization: Bearer {{adminToken}}
+
+### 5. Filtra por estado (OPEN, ACTION_TAKEN, DISMISSED).
+GET {{baseUrl}}/admin/reports?status=OPEN
+Authorization: Bearer {{adminToken}}
+
+### 6. Cantidad de reportes abiertos (para el badge del panel admin).
+GET {{baseUrl}}/admin/reports/open-count
+Authorization: Bearer {{adminToken}}
+
+### 7. Resuelve un reporte. action: DISMISS, PAUSE_LISTING, DELETE_LISTING o
+### SUSPEND_USER.
+PATCH {{baseUrl}}/admin/reports/{{reportId}}/resolve
+Content-Type: {{contentType}}
+Authorization: Bearer {{adminToken}}
+
+{
+  "action": "PAUSE_LISTING",
+  "note": "Se pausó la publicación hasta que el dueño actualice las fotos."
+}

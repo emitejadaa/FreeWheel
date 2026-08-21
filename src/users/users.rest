@@ -1,0 +1,104 @@
+### users.rest — Perfil propio y perfil público
+### Módulo: src/users/users.controller.ts (UsersModule)
+### Todas las rutas requieren JWT (@UseGuards(JwtAuthGuard) a nivel de controller).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta de prueba (detalle del flujo en src/auth/auth.rest) ──────
+@email = users-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de 6 dígitos de la consola del server (`npm run start:dev`)
+### y pegalo acá antes de correr el siguiente request.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "acceptedTerms": true,
+  "dateOfBirth": "1995-05-20"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+@userId = {{registerComplete.response.body.$.user.id}}
+
+### Otra cuenta, para probar GET /users/:id (perfil público de un tercero).
+@otherEmail = users-other-{{$timestamp}}@test.local
+@otherRegisterCode = 000000
+
+# @name otherRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{otherEmail}}" }
+
+# @name otherRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{otherEmail}}",
+  "code": "{{otherRegisterCode}}",
+  "password": "{{password}}",
+  "firstName": "Bruno",
+  "lastName": "Díaz",
+  "acceptedTerms": true,
+  "dateOfBirth": "1990-03-10"
+}
+
+@otherUserId = {{otherRegisterComplete.response.body.$.user.id}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Perfil propio (seguro: nunca incluye password).
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{accessToken}}
+
+### 2. Perfil público de otra persona (requiere sesión, no un rol particular).
+### Se usa para ver con quién se trata en una reserva o en el chat.
+GET {{baseUrl}}/users/{{otherUserId}}
+Authorization: Bearer {{accessToken}}
+
+### 3. Actualiza el perfil propio.
+### dni/cuil/address quedan INMUTABLES una vez que la cuenta está VERIFIED
+### (403 IDENTITY_FIELDS_LOCKED). cuil debe tener DNI embebido + checksum
+### mod-11 válido (ver src/common/utils/cuil.util.ts).
+PATCH {{baseUrl}}/users/me
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "displayName": "Ana G.",
+  "phone": "+5491132895416",
+  "dni": "30111222",
+  "cuil": "20-30111222-0",
+  "address": "Av. Siempre Viva 742, Springfield, CABA",
+  "profilePhotoUrl": "https://res.cloudinary.com/demo/image/upload/v1/sample.jpg",
+  "profilePhotoVisibility": "EVERYONE",
+  "emailNotifications": true
+}
+
+### 4. Actualización parcial — solo notificaciones por email.
+PATCH {{baseUrl}}/users/me
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "emailNotifications": false
+}

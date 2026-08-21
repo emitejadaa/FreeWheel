@@ -1,0 +1,192 @@
+### payments.rest — Pagos (seña, saldo, depósito de garantía) y Stripe Connect
+### Módulo: src/payments/payments.controller.ts (PaymentsModule)
+###
+### Todas las rutas (salvo el webhook de Stripe) requieren JWT + cuenta VERIFICADA.
+### Con PAYMENTS_PROVIDER=mock (default en .env.example) los intents no hablan con
+### Stripe de verdad: usá mock-confirm/mock-fail para simular el resultado, porque
+### en modo mock nadie manda el webhook real.
+### Con PAYMENTS_PROVIDER=stripe (solo claves sk_test_/rk_test_) los intents crean
+### PaymentIntents reales de Stripe: el front tokeniza con Stripe.js y el estado
+### avanza recién cuando llega el webhook firmado (request #9 más abajo).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: owner con listing + renter + reserva ACCEPTED (ver bookings.rest) ──
+
+@ownerEmail = payments-owner-{{$timestamp}}@test.local
+@renterEmail = payments-renter-{{$timestamp}}@test.local
+@password = TestPass123!
+@ownerCode = 000000
+@renterCode = 000000
+
+# @name ownerRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{ownerEmail}}" }
+
+### ⚠️ Copiá el código del owner de la consola del server antes de seguir.
+# @name ownerRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{ownerEmail}}",
+  "code": "{{ownerCode}}",
+  "password": "{{password}}",
+  "firstName": "Carla",
+  "lastName": "Owner",
+  "acceptedTerms": true,
+  "dateOfBirth": "1992-07-15"
+}
+
+@ownerToken = {{ownerRegisterComplete.response.body.$.accessToken}}
+
+# @name renterRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{renterEmail}}" }
+
+### ⚠️ Copiá el código del renter de la consola del server antes de seguir.
+# @name renterRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{renterEmail}}",
+  "code": "{{renterCode}}",
+  "password": "{{password}}",
+  "firstName": "Bruno",
+  "lastName": "Renter",
+  "acceptedTerms": true,
+  "dateOfBirth": "1990-03-10"
+}
+
+@renterToken = {{renterRegisterComplete.response.body.$.accessToken}}
+
+### Owner y renter necesitan cuenta VERIFIED (ver verification.rest / admin.rest).
+
+# @name createVehicle
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{ "brand": "Toyota", "model": "Corolla", "year": 2021, "category": "SEDAN" }
+
+@vehicleId = {{createVehicle.response.body.$.id}}
+
+# @name createListing
+POST {{baseUrl}}/listings
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{
+  "vehicleId": "{{vehicleId}}",
+  "title": "Toyota Corolla 2021",
+  "description": "Auto full equipo, service al día, ideal para viajes largos.",
+  "pricePerDay": 15000,
+  "locationText": "Av. Corrientes 1234, CABA",
+  "latitude": -34.6037,
+  "longitude": -58.3816,
+  "status": "ACTIVE"
+}
+
+@listingId = {{createListing.response.body.$.id}}
+
+# @name createBooking
+POST {{baseUrl}}/bookings
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{
+  "listingId": "{{listingId}}",
+  "startDate": "2026-09-10",
+  "endDate": "2026-09-15"
+}
+
+@bookingId = {{createBooking.response.body.$.id}}
+
+# @name acceptBooking
+PATCH {{baseUrl}}/bookings/{{bookingId}}/accept
+Authorization: Bearer {{ownerToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Cobros (renter)
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Crea (o reusa) el PaymentIntent de la seña (30% — SENA_PCT).
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/sena-intent
+Authorization: Bearer {{renterToken}}
+
+### 2. PaymentIntent del saldo restante (requiere la seña ya pagada).
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/balance-intent
+Authorization: Bearer {{renterToken}}
+
+### 3. PaymentIntent del depósito de garantía (hold — captura manual).
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/deposit-hold
+Authorization: Bearer {{renterToken}}
+
+### 4. Estado del pago: montos calculados en el servidor + records.
+GET {{baseUrl}}/payments/bookings/{{bookingId}}/status
+Authorization: Bearer {{renterToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Simulación (solo PAYMENTS_PROVIDER=mock — en Stripe real el estado avanza
+### vía webhook firmado, no con estos dos endpoints)
+### ────────────────────────────────────────────────────────────────────────
+
+### 5. Simula el pago exitoso de un tramo puntual (kind opcional: "SENA",
+### "BALANCE" o "DEPOSIT_HOLD" — sin kind, confirma seña+saldo+depósito juntos).
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-confirm
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{
+  "kind": "SENA"
+}
+
+### 6. Todos los tramos de una — así el owner puede seguir con "listo para retiro".
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-confirm
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{}
+
+### 7. Simula el rechazo de un tramo puntual.
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-fail
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{
+  "kind": "BALANCE"
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### Stripe Connect (owner)
+### ────────────────────────────────────────────────────────────────────────
+
+### 8. Crea la cuenta conectada del owner (onboarding de Stripe Connect).
+POST {{baseUrl}}/payments/connect/onboarding
+Authorization: Bearer {{ownerToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Webhook de Stripe (público — autentica por firma sobre el raw body, NUNCA
+### se llama a mano con datos inventados: la firma no va a validar. Se deja
+### documentado como referencia; para probarlo de verdad usá `stripe trigger`
+### o el forwarder de la CLI de Stripe apuntando a este endpoint.)
+### ────────────────────────────────────────────────────────────────────────
+
+### 9. Ejemplo de forma (fallará con 400 "Invalid Stripe webhook signature"
+### salvo que Stripe-Signature sea una firma real calculada con STRIPE_WEBHOOK_SECRET).
+POST {{baseUrl}}/payments/stripe/webhook
+Content-Type: application/json
+Stripe-Signature: t=0,v1=firma-invalida-de-ejemplo
+
+{
+  "id": "evt_example",
+  "type": "payment_intent.succeeded",
+  "data": { "object": { "id": "pi_example" } }
+}

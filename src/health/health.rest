@@ -1,0 +1,20 @@
+### health.rest — Estado de la API y del deploy
+### Módulo: src/health/health.controller.ts (HealthModule)
+### Todas las rutas son PÚBLICAS a propósito (ver comentarios en el controller):
+### sirven para diagnosticar un deploy sin acceso al panel del proveedor.
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver README:
+### REST_CLIENT.md en la raíz del repo.
+###
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### 1. Status básico: ok/environment/timestamp
+GET {{baseUrl}}/health
+
+### 2. ¿La base responde y tiene lo que el código necesita?
+GET {{baseUrl}}/health/db
+
+### 3. Qué variables de entorno están cargadas (solo nombres + true/false,
+### nunca valores) — útil para verificar un deploy de Vercel a ciegas.
+GET {{baseUrl}}/health/env

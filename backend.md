@@ -1632,6 +1632,36 @@ Herramientas operativas (no-Jest) que se conservan:
 - `scripts/endpoint-checker/*`: checkers local/deploy con reintentos.
 - `npm run preflight`: Prisma validate/generate + build + checker local.
 
+### Pruebas manuales (`.rest`)
+
+Cada modulo de `src/` tiene un archivo `<modulo>.rest` (extension **REST
+Client** de VS Code, `humao.rest-client`) con todos sus endpoints configurados
+para dispararse tal cual y probar cada flujo de punta a punta a mano —
+`src/auth/auth.rest`, `src/users/users.rest`, `src/vehicles/vehicles.rest`,
+`src/listings/listings.rest`, `src/bookings/bookings.rest`,
+`src/payments/payments.rest`, `src/contracts/contracts.rest`,
+`src/media/media.rest`, `src/conversations/conversations.rest`,
+`src/verification/verification.rest`, `src/admin/admin.rest`,
+`src/favorites/favorites.rest`, `src/reports/reports.rest`,
+`src/reviews/reviews.rest`, `src/ai/ai.rest`, `src/health/health.rest` y
+`src/app.rest`.
+
+Cada archivo es autocontenido: arranca con un bloque "Setup" que registra
+la(s) cuenta(s) de prueba que ese modulo necesita (login/registro encadenado
+con `# @name` + `{{request.response.body.$.campo}}`), y despues vienen los
+requests propios del modulo ya con `Authorization: Bearer {{accessToken}}`
+puesto. `baseUrl` sale de `.vscode/settings.json`
+(`rest-client.environmentVariables`, entornos `local`/`production`
+seleccionables con "Switch Environment" en VS Code).
+
+Dos fricciones a tener en cuenta al correrlos: el codigo de 6 digitos de
+verificacion no viaja en la respuesta HTTP en entornos no productivos (se
+loguea en la consola del server, hay que copiarlo a mano en la variable
+`@registerCode`/`@emailCode`/etc.); y las mutaciones que exigen cuenta
+`VERIFIED` (vehicles, listings, bookings, payments, contracts) devuelven `403
+ACCOUNT_NOT_VERIFIED` hasta pasar por `verification.rest` o forzar el estado
+con `PATCH /admin/verifications/:id/review` (ver `admin.rest`).
+
 ## 15. Estado Actual Implementado
 
 Implementado:
@@ -1804,6 +1834,15 @@ Reglas operativas:
 - No usar `db push` en produccion.
 - Revisar migraciones antes de deploy.
 - Mantener `backend.md` y `README.md` sincronizados cuando cambie un contrato publico.
+- Mantener el archivo `.rest` del modulo correspondiente sincronizado con
+  cualquier cambio de endpoint, guard o DTO (ver "Pruebas manuales (`.rest`)"
+  en la seccion 14): ruta o metodo nuevo/eliminado, guard que cambia (auth,
+  cuenta verificada, rol), campo de DTO que se agrega, se saca o cambia de
+  obligatorio a opcional (o viceversa), o una respuesta encadenada por otro
+  archivo (tipicamente `accessToken` de `auth.rest`, o ids de
+  vehicle/listing/booking usados como setup) que cambia de forma. El archivo
+  tiene que seguir siendo corrible tal cual, con payloads de ejemplo validos
+  contra las reglas de `class-validator` vigentes.
 - Si falla Prisma en Vercel build, revisar `DATABASE_URL` de build.
 - Si falla CORS, recordar que el backend actual refleja origen entrante.
 - Si falla hashing en serverless, verificar que se use `bcryptjs`, no `bcrypt`.

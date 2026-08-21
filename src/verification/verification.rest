@@ -1,0 +1,212 @@
+### verification.rest — Verificación de email, teléfono e identidad (DNI + licencia)
+### Módulo: src/verification/verification.controller.ts (VerificationModule)
+### Todas las rutas requieren JWT.
+###
+### Es EL camino para dejar una cuenta VERIFIED en local y así poder probar
+### vehicles/listings/bookings/payments/contracts sin 403 ACCOUNT_NOT_VERIFIED.
+### Con IDENTITY_REVIEW_MODE=auto_approve (.env — solo desarrollo) el submit de
+### los 4 documentos aprueba directo, sin depender de Groq. Igual necesita que
+### los 4 archivos EXISTAN de verdad en Cloudinary (el submit valida existencia
+### real vía la Admin API), así que hace falta CLOUDINARY_* configurado y subir
+### algo, aunque sea una imagen de prueba cualquiera (los requests #7-#10 más
+### abajo hacen la subida real a Cloudinary con la firma que devuelve el backend).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta de prueba (detalle del flujo en src/auth/auth.rest) ──────
+@email = verif-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "phone": "+5491132895416",
+  "acceptedTerms": true,
+  "dateOfBirth": "1995-05-20"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### Datos de identidad manuales, requeridos por el checklist (ver users.rest
+### para el detalle de PATCH /users/me). cuil debe traer el dni embebido y
+### checksum mod-11 válido.
+PATCH {{baseUrl}}/users/me
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "dni": "30111222",
+  "cuil": "20-30111222-0",
+  "address": "Av. Siempre Viva 742, Springfield, CABA"
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### Email y teléfono
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Solicita el código de verificación de email (además del que ya mandó
+### el registro; útil si expiró o para reenviar a mano).
+POST {{baseUrl}}/verification/email/request
+Authorization: Bearer {{accessToken}}
+
+### 2. Confirma el código de email (6 dígitos — mirá la consola del server).
+@emailCode = 000000
+POST {{baseUrl}}/verification/email/confirm
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "{{emailCode}}"
+}
+
+### 3. Solicita el código de teléfono. Con SMS_PROVIDER=mock (default) el
+### código NO se manda por SMS real: se manda al EMAIL de la cuenta.
+POST {{baseUrl}}/verification/phone/request
+Authorization: Bearer {{accessToken}}
+
+### 4. Confirma el código de teléfono.
+@phoneCode = 000000
+POST {{baseUrl}}/verification/phone/confirm
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "{{phoneCode}}"
+}
+
+### 5. Estado propio + checklist derivado (emailVerified, phoneVerified,
+### documentsSubmitted, dateOfBirthProvided, identityDataProvided,
+### fullyVerified, lastReview).
+GET {{baseUrl}}/verification/me/status
+Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Identidad: DNI + licencia (frente y dorso) — firma + subida + submit
+### ────────────────────────────────────────────────────────────────────────
+
+### 6a. Firma la subida del FRENTE del DNI.
+# @name signDniFront
+POST {{baseUrl}}/verification/identity/upload-signature
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "document": "dni",
+  "side": "front"
+}
+
+### 6b. Firma la subida del DORSO del DNI.
+# @name signDniBack
+POST {{baseUrl}}/verification/identity/upload-signature
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "document": "dni",
+  "side": "back"
+}
+
+### 6c. Firma la subida del FRENTE de la licencia.
+# @name signLicenseFront
+POST {{baseUrl}}/verification/identity/upload-signature
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "document": "license",
+  "side": "front"
+}
+
+### 6d. Firma la subida del DORSO de la licencia.
+# @name signLicenseBack
+POST {{baseUrl}}/verification/identity/upload-signature
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "document": "license",
+  "side": "back"
+}
+
+### 7. Sube el archivo REAL a Cloudinary con la firma de 6a (repetir para
+### 6b/6c/6d cambiando la variable de firma y el path del archivo). Necesitás
+### un archivo local — ajustá la ruta antes de correr esto.
+POST https://api.cloudinary.com/v1_1/{{signDniFront.response.body.$.cloudName}}/image/upload
+Content-Type: multipart/form-data; boundary=----FreeWheelBoundary
+
+------FreeWheelBoundary
+Content-Disposition: form-data; name="file"; filename="dni-front.jpg"
+Content-Type: image/jpeg
+
+< ./ruta/a/tu/dni-front.jpg
+------FreeWheelBoundary
+Content-Disposition: form-data; name="api_key"
+
+{{signDniFront.response.body.$.apiKey}}
+------FreeWheelBoundary
+Content-Disposition: form-data; name="timestamp"
+
+{{signDniFront.response.body.$.timestamp}}
+------FreeWheelBoundary
+Content-Disposition: form-data; name="signature"
+
+{{signDniFront.response.body.$.signature}}
+------FreeWheelBoundary
+Content-Disposition: form-data; name="folder"
+
+{{signDniFront.response.body.$.folder}}
+------FreeWheelBoundary
+Content-Disposition: form-data; name="public_id"
+
+{{signDniFront.response.body.$.publicId}}
+------FreeWheelBoundary
+Content-Disposition: form-data; name="type"
+
+authenticated
+------FreeWheelBoundary--
+
+### 8. Envía las cuatro URLs canónicas y dispara la revisión. La URL canónica
+### tiene la forma https://res.cloudinary.com/<cloud>/image/authenticated/<publicId>.<ext>
+### (armala a mano con publicId de cada firma + la extensión real del archivo
+### subido, o repetí el request #7 y copiá la URL que confirma Cloudinary).
+@dniFrontUrl = https://res.cloudinary.com/tu-cloud/image/authenticated/identity/USER_ID/dni_front_TIMESTAMP_NONCE.jpg
+@dniBackUrl = https://res.cloudinary.com/tu-cloud/image/authenticated/identity/USER_ID/dni_back_TIMESTAMP_NONCE.jpg
+@licenseFrontUrl = https://res.cloudinary.com/tu-cloud/image/authenticated/identity/USER_ID/license_front_TIMESTAMP_NONCE.jpg
+@licenseBackUrl = https://res.cloudinary.com/tu-cloud/image/authenticated/identity/USER_ID/license_back_TIMESTAMP_NONCE.jpg
+
+POST {{baseUrl}}/verification/identity/submit
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "dniFrontUrl": "{{dniFrontUrl}}",
+  "dniBackUrl": "{{dniBackUrl}}",
+  "licenseFrontUrl": "{{licenseFrontUrl}}",
+  "licenseBackUrl": "{{licenseBackUrl}}"
+}
+
+### 9. Reintenta la revisión de la solicitud pendiente (veredicto "inconclusive").
+POST {{baseUrl}}/verification/identity/review-retry
+Authorization: Bearer {{accessToken}}
+
+### 10. Solicitudes propias (sin URLs ni datos extraídos — solo estado,
+### checklist de documentos presentes y reasonCodes si fue rechazada).
+GET {{baseUrl}}/verification/identity/me
+Authorization: Bearer {{accessToken}}

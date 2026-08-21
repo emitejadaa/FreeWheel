@@ -1,5 +1,28 @@
 {
   "typescript.tsdk": "node_modules/typescript/lib",
   "typescript.enablePromptUseWorkspaceTsdk": true,
-  "eslint.workingDirectories": [{ "mode": "auto" }]
+  "eslint.workingDirectories": [{ "mode": "auto" }],
+
+  // Variables compartidas por TODOS los archivos .rest del proyecto (extensión
+  // "REST Client" de Huachao Mao). Elegí el entorno con el selector que aparece
+  // abajo a la derecha en VS Code ("Switch Environment") antes de disparar
+  // requests. Cada archivo .rest sigue siendo responsable de sus propios tokens
+  // (login encadenado con `# @name`), pero baseUrl sale de acá para no
+  // repetirlo en 17 archivos distintos.
+  "rest-client.environmentVariables": {
+    "$shared": {
+      "contentType": "application/json"
+    },
+    "local": {
+      "baseUrl": "http://localhost:3000"
+    },
+    "production": {
+      // Reemplazá por la URL real del deploy (Vercel) antes de usar este entorno.
+      "baseUrl": "https://tu-backend.vercel.app"
+    }
+  },
+  "rest-client.defaultHeaders": {
+    "User-Agent": "vscode-restclient"
+  },
+  "rest-client.timeoutinmilliseconds": 30000
 }

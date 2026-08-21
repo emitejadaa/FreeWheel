@@ -1,0 +1,13 @@
+### app.rest — Root / status básico de la API
+### Módulo: src/app.controller.ts (AppModule)
+###
+### Usá el selector "Switch Environment" (abajo a la derecha en VS Code) para
+### elegir "local" o "production" — baseUrl sale de .vscode/settings.json
+### (rest-client.environmentVariables). Requiere la extensión "REST Client"
+### (humao.rest-client).
+###
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### 1. Root — status básico, público, sin auth
+GET {{baseUrl}}/

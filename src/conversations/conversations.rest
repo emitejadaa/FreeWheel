@@ -1,0 +1,140 @@
+### conversations.rest — Chat entre renter y owner por listing
+### Módulo: src/conversations/conversations.controller.ts (ConversationsModule)
+### Todas las rutas requieren JWT (no exige cuenta verificada: mensajear queda libre).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: owner con listing ACTIVE + renter (ver auth.rest/listings.rest) ──
+
+@ownerEmail = conv-owner-{{$timestamp}}@test.local
+@renterEmail = conv-renter-{{$timestamp}}@test.local
+@password = TestPass123!
+@ownerCode = 000000
+@renterCode = 000000
+
+# @name ownerRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{ownerEmail}}" }
+
+### ⚠️ Copiá el código del owner de la consola del server antes de seguir.
+# @name ownerRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{ownerEmail}}",
+  "code": "{{ownerCode}}",
+  "password": "{{password}}",
+  "firstName": "Carla",
+  "lastName": "Owner",
+  "acceptedTerms": true,
+  "dateOfBirth": "1992-07-15"
+}
+
+@ownerToken = {{ownerRegisterComplete.response.body.$.accessToken}}
+
+# @name renterRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{renterEmail}}" }
+
+### ⚠️ Copiá el código del renter de la consola del server antes de seguir.
+# @name renterRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{renterEmail}}",
+  "code": "{{renterCode}}",
+  "password": "{{password}}",
+  "firstName": "Bruno",
+  "lastName": "Renter",
+  "acceptedTerms": true,
+  "dateOfBirth": "1990-03-10"
+}
+
+@renterToken = {{renterRegisterComplete.response.body.$.accessToken}}
+
+### El owner necesita cuenta VERIFIED para publicar (ver verification.rest).
+
+# @name createVehicle
+POST {{baseUrl}}/vehicles
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{ "brand": "Toyota", "model": "Corolla", "year": 2021, "category": "SEDAN" }
+
+@vehicleId = {{createVehicle.response.body.$.id}}
+
+# @name createListing
+POST {{baseUrl}}/listings
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{
+  "vehicleId": "{{vehicleId}}",
+  "title": "Toyota Corolla 2021",
+  "description": "Auto full equipo, service al día, ideal para viajes largos.",
+  "pricePerDay": 15000,
+  "locationText": "Av. Corrientes 1234, CABA",
+  "latitude": -34.6037,
+  "longitude": -58.3816,
+  "status": "ACTIVE"
+}
+
+@listingId = {{createListing.response.body.$.id}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. El renter crea (o reusa) la conversación con el owner del listing.
+# @name startConversation
+POST {{baseUrl}}/conversations
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{
+  "listingId": "{{listingId}}"
+}
+
+@conversationId = {{startConversation.response.body.$.id}}
+
+### 2. Lista las conversaciones propias (como renter u owner).
+GET {{baseUrl}}/conversations/me
+Authorization: Bearer {{renterToken}}
+
+### 3. Obtiene una conversación (solo participantes).
+GET {{baseUrl}}/conversations/{{conversationId}}
+Authorization: Bearer {{renterToken}}
+
+### 4. El renter envía un mensaje de texto (type es opcional, default TEXT).
+POST {{baseUrl}}/conversations/{{conversationId}}/messages
+Content-Type: {{contentType}}
+Authorization: Bearer {{renterToken}}
+
+{
+  "content": "Hola! ¿El auto está disponible para retirar el 10/9?",
+  "type": "TEXT"
+}
+
+### 5. El owner responde con una nota de audio (URL ya subida a Cloudinary).
+POST {{baseUrl}}/conversations/{{conversationId}}/messages
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{
+  "content": "https://res.cloudinary.com/demo/video/upload/v1/audio/sample.mp3",
+  "type": "AUDIO"
+}
+
+### 6. Lista los mensajes de la conversación.
+GET {{baseUrl}}/conversations/{{conversationId}}/messages
+Authorization: Bearer {{renterToken}}
+
+### 7. El renter marca como leídos los mensajes entrantes (los del owner).
+PATCH {{baseUrl}}/conversations/{{conversationId}}/read
+Authorization: Bearer {{renterToken}}
