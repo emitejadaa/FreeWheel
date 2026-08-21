@@ -46,6 +46,13 @@ const DEFAULT_VISION_MODELS = [
 const MODEL_GONE = /model_not_found|decommission|does not exist|not found/i;
 
 /**
+ * Errores de Groq que significan "ese modelo no acepta estos parámetros": se
+ * repite el pedido sin ellos en vez de dar la revisión por perdida.
+ */
+const UNSUPPORTED_PARAM =
+  /response_format|json_object|json mode|json_validate|reasoning_format/i;
+
+/**
  * Un 400 que se queja de la IMAGEN y no del modelo, de la clave ni de la cuota.
  * Sirve para no dar por roto algo que está bien: ver probeVisionModel().
  */
@@ -58,6 +65,17 @@ const IMAGE_COMPLAINT =
  */
 const PROBE_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABQklEQVR4AeyUsQ2DUAxELSagZQR2YBJWYR9K9mAIBAtQUyZyh9xwUihi3yFZ4ivWl+/5keZD/jRG/ggAuQAmA2QAOQF9AuQCYH+C27bZPM+pymdGlgt9Auu62jRNqcpnfg0AclHWHsiArOGQuQUAoVS5h86AuEwBiETYzjKAbeMxrwyIRNjOMoBt4zGvDIhE2M4ygG3jMa8MiETYzjKg+saf8kEGjONo+76nKp/5Kbz/DgHwxqolAMhmj+OwZVlSlc+MZIMMuK7LzvNMVT7zawCQi7L2QAZkDYfMLQAIpco9MqDydpFsMgChVLlHBlTeLpKtnAFI6HuPANxpML7LAMat3zPLgDsNxnfIgK7rbBiGVOUzIwuFALRta33fpyqf+TUAyEVZeyADsoZD5hYAhFLlHhlQebtINhmAUPrnnl9n+wIAAP//95dS9wAAAAZJREFUAwAfdSeuB4m6lgAAAABJRU5ErkJggg==";
+
+/**
+ * Tope de tokens de las respuestas que tienen que traer un JSON.
+ *
+ * Eran 400 y alcanzaban de sobra para el JSON pedido... hasta que el modelo de
+ * turno pasó a ser uno de razonamiento: el análisis se comía el tope entero y
+ * la respuesta llegaba cortada antes del JSON. Con `reasoning_format: hidden`
+ * ese análisis ya no viaja en el contenido, pero igual consume tokens, así que
+ * el tope queda holgado. Solo se paga lo que el modelo realmente escribe.
+ */
+const DOCUMENT_MAX_TOKENS = 1200;
 
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -129,6 +147,16 @@ const UNAVAILABLE: Record<
     unavailable: "自动审核目前不可用。",
     unreadable: "无法解析自动审核的结果。",
   },
+};
+
+/** Qué texto de UNAVAILABLE le corresponde a cada motivo de fallo. */
+const UNAVAILABLE_TEXT: Record<
+  AiUnavailableCode,
+  "notConfigured" | "unavailable" | "unreadable"
+> = {
+  not_configured: "notConfigured",
+  upstream_error: "unavailable",
+  unreadable: "unreadable",
 };
 
 const DOC_RESULT: Record<SupportedLang, { ok: string; bad: string }> = {
@@ -219,6 +247,29 @@ export type AiUnavailableCode =
   | "upstream_error"
   | "unreadable";
 
+/** Lo que contesta GET /ai/health. */
+export interface AiHealthReport {
+  configured: boolean;
+  visionModels: string[];
+  lastVisionError: string | null;
+  /**
+   * Recorte de la última respuesta que no se pudo interpretar. Solo se incluye
+   * para administradores: el texto lo escribió el modelo mirando un documento.
+   */
+  lastVisionSample?: string | null;
+  availableVisionModels?: string[];
+  /** Resultado de probar cada modelo, solo cuando se pide con ?probe=1. */
+  probed?: {
+    model: string;
+    ok: boolean;
+    error?: string;
+    testImageRejected?: boolean;
+  }[];
+  problem?: string;
+  /** Aclaración cuando NO hay nada roto pero la prueba no fue concluyente. */
+  note?: string;
+}
+
 export interface DocumentInspection {
   /** true = corresponde, false = no corresponde, null = no se pudo revisar. */
   matches: boolean | null;
@@ -231,12 +282,68 @@ export interface DocumentInspection {
   expiresAt?: string | null;
 }
 
+/**
+ * Saca de la respuesta todo lo que no es la respuesta.
+ *
+ * POR QUÉ EXISTE: los modelos de razonamiento (qwen3, deepseek-r1) escriben
+ * primero su análisis dentro de <think>...</think> y recién después contestan.
+ * Ese análisis se lleva casi todos los tokens del tope, así que lo que llegaba
+ * era un <think> cortado por la mitad, sin una sola llave, y la revisión
+ * terminaba en "no se pudo interpretar la revisión automática" con CUALQUIER
+ * imagen. Un <think> sin cerrar es exactamente eso: la respuesta se cortó y
+ * después no viene nada.
+ */
+export function stripReasoning(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, " ")
+    .replace(/<think>[\s\S]*$/i, " ")
+    .replace(/```json/gi, " ")
+    .replace(/```/g, " ")
+    .trim();
+}
+
+/**
+ * El primer objeto JSON COMPLETO del texto, contando llaves y salteando las
+ * que estén dentro de un string. El `/\{[\s\S]*\}/` de antes agarraba desde la
+ * primera llave que apareciera en el razonamiento hasta la última del texto,
+ * así que devolvía algo que no parsea aunque el JSON de verdad estuviera ahí.
+ */
+export function findJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+
+  // Llegar acá es una respuesta cortada: hay apertura y nunca cierre.
+  return null;
+}
+
 /** Recorta el JSON de una respuesta que puede venir con texto alrededor. */
 function extractJson(text: string): Record<string, unknown> | null {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
+  const candidate = findJsonObject(stripReasoning(text));
+  if (!candidate) return null;
   try {
-    return JSON.parse(match[0]) as Record<string, unknown>;
+    return JSON.parse(candidate) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -288,6 +395,15 @@ export class AiService {
   /** Lo último que contestó Groq cuando falló, para poder mirarlo en /ai/health. */
   private lastVisionError: string | null = null;
 
+  /**
+   * Un recorte de la última respuesta que no se pudo interpretar. Es lo que
+   * hace falta para distinguir "el modelo se puso a razonar y no llegó a
+   * escribir el JSON" de "el modelo se negó a mirar un documento": desde afuera
+   * las dos se veían igual. Solo se le muestra a un administrador (puede traer
+   * texto del documento) y nunca se guarda en la base.
+   */
+  private lastVisionSample: string | null = null;
+
   /** Los modelos de visión a probar, en orden. GROQ_VISION_MODEL manda. */
   private visionModels(): string[] {
     const configured = (this.config.get<string>("GROQ_VISION_MODEL") ?? "")
@@ -313,6 +429,7 @@ export class AiService {
     imageUrl: string,
     prompt: string,
     maxTokens: number,
+    options: { jsonMode?: boolean; requireJson?: boolean } = {},
   ): Promise<
     { ok: true; content: string } | { ok: false; code: AiUnavailableCode }
   > {
@@ -324,60 +441,49 @@ export class AiService {
       return { ok: false, code: "not_configured" };
     }
 
+    let contestoSinJson = false;
+
     for (const model of this.visionModels()) {
-      try {
-        const res = await fetch(GROQ_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.apiKey()}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "user",
-                content: [
-                  { type: "image_url", image_url: { url: imageUrl } },
-                  { type: "text", text: prompt },
-                ],
-              },
-            ],
-            temperature: 0,
-            max_tokens: maxTokens,
-          }),
-        });
+      const answer = await this.callVisionModel(
+        model,
+        imageUrl,
+        prompt,
+        maxTokens,
+        options,
+      );
 
-        if (res.ok) {
-          const data = (await res.json()) as {
-            choices?: { message?: { content?: string } }[];
-          };
-          this.lastVisionError = null;
-          return {
-            ok: true,
-            content: data.choices?.[0]?.message?.content ?? "",
-          };
-        }
+      // El modelo ya no existe: el siguiente de la lista.
+      if (answer.kind === "unusable_model") continue;
+      // El problema no es el modelo (clave, cuota, imagen): reintentar no sirve.
+      if (answer.kind === "error") return { ok: false, code: "upstream_error" };
 
-        // El cuerpo del error dice lo que hace falta para arreglarlo (clave
-        // inválida, modelo dado de baja, imagen demasiado grande).
-        const detail = (await res.text().catch(() => "")).slice(0, 500);
-        this.lastVisionError = `${model} → ${res.status}: ${detail}`;
-        this.logger.error(
-          `Groq visión (${model}) respondió ${res.status}: ${detail}`,
-        );
-
-        // Si el modelo ya no existe, se prueba el siguiente de la lista. Con
-        // cualquier otro error no tiene sentido: el problema no es el modelo.
-        if (res.status === 404 || MODEL_GONE.test(detail)) continue;
-        return { ok: false, code: "upstream_error" };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.lastVisionError = `${model} → ${message}`;
-        this.logger.error(`Groq visión (${model}) falló: ${message}`);
-        return { ok: false, code: "upstream_error" };
+      if (!options.requireJson || findJsonObject(answer.content)) {
+        this.lastVisionError = null;
+        this.lastVisionSample = null;
+        return { ok: true, content: answer.content };
       }
+
+      // Contestó, pero no lo que se le pidió. Un modelo que no devuelve el JSON
+      // es tan inservible como uno dado de baja, así que se prueba el siguiente
+      // en vez de darle a la persona un "no se pudo interpretar" y listo. La
+      // muestra de lo que sí contestó queda guardada: sin eso, esta falla es
+      // invisible desde afuera (fue exactamente lo que pasó con qwen3, que
+      // gastaba todo el tope de tokens razonando).
+      contestoSinJson = true;
+      this.lastVisionSample =
+        answer.raw.slice(0, 300).replace(/\s+/g, " ").trim() ||
+        "(respuesta vacía)";
+      this.lastVisionError =
+        `${model} → contestó sin el JSON pedido` +
+        (answer.truncated ? " (cortado por el tope de tokens)" : "");
+      this.logger.error(
+        `Groq visión (${model}) no devolvió JSON` +
+          (answer.truncated ? " y la respuesta llegó cortada" : "") +
+          `: ${this.lastVisionSample}`,
+      );
     }
+
+    if (contestoSinJson) return { ok: false, code: "unreadable" };
 
     // Se agotó la lista: todos los modelos dieron "no existe".
     this.logger.error(
@@ -385,6 +491,112 @@ export class AiService {
         "Mirá GET /ai/health para ver los que ofrece hoy y cargá uno en GROQ_VISION_MODEL.",
     );
     return { ok: false, code: "upstream_error" };
+  }
+
+  /**
+   * Una llamada a UN modelo, con la respuesta ya clasificada en qué hacer con
+   * ella. Separada de askVisionModel() para que el bucle de modelos se lea de
+   * corrido y para poder reintentar sin los parámetros extra.
+   *
+   * LOS PARÁMETROS EXTRA (`jsonMode`): `response_format` obliga al modelo a
+   * devolver un objeto JSON y `reasoning_format: "hidden"` deja el razonamiento
+   * de los modelos que piensan (qwen3, deepseek-r1) fuera del contenido, que es
+   * lo que hacía llegar la respuesta cortada. No todos los modelos los
+   * aceptan: si Groq contesta 400 quejándose de ellos, se repite el pedido sin
+   * los extras antes de darlo por perdido.
+   */
+  private async callVisionModel(
+    model: string,
+    imageUrl: string,
+    prompt: string,
+    maxTokens: number,
+    options: { jsonMode?: boolean },
+    conExtras = options.jsonMode === true,
+  ): Promise<
+    | { kind: "content"; content: string; raw: string; truncated: boolean }
+    | { kind: "unusable_model" }
+    | { kind: "error" }
+  > {
+    try {
+      const res = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey()}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: imageUrl } },
+                { type: "text", text: prompt },
+              ],
+            },
+          ],
+          temperature: 0,
+          max_tokens: maxTokens,
+          ...(conExtras
+            ? {
+                response_format: { type: "json_object" },
+                reasoning_format: "hidden",
+              }
+            : {}),
+        }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as {
+          choices?: {
+            message?: { content?: string };
+            finish_reason?: string;
+          }[];
+        };
+        const choice = data.choices?.[0];
+        const raw = choice?.message?.content ?? "";
+        return {
+          kind: "content",
+          content: stripReasoning(raw),
+          raw,
+          // "length" = se acabó el tope de tokens antes de terminar de escribir.
+          truncated: choice?.finish_reason === "length",
+        };
+      }
+
+      // El cuerpo del error dice lo que hace falta para arreglarlo (clave
+      // inválida, modelo dado de baja, imagen demasiado grande).
+      const detail = (await res.text().catch(() => "")).slice(0, 500);
+
+      if (conExtras && res.status === 400 && UNSUPPORTED_PARAM.test(detail)) {
+        this.logger.warn(
+          `Groq visión (${model}) no acepta response_format/reasoning_format: ` +
+            "se repite el pedido sin esos parámetros.",
+        );
+        return this.callVisionModel(
+          model,
+          imageUrl,
+          prompt,
+          maxTokens,
+          options,
+          false,
+        );
+      }
+
+      this.lastVisionError = `${model} → ${res.status}: ${detail}`;
+      this.logger.error(
+        `Groq visión (${model}) respondió ${res.status}: ${detail}`,
+      );
+
+      return res.status === 404 || MODEL_GONE.test(detail)
+        ? { kind: "unusable_model" }
+        : { kind: "error" };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.lastVisionError = `${model} → ${message}`;
+      this.logger.error(`Groq visión (${model}) falló: ${message}`);
+      return { kind: "error" };
+    }
   }
 
   /**
@@ -461,22 +673,20 @@ export class AiService {
     }
   }
 
-  async health(probe = false): Promise<{
-    configured: boolean;
-    visionModels: string[];
-    lastVisionError: string | null;
-    availableVisionModels?: string[];
-    /** Resultado de probar cada modelo, solo cuando se pide con ?probe=1. */
-    probed?: {
-      model: string;
-      ok: boolean;
-      error?: string;
-      testImageRejected?: boolean;
-    }[];
-    problem?: string;
-    /** Aclaración cuando NO hay nada roto pero la prueba no fue concluyente. */
-    note?: string;
-  }> {
+  /**
+   * @param probe prueba cada modelo con una imagen (gasta cuota).
+   * @param includeSample agrega un recorte de la última respuesta que no se
+   *   pudo interpretar. Solo para administradores: puede traer texto del
+   *   documento de alguien.
+   */
+  async health(probe = false, includeSample = false): Promise<AiHealthReport> {
+    const report = await this.buildHealth(probe);
+    return includeSample
+      ? { ...report, lastVisionSample: this.lastVisionSample }
+      : report;
+  }
+
+  private async buildHealth(probe: boolean): Promise<AiHealthReport> {
     const visionModels = this.visionModels();
     if (!this.configured) {
       return {
@@ -678,17 +888,15 @@ export class AiService {
         "una mascota, una captura de pantalla o una persona sin documento), " +
         '"corresponde" debe ser false.\n' +
         answerInLanguage(lang, ["motivo", "tipo_detectado"]),
-      400,
+      DOCUMENT_MAX_TOKENS,
+      { jsonMode: true, requireJson: true },
     );
 
     if (!answer.ok) {
       return {
         matches: null,
         code: answer.code,
-        reason:
-          answer.code === "not_configured"
-            ? UNAVAILABLE[lang].notConfigured
-            : UNAVAILABLE[lang].unavailable,
+        reason: UNAVAILABLE[lang][UNAVAILABLE_TEXT[answer.code]],
       };
     }
 
@@ -730,9 +938,12 @@ export class AiService {
   async visionStructured(
     imageDataUrl: string,
     prompt: string,
-    maxTokens = 700,
+    maxTokens = DOCUMENT_MAX_TOKENS,
   ): Promise<string | null> {
-    const answer = await this.askVisionModel(imageDataUrl, prompt, maxTokens);
+    const answer = await this.askVisionModel(imageDataUrl, prompt, maxTokens, {
+      jsonMode: true,
+      requireJson: true,
+    });
     return answer.ok ? answer.content : null;
   }
 
@@ -784,7 +995,12 @@ export class AiService {
         '"que_es": "en 2 o 3 palabras qué se ve", ' +
         '"motivo": "una frase corta explicando la decisión"}\n' +
         answerInLanguage(lang, ["motivo", "que_es"]),
-      220,
+      // Mismo motivo que en la revisión de documentos: con un modelo de
+      // razonamiento, 220 tokens se van enteros en el análisis y la respuesta
+      // llega cortada antes del JSON. Acá no se exige el JSON (hay respaldo
+      // SI/NO), pero el tope holgado evita la mayoría de esos casos.
+      DOCUMENT_MAX_TOKENS,
+      { jsonMode: true },
     );
 
     if (!answer.ok) return { isVehicle: null, code: answer.code };

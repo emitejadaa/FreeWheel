@@ -57,7 +57,6 @@ describe("resolveIdentityReviewer", () => {
     "CLOUDINARY_CLOUD_NAME",
     "CLOUDINARY_API_KEY",
     "CLOUDINARY_API_SECRET",
-    "GROQ_API_KEY",
   ])("no arranca con document_ai explícito si falta %s", (missingKey) => {
     const env: Record<string, string> = {
       IDENTITY_REVIEW_MODE: "document_ai",
@@ -74,6 +73,26 @@ describe("resolveIdentityReviewer", () => {
   it("cae a manual si faltan credenciales y el modo es solo el default", () => {
     expect(resolve({}).name).toBe("manual");
     expect(resolve({ GROQ_API_KEY: "groq" }).name).toBe("manual");
+  });
+
+  /**
+   * GROQ_API_KEY ya no es un requisito: la clave la usa el OCR, que corrobora,
+   * no el PDF417, que es el ancla. Cuando era obligatoria, cualquier problema
+   * con Groq —clave sin cuota, modelo dado de baja— apagaba la revisión
+   * automática entera y mandaba a la cola del admin verificaciones que el
+   * código de barras del DNI podía resolver solo.
+   */
+  it("revisa igual sin GROQ_API_KEY: el OCR es opcional", () => {
+    const sinGroq = {
+      CLOUDINARY_CLOUD_NAME: "demo",
+      CLOUDINARY_API_KEY: "key",
+      CLOUDINARY_API_SECRET: "secret",
+    };
+
+    expect(resolve(sinGroq)).toBe(documentAi);
+    expect(resolve({ IDENTITY_REVIEW_MODE: "document_ai", ...sinGroq })).toBe(
+      documentAi,
+    );
   });
 
   it("no arranca con un modo desconocido", () => {

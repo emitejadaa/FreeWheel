@@ -7,10 +7,10 @@ import { SmsModule } from "../sms/sms.module";
 import { MediaModule } from "../media/media.module";
 import { AiModule } from "../ai/ai.module";
 import { AiService } from "../ai/ai.service";
+import { ExtractionModule } from "./extraction/extraction.module";
 import { VerificationController } from "./verification.controller";
 import { VerificationService } from "./verification.service";
 import { IdentityDocumentsService } from "./identity/identity-documents.service";
-import { BarcodeDecoderService } from "./extraction/barcode-decoder.service";
 import { DocumentOcrService } from "./extraction/document-ocr.service";
 import { IdentityMatchService } from "./matching/identity-match.service";
 import { IdentityReviewService } from "./review/identity-review.service";
@@ -21,19 +21,29 @@ import { AutoApproveReviewer } from "./review/auto-approve.reviewer";
 import { DocumentAiReviewer } from "./review/document-ai.reviewer";
 import { ManualReviewer } from "./review/manual.reviewer";
 
-/** Sin estas credenciales el modo document_ai no puede leer ningún documento. */
+/**
+ * Sin estas credenciales el modo document_ai no puede leer ningún documento:
+ * las fotos viven en Cloudinary y sin poder bajarlas no hay nada que revisar.
+ *
+ * GROQ_API_KEY NO está en la lista, aunque antes sí: la clave la usa el OCR,
+ * que es la parte prescindible del pipeline. El ancla de la verificación es el
+ * PDF417 del DNI —un decodificador, no un modelo— cruzado contra lo que la
+ * persona cargó en el formulario. Sin OCR se pierden los datos de corroboración
+ * (domicilio, MRZ, vencimientos), no la verificación; exigir la clave hacía que
+ * un problema con Groq dejara la revisión automática entera en manual.
+ */
 const REQUIRED_DOCUMENT_AI_ENV = [
   "CLOUDINARY_CLOUD_NAME",
   "CLOUDINARY_API_KEY",
   "CLOUDINARY_API_SECRET",
-  "GROQ_API_KEY",
 ];
 
 /**
  * Modo de revisión de identidad (IDENTITY_REVIEW_MODE):
  * - "document_ai" (default): revisión documental completa. Decodifica el PDF417
  *   del DNI y el QR de la licencia, lee el texto impreso con OCR, valida el MRZ
- *   y el CUIL, y cruza todo contra los datos de la cuenta.
+ *   y el CUIL, y cruza todo contra los datos de la cuenta. El OCR es opcional:
+ *   sin GROQ_API_KEY la revisión se sostiene con el PDF417 y el formulario.
  * - "ai": revisión liviana; un modelo de visión confirma que cada foto sea el
  *   documento pedido y extrae los datos visibles.
  * - "manual": nada se aprueba solo; decide un admin.
@@ -64,7 +74,16 @@ export function resolveIdentityReviewer(
     const missing = REQUIRED_DOCUMENT_AI_ENV.filter(
       (key) => !config.get<string>(key),
     );
-    if (missing.length === 0) return documentAi;
+    if (missing.length === 0) {
+      if (!config.get<string>("GROQ_API_KEY")) {
+        logger.warn(
+          "Falta GROQ_API_KEY: la revisión documental sigue funcionando con el " +
+            "PDF417 del DNI y los datos de la cuenta, pero sin el texto impreso " +
+            "(domicilio, MRZ y vencimientos quedan sin corroborar).",
+        );
+      }
+      return documentAi;
+    }
 
     if (configured) {
       throw new Error(
@@ -100,12 +119,12 @@ const identityReviewer: Provider = {
     SmsModule,
     MediaModule,
     AiModule,
+    ExtractionModule,
   ],
   controllers: [VerificationController],
   providers: [
     VerificationService,
     IdentityDocumentsService,
-    BarcodeDecoderService,
     DocumentOcrService,
     IdentityMatchService,
     DocumentAiReviewer,

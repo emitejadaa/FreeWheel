@@ -17,6 +17,7 @@ import { AiChatDto } from "./dto/ai-chat.dto";
 import { AiDocumentDto } from "./dto/ai-document.dto";
 import { AiTranscribeDto } from "./dto/ai-transcribe.dto";
 import { AiVisionDto } from "./dto/ai-vision.dto";
+import { DocumentPrecheckService } from "../verification/extraction/document-precheck.service";
 import { AiService } from "./ai.service";
 
 /**
@@ -30,7 +31,10 @@ import { AiService } from "./ai.service";
  */
 @Controller("ai")
 export class AiController {
-  constructor(private readonly ai: AiService) {}
+  constructor(
+    private readonly ai: AiService,
+    private readonly precheck: DocumentPrecheckService,
+  ) {}
 
   /**
    * ¿Está funcionando la revisión por IA? Dice si falta la clave, qué contestó
@@ -60,7 +64,9 @@ export class AiController {
         "Probar los modelos gasta cuota de la API: hace falta ser administrador",
       );
     }
-    return this.ai.health(probar);
+    // La muestra de la última respuesta ilegible puede traer texto del
+    // documento de alguien: solo para administradores.
+    return this.ai.health(probar, user?.role === UserRole.ADMIN);
   }
 
   // Pública: el chatbot de ayuda funciona también para visitantes sin cuenta.
@@ -95,10 +101,20 @@ export class AiController {
    * Revisa si una foto es realmente el documento pedido (DNI o licencia). El
    * front lo llama al elegir cada foto, para avisar en el momento que no sirve en
    * vez de dejar subir cualquier imagen.
+   *
+   * PRIMERO SIN IA: si la foto trae el PDF417 del DNI (o el código de la
+   * licencia), eso ya contesta la pregunta —lo imprime el organismo que emite
+   * el documento y lo lee un decodificador, no un modelo—, así que se responde
+   * con eso y no se gasta ninguna llamada de visión. Al modelo se le pregunta
+   * solo por lo que no tiene código legible.
    */
   @Post("document")
   @UseGuards(JwtAuthGuard)
-  document(@Body() dto: AiDocumentDto) {
-    return this.ai.inspectDocument(dto.image, dto.kind, dto.lang ?? "es");
+  async document(@Body() dto: AiDocumentDto) {
+    const lang = dto.lang ?? "es";
+    const fromCode = await this.precheck.check(dto.image, dto.kind, lang);
+    return (
+      fromCode ?? (await this.ai.inspectDocument(dto.image, dto.kind, lang))
+    );
   }
 }

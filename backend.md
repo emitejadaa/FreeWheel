@@ -463,7 +463,7 @@ Estado actual:
 Diseno reemplazable:
 
 - Seam `IdentityReviewer` (`IDENTITY_REVIEWER`) elegido por `IDENTITY_REVIEW_MODE`:
-  - `document_ai` (default): revision documental completa. Si se pide a mano sin `CLOUDINARY_*`/`GROQ_API_KEY` falla al arrancar; si es solo el default y faltan, cae a `manual` avisando.
+  - `document_ai` (default): revision documental completa. Si se pide a mano sin `CLOUDINARY_*` falla al arrancar; si es solo el default y faltan, cae a `manual` avisando. `GROQ_API_KEY` **no** es requisito: sin ella se pierde el OCR (corroboracion), no la verificacion.
   - `manual`: nada se aprueba solo; decide un admin.
   - `ai`: revision liviana; un modelo de vision confirma que cada foto sea el documento pedido y extrae los datos visibles. Si la IA no responde, el caso NO se aprueba: queda para el admin.
   - `auto_approve`: aprueba todo. Solo desarrollo y tests.
@@ -1168,11 +1168,15 @@ Pasos:
 5. Si el checklist esta completo (email + telefono + fecha de nacimiento +
    datos de identidad + 4 documentos), corre la revision:
    - descarga las cuatro imagenes desde el almacenamiento privado;
-   - decodifica el **PDF417** del frente del DNI (fuente autoritativa) y el
-     **QR/PDF417** del dorso de la licencia, reintentando con variantes de la
-     imagen (ampliada, escala de grises);
+   - decodifica el **PDF417** del DNI (fuente autoritativa) y el **QR/PDF417**
+     de la licencia, reintentando con variantes de la imagen (ampliada, escala
+     de grises). Los busca en las **dos caras** de cada documento: segun el
+     ejemplar el codigo esta impreso de un lado o del otro;
    - lee el **texto impreso** de los cuatro lados con OCR, que ademas
-     clasifica que documento/lado es cada foto;
+     clasifica que documento/lado es cada foto. **El OCR es opcional**: es la
+     unica pieza que depende de un modelo de vision, y lo que aporta
+     (domicilio, MRZ, vencimientos) corrobora pero no ancla. Si no contesta, la
+     revision decide igual con el PDF417 y el formulario;
    - parsea el **MRZ** del dorso del DNI y valida sus digitos verificadores
      (respaldo autoritativo cuando el PDF417 no se pudo leer);
    - cruza todo entre si y contra los datos de la cuenta.
@@ -1195,18 +1199,26 @@ bien y no coincide.
 Cruces que se evaluan (fuentes: PDF417, MRZ, OCR de cada lado, codigo de la
 licencia y datos de la cuenta):
 
+Solo la primera columna de "ilegible" manda a revision manual. Todos esos
+chequeos se resuelven con el PDF417 (o un MRZ valido) mas el formulario: son
+justamente los que no dependen de ningun modelo. Los que necesitan OCR frenan
+la aprobacion cuando **contradicen** al documento, pero no cuando no se pueden
+leer; si bloquearan, un problema con el proveedor de IA dejaria todas las
+cuentas esperando a un admin.
+
 | Chequeo | Falla concluyente | Ilegible |
 | --- | --- | --- |
 | Fuente autoritativa presente (PDF417 o MRZ valido) | - | manual |
-| Documento/lado correcto por slot | rechaza | manual |
 | Numero de documento (todas las fuentes + cuenta) | rechaza | manual |
 | Apellido / primer nombre | rechaza | manual |
 | Fecha de nacimiento | rechaza | manual |
 | Mayor de 18 al dia de hoy | rechaza | manual |
-| DNI vigente (vencimiento del MRZ u OCR) | rechaza | manual |
-| Licencia vigente | rechaza | manual |
-| Licencia del mismo titular que el DNI | rechaza | manual |
 | CUIL: checksum y DNI embebido | rechaza | manual |
+| Foto que el OCR miro y no reconocio | - | manual |
+| Documento/lado correcto por slot | rechaza | no bloquea |
+| DNI vigente (vencimiento del MRZ u OCR) | rechaza | no bloquea |
+| Licencia vigente | rechaza | no bloquea |
+| Licencia del mismo titular que el DNI | rechaza | no bloquea |
 | CUIL: prefijo vs sexo, CUIL impreso | manual | manual |
 | Sexo (PDF417 vs MRZ vs OCR) | manual | manual |
 | Domicilio (similitud de tokens) | manual (nunca rechaza) | manual |
@@ -1476,10 +1488,12 @@ ONBOARDING_JWT_EXPIRES_IN="30m"
 IDENTITY_REVIEW_MODE="auto_approve"
 IDENTITY_REVIEW_TIMEOUT_MS=45000
 # Requeridas por IDENTITY_REVIEW_MODE=document_ai (falla al arrancar sin ellas)
-GROQ_API_KEY=""
 CLOUDINARY_CLOUD_NAME=""
 CLOUDINARY_API_KEY=""
 CLOUDINARY_API_SECRET=""
+# Opcional para document_ai: sin ella no hay OCR del texto impreso, pero la
+# revision sigue decidiendo con el PDF417 del DNI y los datos del formulario.
+GROQ_API_KEY=""
 PAYMENTS_PROVIDER="mock"
 STRIPE_SECRET_KEY=""
 STRIPE_PUBLISHABLE_KEY=""

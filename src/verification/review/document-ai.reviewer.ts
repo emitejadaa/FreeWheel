@@ -118,8 +118,23 @@ export class DocumentAiReviewer implements IdentityReviewer {
     }
 
     const [dniBarcodePayload, licensePayload, ocrResults] = await Promise.all([
-      this.decodeFirst(publicIds.get("dni_front"), ["PDF417"]),
-      this.decodeFirst(publicIds.get("license_back"), ["QRCode", "PDF417"]),
+      // El PDF417 del RENAPER se busca en LAS DOS caras del DNI: según el
+      // ejemplar está impreso de un lado o del otro, y dar por sentado que
+      // estaba en el frente dejaba sin ancla —o sea, en revisión manual— a
+      // todo un tipo de documento. Se queda con el payload que realmente
+      // parsea como DNI, así que buscar de más no puede confundir nada.
+      this.decodeFirst(
+        [publicIds.get("dni_front"), publicIds.get("dni_back")],
+        ["PDF417"],
+        (payload) => parseDniPdf417(payload) !== null,
+      ),
+      // Ídem con la licencia; y si lo que se lee es el PDF417 de un DNI, no es
+      // el código de la licencia: se sigue buscando.
+      this.decodeFirst(
+        [publicIds.get("license_back"), publicIds.get("license_front")],
+        ["QRCode", "PDF417"],
+        (payload) => parseDniPdf417(payload) === null,
+      ),
       Promise.all(
         slots.map((slot) => this.readSlot(slot, publicIds.get(slot))),
       ),
@@ -138,27 +153,36 @@ export class DocumentAiReviewer implements IdentityReviewer {
     };
   }
 
-  /** Prueba las variantes hasta que una devuelva un código legible. */
+  /**
+   * Recorre las fotos indicadas y, en cada una, las variantes de imagen, hasta
+   * dar con un código que `accept` dé por bueno. Devuelve el payload crudo.
+   */
   private async decodeFirst(
-    publicId: string | undefined,
+    publicIds: (string | undefined)[],
     formats: ("PDF417" | "QRCode")[],
+    accept: (payload: string) => boolean,
   ): Promise<string | null> {
-    if (!publicId) return null;
+    for (const publicId of publicIds) {
+      if (!publicId) continue;
 
-    for (const transformation of BARCODE_VARIANTS) {
-      try {
-        const { bytes } = await this.cloudinary.download(publicId, {
-          transformation,
-          format: "jpg",
-        });
-        const [decoded] = await this.barcodes.decode(bytes, formats);
-        if (decoded) return decoded.text;
-      } catch (error) {
-        this.logger.warn(
-          `No se pudo leer el código (${transformation ?? "original"}): ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+      for (const transformation of BARCODE_VARIANTS) {
+        try {
+          const { bytes } = await this.cloudinary.download(publicId, {
+            transformation,
+            format: "jpg",
+          });
+          const decoded = await this.barcodes.decode(bytes, formats);
+          const payload = decoded
+            .map((result) => result.text)
+            .find((text) => accept(text));
+          if (payload) return payload;
+        } catch (error) {
+          this.logger.warn(
+            `No se pudo leer el código (${transformation ?? "original"}): ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
     }
     return null;

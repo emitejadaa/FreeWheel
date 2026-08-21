@@ -275,7 +275,23 @@ describe("IdentityMatchService", () => {
       expect(report.reasonCodes).toContain("GIVEN_NAMES_MISMATCH_UNREADABLE");
     });
 
-    it("manda a revisión si no se pudo leer el vencimiento de la licencia", () => {
+    it("manda a revisión si una foto no se pudo reconocer", () => {
+      const report = run({}, withOcr("license_back", ocr("unknown", {})));
+      expect(report.outcome).toBe("inconclusive");
+      expect(report.reasonCodes).toContain("PHOTO_NOT_RECOGNIZED");
+    });
+
+    it("manda a revisión si faltan los datos manuales de la cuenta", () => {
+      const report = run({ cuil: null });
+      expect(report.outcome).toBe("inconclusive");
+      expect(report.reasonCodes).toContain("CUIL_INVALID_UNREADABLE");
+    });
+
+    it("no bloquea si no se pudo leer el vencimiento de la licencia", () => {
+      // Antes esto mandaba a revisión manual, y el vencimiento solo se puede
+      // leer con OCR: alcanzaba con que el modelo no contestara para que
+      // ninguna verificación se aprobara sola. Un vencimiento que SÍ se lee y
+      // ya pasó sigue rechazando (ver "rechaza una licencia vencida").
       const report = run(
         {},
         {
@@ -289,20 +305,8 @@ describe("IdentityMatchService", () => {
           ),
         },
       );
-      expect(report.outcome).toBe("inconclusive");
-      expect(report.reasonCodes).toContain("LICENSE_EXPIRED_UNREADABLE");
-    });
-
-    it("manda a revisión si una foto no se pudo clasificar", () => {
-      const report = run({}, withOcr("license_back", ocr("unknown", {})));
-      expect(report.outcome).toBe("inconclusive");
-      expect(report.reasonCodes).toContain("SLOT_CONTENT_MISMATCH_UNREADABLE");
-    });
-
-    it("manda a revisión si faltan los datos manuales de la cuenta", () => {
-      const report = run({ cuil: null });
-      expect(report.outcome).toBe("inconclusive");
-      expect(report.reasonCodes).toContain("CUIL_INVALID_UNREADABLE");
+      expect(report.outcome).toBe("approved");
+      expect(reasonFor(report, "LICENSE_EXPIRED")?.result).toBe("unavailable");
     });
 
     it("no bloquea cuando el QR de la licencia es opaco", () => {
@@ -324,6 +328,81 @@ describe("IdentityMatchService", () => {
       expect(reasonFor(report, "CUIL_SEX_MISMATCH")?.result).toBe(
         "unavailable",
       );
+    });
+  });
+
+  /**
+   * LO QUE SE PUEDE DECIDIR SIN EL MODELO
+   *
+   * El ancla es el PDF417 que imprime el RENAPER, leído por un decodificador.
+   * El OCR —lo único que escribe un modelo de visión— aporta corroboración
+   * (domicilio, MRZ, vencimientos). Cuando el OCR no está, la verificación
+   * tiene que seguir decidiendo con el código y el formulario: si no, un
+   * problema con el proveedor de IA deja todas las cuentas esperando a un
+   * admin, que es exactamente lo que pasaba.
+   */
+  describe("sin OCR (el modelo de visión no contestó)", () => {
+    /** Ninguna foto pudo leerse con el modelo: los cuatro slots en null. */
+    const sinOcr = (): Partial<DocumentExtraction> => ({
+      ocr: {
+        dni_front: null,
+        dni_back: null,
+        license_front: null,
+        license_back: null,
+      },
+      // El MRZ se transcribe con el mismo OCR, así que tampoco hay.
+      mrz: null,
+      // El QR de la licencia sí es determinístico: se lee igual.
+      licenseCode: { dni: "12345678", expiryDate: "2031-05-20", parsed: true },
+    });
+
+    it("aprueba si el PDF417 coincide con lo cargado en el formulario", () => {
+      const report = run({}, sinOcr());
+      expect(report.outcome).toBe("approved");
+      expect(report.reasonCodes).toEqual([]);
+      expect(report.documentNumber).toBe("12345678");
+    });
+
+    it("sigue rechazando lo que el PDF417 contradice", () => {
+      expect(run({ lastName: "Gómez" }, sinOcr()).outcome).toBe("rejected");
+      expect(run({ dni: "87654321" }, sinOcr()).outcome).toBe("rejected");
+      expect(
+        run({ dateOfBirth: new Date("1991-02-01T00:00:00.000Z") }, sinOcr())
+          .outcome,
+      ).toBe("rejected");
+      expect(run({ cuil: "20876543215" }, sinOcr()).outcome).toBe("rejected");
+    });
+
+    it("sin el PDF417 no hay nada que cruzar: revisión manual", () => {
+      const report = run({}, { ...sinOcr(), dniBarcode: null });
+      expect(report.outcome).toBe("inconclusive");
+      expect(report.reasonCodes).toContain("NO_AUTHORITATIVE_SOURCE");
+    });
+
+    it("no aprueba un vencimiento vencido que sí se pudo leer", () => {
+      // El QR de la licencia no necesita OCR: si dice que venció, rechaza.
+      const report = run(
+        {},
+        {
+          ...sinOcr(),
+          licenseCode: {
+            dni: "12345678",
+            expiryDate: "2020-01-01",
+            parsed: true,
+          },
+        },
+      );
+      expect(report.outcome).toBe("rejected");
+      expect(report.reasonCodes).toContain("LICENSE_EXPIRED");
+    });
+
+    it("deja registrado en el reporte que no hubo texto impreso", () => {
+      const report = run({}, sinOcr());
+      expect(reasonFor(report, "SLOT_CONTENT_MISMATCH")?.result).toBe(
+        "unavailable",
+      );
+      expect(reasonFor(report, "ADDRESS_MISMATCH")?.result).toBe("unavailable");
+      expect(reasonFor(report, "DNI_EXPIRED")?.result).toBe("unavailable");
     });
   });
 

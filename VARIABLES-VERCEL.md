@@ -35,7 +35,7 @@ y el login funcionan). No hace falta tocarlas.
 
 | Variable | Valor | Si falta |
 |---|---|---|
-| `GROQ_API_KEY` | La clave de una cuenta de Groq. Empieza con `gsk_`. | No se revisa ninguna foto: el DNI y la licencia quedan "sin revisar" y hay que aprobarlos a mano. El resto de la app anda igual. |
+| `GROQ_API_KEY` | La clave de una cuenta de Groq. Empieza con `gsk_`. | La verificación de identidad **sigue funcionando**: se apoya en el código PDF417 del DNI cruzado contra los datos del formulario. Lo que se pierde es la lectura del texto impreso (domicilio, vencimientos), el chatbot y la revisión de las fotos de los autos. |
 | `GROQ_VISION_MODEL` | *Opcional.* El nombre exacto de un modelo que mire imágenes. Se pueden poner varios separados por coma y se usan en ese orden. | Se usan los del código, con `qwen/qwen3.6-27b` primero. |
 
 ### Estado al 9 de agosto de 2026

@@ -78,25 +78,38 @@ const HARD_FAIL_CODES = new Set([
 /**
  * Checks que DEBEN poder evaluarse para aprobar automáticamente: si quedan
  * "unavailable", el caso va a la cola manual.
+ *
+ * TODOS se resuelven con el PDF417 (o un MRZ cuyos dígitos verificadores
+ * cierren) más los datos que la persona cargó en el formulario. Es a propósito:
+ * el ancla de identidad es un código impreso por el RENAPER y leído por un
+ * decodificador, y el formulario es la declaración de la persona. El OCR —lo
+ * único que escribe un modelo— quedó AFUERA de esta lista: cuando aporta algo
+ * y ese algo contradice al documento, el caso igual se frena (esos códigos
+ * siguen siendo fallos concluyentes); cuando no aporta nada, ya no bloquea.
+ *
+ * Antes estaban acá SLOT_CONTENT_MISMATCH, DNI_EXPIRED, LICENSE_EXPIRED y
+ * LICENSE_DNI_MISMATCH, que solo se pueden evaluar con OCR. Con el modelo de
+ * visión caído —o contestando cualquier cosa— ninguna verificación se aprobaba
+ * sola, aunque el PDF417 dijera exactamente lo mismo que el formulario.
  */
 const REQUIRED_CODES = new Set([
   "AUTHORITATIVE_SOURCE",
-  "SLOT_CONTENT_MISMATCH",
   "DNI_NUMBER_MISMATCH",
   "SURNAME_MISMATCH",
   "GIVEN_NAMES_MISMATCH",
   "DOB_MISMATCH",
   "UNDERAGE",
-  "DNI_EXPIRED",
-  "LICENSE_EXPIRED",
-  "LICENSE_DNI_MISMATCH",
   "CUIL_INVALID",
   "CUIL_DNI_MISMATCH",
+  // No necesita OCR para PASAR: solo queda pendiente si el OCR sí miró una
+  // foto y no reconoció qué documento era. Ver checkSlots().
+  "SLOT_UNRECOGNIZED",
 ]);
 
 /** Motivo legible cuando un check requerido no se pudo evaluar. */
 const UNREADABLE_REASON: Record<string, string> = {
   AUTHORITATIVE_SOURCE: "NO_AUTHORITATIVE_SOURCE",
+  SLOT_UNRECOGNIZED: "PHOTO_NOT_RECOGNIZED",
 };
 
 interface AuthoritativeIdentity {
@@ -162,7 +175,23 @@ export class IdentityMatchService {
     };
   }
 
-  /** Cada foto debe ser del documento y lado en el que se subió. */
+  /**
+   * Cada foto debe ser del documento y lado en el que se subió.
+   *
+   * Son dos preguntas distintas y antes eran un solo check, lo que las hacía
+   * indistinguibles:
+   *
+   * - SLOT_CONTENT_MISMATCH: el OCR reconoció la foto y es OTRO documento
+   *   (subieron la licencia donde va el DNI). Eso es concluyente y rechaza.
+   * - SLOT_UNRECOGNIZED: el OCR MIRÓ la foto y no supo qué era. Ahí no se
+   *   rechaza —puede ser un reflejo o una foto movida— pero tampoco se aprueba
+   *   solo: va a revisión humana.
+   *
+   * Un slot sin OCR (null: el modelo no está configurado, falló, o la imagen no
+   * se pudo bajar) no es ninguna de las dos cosas: no se miró, así que no dice
+   * nada. Que la falta de OCR mandara todo a revisión manual era, en los
+   * hechos, hacer depender la verificación entera del modelo de visión.
+   */
   private checkSlots(extraction: DocumentExtraction): IdentityCheck[] {
     const slots: DocumentSlot[] = [
       "dni_front",
@@ -171,38 +200,42 @@ export class IdentityMatchService {
       "license_back",
     ];
 
-    const misplaced = slots.filter((slot) => {
+    const read = slots.filter((slot) => Boolean(extraction.ocr[slot]));
+    const misplaced = read.filter((slot) => {
       const classified = extraction.ocr[slot]?.classifiedAs;
-      return (
-        classified !== undefined &&
-        classified !== "unknown" &&
-        classified !== slot
-      );
+      return classified !== "unknown" && classified !== slot;
     });
-    const unreadable = slots.filter((slot) => {
-      const classified = extraction.ocr[slot]?.classifiedAs;
-      return classified === undefined || classified === "unknown";
-    });
+    const unrecognized = read.filter(
+      (slot) => extraction.ocr[slot]?.classifiedAs === "unknown",
+    );
 
-    if (misplaced.length > 0) {
-      return [
-        {
-          code: "SLOT_CONTENT_MISMATCH",
-          result: "fail",
-          detail: `imagen equivocada en: ${misplaced.join(", ")}`,
-        },
-      ];
-    }
-    if (unreadable.length > 0) {
-      return [
-        {
-          code: "SLOT_CONTENT_MISMATCH",
-          result: "unavailable",
-          detail: `no se pudo clasificar: ${unreadable.join(", ")}`,
-        },
-      ];
-    }
-    return [{ code: "SLOT_CONTENT_MISMATCH", result: "pass" }];
+    const contentCheck: IdentityCheck =
+      misplaced.length > 0
+        ? {
+            code: "SLOT_CONTENT_MISMATCH",
+            result: "fail",
+            detail: `imagen equivocada en: ${misplaced.join(", ")}`,
+          }
+        : read.length > 0
+          ? { code: "SLOT_CONTENT_MISMATCH", result: "pass" }
+          : {
+              code: "SLOT_CONTENT_MISMATCH",
+              result: "unavailable",
+              detail: extraction.dniBarcode
+                ? "sin OCR; el PDF417 confirma que la foto del DNI es un DNI"
+                : "sin OCR: ninguna foto se pudo clasificar",
+            };
+
+    return [
+      contentCheck,
+      unrecognized.length > 0
+        ? {
+            code: "SLOT_UNRECOGNIZED",
+            result: "unavailable",
+            detail: `no se pudo reconocer: ${unrecognized.join(", ")}`,
+          }
+        : { code: "SLOT_UNRECOGNIZED", result: "pass" },
+    ];
   }
 
   /**

@@ -189,6 +189,73 @@ describe("DocumentAiReviewer", () => {
     expect(verdict.documentNumber).toBe("12345678");
   });
 
+  /**
+   * El PDF417 del RENAPER no está siempre del mismo lado: según el ejemplar se
+   * imprime en el frente o en el dorso. Buscarlo solo en el frente dejaba sin
+   * ancla —y por lo tanto en revisión manual— a todo un tipo de documento, aun
+   * teniendo la foto con el código bien a la vista.
+   */
+  it("encuentra el PDF417 aunque esté impreso en el dorso del DNI", async () => {
+    const { reviewer } = makeReviewer({
+      barcodesBySlot: { dni_front: null, dni_back: PDF417 },
+      // Sin MRZ, para que la única ancla posible sea el código del dorso.
+      ocrBySlot: {
+        dni_back: {
+          classifiedAs: "dni_back",
+          fields: { domicilio: "AV SIEMPRE VIVA 742", cuil: "20123456786" },
+        },
+      },
+    });
+
+    const verdict = await reviewer.review(INPUT);
+
+    expect(verdict.outcome).toBe("approved");
+    expect(verdict.documentNumber).toBe("12345678");
+  });
+
+  /**
+   * El OCR es la única parte que escribe un modelo, y es la que se cae: sin
+   * clave, sin cuota o con el modelo dado de baja, extract() devuelve null en
+   * los cuatro slots. La verificación tiene que seguir decidiendo con el
+   * PDF417 y lo que la persona cargó en el formulario.
+   */
+  it("aprueba con el PDF417 y el formulario aunque el OCR no lea nada", async () => {
+    const { reviewer, ocr } = makeReviewer({
+      ocrBySlot: {
+        dni_front: null,
+        dni_back: null,
+        license_front: null,
+        license_back: null,
+      },
+    });
+
+    const verdict = await reviewer.review(INPUT);
+
+    // El OCR se intentó igual: lo que cambia es que su silencio no bloquea.
+    expect((ocr.extract as jest.Mock).mock.calls).toHaveLength(4);
+    expect(verdict.outcome).toBe("approved");
+    expect(verdict.documentNumber).toBe("12345678");
+  });
+
+  it("sin OCR sigue rechazando lo que el PDF417 contradice", async () => {
+    const { reviewer } = makeReviewer({
+      ocrBySlot: {
+        dni_front: null,
+        dni_back: null,
+        license_front: null,
+        license_back: null,
+      },
+    });
+
+    const verdict = await reviewer.review({
+      ...INPUT,
+      profile: { ...INPUT.profile, lastName: "Gómez" },
+    });
+
+    expect(verdict.outcome).toBe("rejected");
+    expect(verdict.reasonCodes).toContain("SURNAME_MISMATCH");
+  });
+
   it("rechaza una foto subida en el slot equivocado", async () => {
     const { reviewer } = makeReviewer({
       ocrBySlot: {

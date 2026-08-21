@@ -290,3 +290,179 @@ describe("AiService.health con prueba de modelos", () => {
     ).toBeUndefined();
   });
 });
+
+/**
+ * EL JSON QUE NUNCA LLEGABA
+ *
+ * La revisión de documentos contestaba `{"matches": null, "code":
+ * "unreadable"}` con cualquier foto. La clave de Groq estaba bien y el modelo
+ * existía: contestaba 200. Lo que pasaba es que el modelo de turno (qwen3) es
+ * de los que "piensan en voz alta": escribe su análisis dentro de
+ * <think>...</think> antes de contestar, y con el tope de 400 tokens que había
+ * el análisis se comía la respuesta entera. Lo que llegaba era un <think>
+ * cortado por la mitad, sin una sola llave, así que no había JSON que
+ * interpretar. Con cualquier imagen, siempre.
+ *
+ * Estas pruebas fijan las tres defensas: que el razonamiento no viaje en el
+ * contenido, que si igual llega se lo descarte, y que un modelo que no devuelve
+ * el JSON pedido se trate como un modelo inservible (se prueba el siguiente) en
+ * vez de darle a la persona un error del que no puede salir.
+ */
+describe("AiService.inspectDocument", () => {
+  const config = {
+    get: (name: string) =>
+      name === "GROQ_API_KEY" ? "clave-de-prueba" : undefined,
+  } as unknown as ConfigService;
+
+  const IMAGEN = "data:image/jpeg;base64,AAAA";
+  const JSON_OK =
+    '{"corresponde": true, "legible": true, "tipo_detectado": "DNI argentino", ' +
+    '"numero": "12345678", "nombre": "JUAN PEREZ", "vencimiento": "2030-02-15", ' +
+    '"motivo": "Se ve el frente del DNI."}';
+
+  /** Groq contesta lo que se le indique por modelo (texto, o {status, body}). */
+  function conRespuestas(
+    porModelo: Record<string, string | { status: number; body: string }>,
+    porDefecto: string | { status: number; body: string } = JSON_OK,
+  ) {
+    global.fetch = jest.fn((_url: string, init?: { body?: string }) => {
+      const pedido = JSON.parse(init?.body ?? "{}") as { model?: string };
+      const respuesta = porModelo[String(pedido.model)] ?? porDefecto;
+
+      if (typeof respuesta !== "string") {
+        return Promise.resolve({
+          ok: false,
+          status: respuesta.status,
+          text: () => Promise.resolve(respuesta.body),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            choices: [
+              {
+                message: { content: respuesta },
+                finish_reason: respuesta.includes("</think>")
+                  ? "stop"
+                  : respuesta.includes("<think>")
+                    ? "length"
+                    : "stop",
+              },
+            ],
+          }),
+      });
+    }) as unknown as typeof fetch;
+
+    return new AiService(config);
+  }
+
+  /** Los cuerpos que se le mandaron a Groq, ya parseados. */
+  function pedidos(): Record<string, unknown>[] {
+    return (global.fetch as jest.Mock).mock.calls.map(
+      ([, init]) =>
+        JSON.parse((init as { body: string }).body) as Record<string, unknown>,
+    );
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("le pide a Groq el JSON y el razonamiento fuera del contenido", async () => {
+    const service = conRespuestas({});
+
+    await service.inspectDocument(IMAGEN, "DNI_FRONT");
+
+    expect(pedidos()[0]).toMatchObject({
+      response_format: { type: "json_object" },
+      reasoning_format: "hidden",
+    });
+  });
+
+  it("entiende la respuesta aunque el modelo razone antes de contestar", async () => {
+    const service = conRespuestas(
+      {},
+      `<think>La imagen muestra una tarjeta con foto. {no es JSON}</think>\n${JSON_OK}`,
+    );
+
+    const result = await service.inspectDocument(IMAGEN, "DNI_FRONT");
+
+    expect(result.matches).toBe(true);
+    expect(result.documentNumber).toBe("12345678");
+  });
+
+  it("prueba el siguiente modelo cuando uno se queda razonando y no contesta", async () => {
+    // Exactamente el caso de producción: el primer modelo agota el tope de
+    // tokens pensando y la respuesta llega cortada, sin JSON.
+    const service = conRespuestas({
+      "qwen/qwen3.6-27b": "<think>Veamos la imagen con cuidado, primero el",
+    });
+
+    const result = await service.inspectDocument(IMAGEN, "DNI_FRONT");
+
+    expect(result.matches).toBe(true);
+    expect(pedidos().length).toBeGreaterThan(1);
+  });
+
+  it("repite el pedido sin los parámetros extra si el modelo no los acepta", async () => {
+    let primeraVez = true;
+    global.fetch = jest.fn(() => {
+      if (primeraVez) {
+        primeraVez = false;
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          text: () =>
+            Promise.resolve(
+              '{"error":{"message":"response_format is not supported for this model"}}',
+            ),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ choices: [{ message: { content: JSON_OK } }] }),
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await new AiService(config).inspectDocument(
+      IMAGEN,
+      "DNI_FRONT",
+    );
+
+    expect(result.matches).toBe(true);
+    // El reintento es sobre el MISMO modelo, ya sin los extras.
+    const [conExtras, sinExtras] = pedidos();
+    expect(conExtras.model).toBe(sinExtras.model);
+    expect(sinExtras.response_format).toBeUndefined();
+  });
+
+  it("avisa 'unreadable' solo si ningún modelo devolvió el JSON", async () => {
+    const service = conRespuestas({}, "No puedo ayudarte con eso.");
+
+    const result = await service.inspectDocument(IMAGEN, "DNI_FRONT");
+
+    expect(result.matches).toBeNull();
+    expect(result.code).toBe("unreadable");
+    // Y el motivo sale en el idioma que se pidió, como el resto.
+    expect(
+      (await service.inspectDocument(IMAGEN, "DNI_FRONT", "en")).reason,
+    ).toBe("The automatic review could not be interpreted.");
+  });
+
+  it("guarda lo que contestó el modelo para poder diagnosticarlo", async () => {
+    // Sin esto, la falla es invisible: la pantalla dice "no se pudo
+    // interpretar" y no hay forma de saber si el modelo se puso a razonar, se
+    // negó a mirar un documento o contestó en prosa.
+    const service = conRespuestas({}, "No puedo ayudarte con eso.");
+    await service.inspectDocument(IMAGEN, "DNI_FRONT");
+
+    const health = await service.health(false, true);
+    expect(health.lastVisionSample).toContain("No puedo ayudarte");
+    expect(health.lastVisionError).toContain("sin el JSON pedido");
+
+    // Y NO se le muestra a cualquiera: puede traer texto del documento.
+    expect((await service.health()).lastVisionSample).toBeUndefined();
+  });
+});
