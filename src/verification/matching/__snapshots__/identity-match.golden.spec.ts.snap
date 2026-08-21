@@ -1,0 +1,3574 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`IdentityMatchService (comportamiento congelado) CUIL con dígito verificador inválido 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": "dígito verificador incorrecto",
+      "result": "fail",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "CUIL_INVALID",
+    "CUIL_OCR_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) CUIL con prefijo que no determina sexo 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "CUIL_OCR_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) CUIL válido pero de otro DNI 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": "el CUIL no contiene el DNI del documento",
+      "result": "fail",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "CUIL_DNI_MISMATCH",
+    "CUIL_OCR_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) DNI vencido 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": "vencido el 2020-01-01",
+      "result": "fail",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "DNI_EXPIRED",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) PDF417 y MRZ se contradicen en el apellido 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "detail": "PDF417 y MRZ difieren en: apellido",
+      "result": "fail",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "SOURCE_CONFLICT",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) PDF417 y MRZ se contradicen en la fecha de nacimiento 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "detail": "PDF417 y MRZ difieren en: fecha nacimiento",
+      "result": "fail",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "SOURCE_CONFLICT",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) apellido distinto en la cuenta 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "fail",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "SURNAME_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) cubre los 20 checks que emite el servicio 1`] = `
+[
+  "ADDRESS_MISMATCH",
+  "AUTHORITATIVE_SOURCE",
+  "CUIL_DNI_MISMATCH",
+  "CUIL_INVALID",
+  "CUIL_OCR_MISMATCH",
+  "CUIL_SEX_MISMATCH",
+  "DNI_EXPIRED",
+  "DNI_NUMBER_MISMATCH",
+  "DOB_MISMATCH",
+  "GIVEN_NAMES_MISMATCH",
+  "LICENSE_CODE_UNAVAILABLE",
+  "LICENSE_DNI_MISMATCH",
+  "LICENSE_EXPIRED",
+  "LICENSE_NAME_MISMATCH",
+  "SEX_MISMATCH",
+  "SLOT_CONTENT_MISMATCH",
+  "SLOT_UNRECOGNIZED",
+  "SOURCE_CONFLICT",
+  "SURNAME_MISMATCH",
+  "UNDERAGE",
+]
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) domicilio escrito distinto 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 0.00",
+      "result": "fail",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "ADDRESS_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) el OCR del dorso lee otro CUIL 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "CUIL_OCR_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) el OCR del frente lee otro número de documento 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": "el número de documento no coincide entre documento, código y cuenta",
+      "result": "fail",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "DNI_NUMBER_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) el OCR del frente lee otro sexo 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "SEX_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) el QR de la licencia es opaco 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "unavailable",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) el documento trae un segundo nombre extra 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": "coincidencia parcial de nombres",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "GIVEN_NAMES_MISMATCH_UNREADABLE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) fecha de nacimiento distinta en la cuenta 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": "la fecha de nacimiento no coincide entre documento y cuenta",
+      "result": "fail",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "DOB_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la cuenta no tiene CUIL 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "CUIL_INVALID_UNREADABLE",
+    "CUIL_DNI_MISMATCH_UNREADABLE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la cuenta no tiene DNI 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": "falta el número de documento en alguna fuente",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "DNI_NUMBER_MISMATCH_UNREADABLE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la cuenta no tiene domicilio 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la cuenta no tiene fecha de nacimiento 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "UNDERAGE",
+      "result": "unavailable",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "DOB_MISMATCH_UNREADABLE",
+    "UNDERAGE_UNREADABLE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la licencia corresponde a otro documento 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": "la licencia corresponde a otro número de documento",
+      "result": "fail",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "LICENSE_DNI_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) la licencia está a nombre de otra persona 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "LICENSE_NAME_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) licencia vencida 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": "vencida el 2020-01-01",
+      "result": "fail",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2020-01-01",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "LICENSE_EXPIRED",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) menor de 18 según el documento 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": "edad 16",
+      "result": "fail",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "UNDERAGE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) no se pudo leer el vencimiento de la licencia 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": "no se pudo leer el vencimiento de la licencia",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": null,
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) no se pudo leer el vencimiento del DNI 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) nombre de pila distinto 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "fail",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "GIVEN_NAMES_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) número de documento distinto en la cuenta 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": "el número de documento no coincide entre documento, código y cuenta",
+      "result": "fail",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": "el CUIL no contiene el DNI del documento",
+      "result": "fail",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "fail",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "DNI_NUMBER_MISMATCH",
+    "CUIL_DNI_MISMATCH",
+    "CUIL_OCR_MISMATCH",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) sin OCR en ninguna foto 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "detail": "sin OCR; el PDF417 confirma que la foto del DNI es un DNI",
+      "result": "unavailable",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) sin OCR y sin código de licencia 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "detail": "sin OCR; el PDF417 confirma que la foto del DNI es un DNI",
+      "result": "unavailable",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": "no se pudo leer el vencimiento de la licencia",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "unavailable",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": null,
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) sin PDF417 y con MRZ que no cierra 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "no se pudo leer el PDF417 ni validar el MRZ",
+      "result": "unavailable",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": "falta el número de documento en alguna fuente",
+      "result": "unavailable",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "UNDERAGE",
+      "result": "unavailable",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": null,
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "NO_AUTHORITATIVE_SOURCE",
+    "DNI_NUMBER_MISMATCH_UNREADABLE",
+    "SURNAME_MISMATCH_UNREADABLE",
+    "GIVEN_NAMES_MISMATCH_UNREADABLE",
+    "DOB_MISMATCH_UNREADABLE",
+    "UNDERAGE_UNREADABLE",
+    "CUIL_DNI_MISMATCH_UNREADABLE",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) sin PDF417, con MRZ válido 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: mrz",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) solo se pudo leer el frente del DNI 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) todo coincide 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "approved",
+  "reasonCodes": [],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) una foto que el modelo miró y no reconoció 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "detail": "no se pudo reconocer: license_back",
+      "result": "unavailable",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "inconclusive",
+  "reasonCodes": [
+    "PHOTO_NOT_RECOGNIZED",
+  ],
+}
+`;
+
+exports[`IdentityMatchService (comportamiento congelado) una foto subida en el slot equivocado 1`] = `
+{
+  "checks": [
+    {
+      "code": "AUTHORITATIVE_SOURCE",
+      "detail": "fuente: pdf417",
+      "result": "pass",
+    },
+    {
+      "code": "SLOT_CONTENT_MISMATCH",
+      "detail": "imagen equivocada en: dni_front",
+      "result": "fail",
+    },
+    {
+      "code": "SLOT_UNRECOGNIZED",
+      "result": "pass",
+    },
+    {
+      "code": "SOURCE_CONFLICT",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_NUMBER_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SURNAME_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "GIVEN_NAMES_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_NAME_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "DOB_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "UNDERAGE",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "SEX_MISMATCH",
+      "result": "unavailable",
+    },
+    {
+      "code": "CUIL_INVALID",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_DNI_MISMATCH",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_SEX_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "CUIL_OCR_MISMATCH",
+      "result": "pass",
+    },
+    {
+      "code": "ADDRESS_MISMATCH",
+      "detail": "similitud 1.00",
+      "result": "pass",
+    },
+    {
+      "code": "DNI_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_EXPIRED",
+      "detail": undefined,
+      "result": "pass",
+    },
+    {
+      "code": "LICENSE_CODE_UNAVAILABLE",
+      "result": "pass",
+    },
+  ],
+  "documentNumber": "12345678",
+  "licenseExpiresAt": "2031-05-20",
+  "outcome": "rejected",
+  "reasonCodes": [
+    "SLOT_CONTENT_MISMATCH",
+  ],
+}
+`;

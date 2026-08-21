@@ -1,4 +1,4 @@
-import { parseLicenseCode } from "./license-code.parser";
+import { parseLicenseCode, tryParseLicenseCode } from "./license-code.parser";
 
 describe("parseLicenseCode", () => {
   it("lee pares clave=valor", () => {
@@ -65,5 +65,38 @@ describe("parseLicenseCode", () => {
 
   it("no explota con JSON inválido", () => {
     expect(parseLicenseCode("{no es json}").parsed).toBe(false);
+  });
+});
+
+/**
+ * El código de la licencia nunca "falla": un payload opaco es un resultado
+ * legítimo, porque la mayoría de las jurisdicciones imprimen ahí un link de
+ * validación y nada más. Sale como advertencia con el contenido a la vista,
+ * que es lo único que permite ir reconociendo los formatos de cada provincia.
+ */
+describe("tryParseLicenseCode", () => {
+  it("no marca advertencias cuando el código trae datos", () => {
+    const result = tryParseLicenseCode("DNI=12345678;VTO=20/05/2031");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.parsed).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("avisa que el código es opaco y muestra qué decía", () => {
+    const result = tryParseLicenseCode("https://licencias.gob.ar/v/9f3c1a");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.parsed).toBe(false);
+    expect(result.warnings[0].code).toBe("LICENSE_CODE_OPAQUE");
+    expect(result.warnings[0].message).toContain("licencias.gob.ar");
+    expect(result.warnings[0].hint).toContain("No es un error de la foto");
+  });
+
+  it("trata el payload vacío como opaco, no como error", () => {
+    const result = tryParseLicenseCode("   ");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warnings[0].code).toBe("LICENSE_CODE_OPAQUE");
   });
 });

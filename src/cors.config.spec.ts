@@ -101,3 +101,62 @@ describe("CORS", () => {
     });
   });
 });
+
+/**
+ * DEMO_ORIGINS existe para poder abrir el front de prueba de la verificación
+ * de documentos —un HTML suelto servido en localhost— contra el backend
+ * desplegado, sin tener que meter mano en la lista de producción. Se suma
+ * también en modo estricto justamente porque en producción CORS_ORIGINS está
+ * cargada y si no, no habría forma de probar nada.
+ */
+describe("createCorsOptions con DEMO_ORIGINS", () => {
+  const original = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...original };
+  });
+
+  function permite(origen: string): boolean {
+    const { origin } = createCorsOptions();
+    let permitido = false;
+    (
+      origin as (
+        o: string | undefined,
+        cb: (e: unknown, ok?: boolean) => void,
+      ) => void
+    )(origen, (_error, ok) => {
+      permitido = ok === true;
+    });
+    return permitido;
+  }
+
+  it("se suma a la lista estricta de producción", () => {
+    process.env.CORS_ORIGINS = "https://freewheel.app";
+    process.env.DEMO_ORIGINS = "http://localhost:8080";
+
+    expect(permite("https://freewheel.app")).toBe(true);
+    expect(permite("http://localhost:8080")).toBe(true);
+    expect(permite("http://localhost:9999")).toBe(false);
+  });
+
+  it("acepta varios separados por coma", () => {
+    process.env.CORS_ORIGINS = "https://freewheel.app";
+    process.env.DEMO_ORIGINS = "http://localhost:8080, http://127.0.0.1:8080";
+
+    expect(permite("http://127.0.0.1:8080")).toBe(true);
+  });
+
+  it("sin la variable, no cambia nada", () => {
+    process.env.CORS_ORIGINS = "https://freewheel.app";
+    delete process.env.DEMO_ORIGINS;
+
+    expect(permite("http://localhost:8080")).toBe(false);
+  });
+
+  it("el puerto del front de prueba ya está en los orígenes de desarrollo", () => {
+    delete process.env.CORS_ORIGINS;
+    delete process.env.DEMO_ORIGINS;
+
+    expect(permite("http://localhost:8080")).toBe(true);
+  });
+});

@@ -8,11 +8,13 @@ import { MediaModule } from "../media/media.module";
 import { AiModule } from "../ai/ai.module";
 import { AiService } from "../ai/ai.service";
 import { ExtractionModule } from "./extraction/extraction.module";
+import { DiagnosticsController } from "./diagnostics/diagnostics.controller";
 import { VerificationController } from "./verification.controller";
 import { VerificationService } from "./verification.service";
 import { IdentityDocumentsService } from "./identity/identity-documents.service";
 import { DocumentOcrService } from "./extraction/document-ocr.service";
 import { IdentityMatchService } from "./matching/identity-match.service";
+import { IdentityVerificationPipeline } from "./pipeline/identity-verification.pipeline";
 import { IdentityReviewService } from "./review/identity-review.service";
 import { IDENTITY_REVIEWER } from "./review/identity-reviewer.interface";
 import type { IdentityReviewer } from "./review/identity-reviewer.interface";
@@ -121,12 +123,13 @@ const identityReviewer: Provider = {
     AiModule,
     ExtractionModule,
   ],
-  controllers: [VerificationController],
+  controllers: [VerificationController, DiagnosticsController],
   providers: [
     VerificationService,
     IdentityDocumentsService,
     DocumentOcrService,
     IdentityMatchService,
+    IdentityVerificationPipeline,
     DocumentAiReviewer,
     IdentityReviewService,
     identityReviewer,

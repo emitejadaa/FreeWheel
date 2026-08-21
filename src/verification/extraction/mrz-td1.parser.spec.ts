@@ -1,4 +1,4 @@
-import { mrzCheckDigit, parseMrzTd1 } from "./mrz-td1.parser";
+import { mrzCheckDigit, parseMrzTd1, tryParseMrzTd1 } from "./mrz-td1.parser";
 
 /**
  * MRZ TD1 sintético con dígitos verificadores calculados a mano (no con el
@@ -79,5 +79,50 @@ describe("parseMrzTd1", () => {
     const parsed = parseMrzTd1(onlySurname);
     expect(parsed?.lastName).toBe("PEREZ");
     expect(parsed?.firstName).toBe("");
+  });
+});
+
+/**
+ * La versión con motivo. Lo importante acá es la diferencia entre "no se pudo
+ * leer el MRZ" y "se leyó pero no cierra": lo segundo NO es un fallo —casi
+ * siempre es una letra mal transcripta— y por eso sale como dato válido con
+ * una advertencia que nombra el dígito que no cerró.
+ */
+describe("tryParseMrzTd1", () => {
+  it("dice cuántas líneas llegaron cuando no son tres", () => {
+    const result = tryParseMrzTd1([LINE1, LINE2]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("MRZ_LINES_MISSING");
+    expect(result.error.message).toContain("llegaron 2");
+  });
+
+  it("dice qué línea tiene el largo equivocado", () => {
+    const result = tryParseMrzTd1([LINE1, `${LINE2}XX`, LINE3]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("MRZ_LINE_LENGTH");
+    expect(result.error.message).toContain("línea 2");
+    expect(result.error.message).toContain("32 caracteres");
+  });
+
+  it("acepta el MRZ que cierra, sin advertencias", () => {
+    const result = tryParseMrzTd1(VALID);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.checksumValid).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("nombra el dígito verificador que no cerró", () => {
+    // Se cambia el verificador del número de documento (posición 15).
+    const roto = `${LINE1.slice(0, 14)}0${LINE1.slice(15)}`;
+    const result = tryParseMrzTd1([roto, LINE2, LINE3]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.checksumValid).toBe(false);
+    expect(result.warnings[0].code).toBe("MRZ_CHECKSUM_FAILED");
+    expect(result.warnings[0].message).toContain("número de documento");
   });
 });

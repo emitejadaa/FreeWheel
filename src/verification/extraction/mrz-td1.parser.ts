@@ -1,4 +1,10 @@
 import {
+  ParseResult,
+  parseFail,
+  parseOk,
+  verificationError,
+} from "../errors/verification-errors";
+import {
   normalizeDate,
   normalizeDni,
   normalizeSex,
@@ -64,10 +70,68 @@ function normalizeLines(lines: string[]): string[] | null {
   return cleaned;
 }
 
+/**
+ * Interpreta el MRZ diciendo qué falló.
+ *
+ * Un MRZ cuyos dígitos verificadores no cierran NO es un error: es un dato que
+ * se leyó pero no se puede usar como ancla. Por eso sale como resultado válido
+ * con `checksumValid: false` y una advertencia que nombra el campo que no
+ * cerró, en vez de como fallo. Casi siempre es una letra mal transcripta por
+ * el modelo, no un documento adulterado.
+ */
+export function tryParseMrzTd1(lines: string[]): ParseResult<MrzData> {
+  const cleaned = lines
+    .map((line) => line.toUpperCase().replace(/\s+/g, ""))
+    .filter((line) => line.length > 0);
+
+  if (cleaned.length !== 3) {
+    return parseFail(
+      verificationError("MRZ_LINES_MISSING", { got: cleaned.length }),
+    );
+  }
+
+  const corta = cleaned.findIndex((line) => line.length !== 30);
+  if (corta >= 0) {
+    return parseFail(
+      verificationError("MRZ_LINE_LENGTH", {
+        line: corta + 1,
+        got: cleaned[corta].length,
+      }),
+    );
+  }
+
+  const data = readMrzFields(cleaned);
+  if (!data) {
+    return parseFail(
+      verificationError("MRZ_FIELDS_UNREADABLE", {
+        field: "el número de documento o alguna de las fechas",
+      }),
+    );
+  }
+
+  return parseOk(
+    data.mrz,
+    data.mrz.checksumValid
+      ? []
+      : [
+          verificationError("MRZ_CHECKSUM_FAILED", {
+            field: data.failedCheck ?? "un campo",
+          }),
+        ],
+  );
+}
+
 export function parseMrzTd1(lines: string[]): MrzData | null {
   const normalized = normalizeLines(lines);
   if (!normalized) return null;
 
+  return readMrzFields(normalized)?.mrz ?? null;
+}
+
+/** Lee los campos de tres líneas ya normalizadas a 30 caracteres. */
+function readMrzFields(
+  normalized: string[],
+): { mrz: MrzData; failedCheck: string | null } | null {
   const [line1, line2, line3] = normalized;
 
   // Línea 1: I<ARG + documentNumber(9) + check(1) + opcionales(15)
@@ -99,20 +163,27 @@ export function parseMrzTd1(lines: string[]): MrzData | null {
     line2.slice(8, 15) +
     line2.slice(18, 29);
 
-  const checksumValid =
-    checkField(rawDocumentNumber, documentCheck) &&
-    checkField(rawBirth, birthCheck) &&
-    checkField(rawExpiry, expiryCheck) &&
-    checkField(compositeBase, compositeCheck);
+  // Se evalúan de a uno para poder decir CUÁL no cerró: "el MRZ está mal" no
+  // le sirve a nadie, "falló el dígito de la fecha de vencimiento" sí.
+  const fallos = [
+    ["el número de documento", checkField(rawDocumentNumber, documentCheck)],
+    ["la fecha de nacimiento", checkField(rawBirth, birthCheck)],
+    ["la fecha de vencimiento", checkField(rawExpiry, expiryCheck)],
+    ["el verificador compuesto", checkField(compositeBase, compositeCheck)],
+  ] as const;
+  const failedCheck = fallos.find(([, ok]) => !ok)?.[0] ?? null;
 
   return {
-    documentNumber,
-    lastName: lastNameRaw.replace(/</g, " ").trim(),
-    firstName: firstNameRaw.replace(/</g, " ").trim(),
-    sex: normalizeSex(sex),
-    birthDate,
-    expiryDate,
-    nationality,
-    checksumValid,
+    mrz: {
+      documentNumber,
+      lastName: lastNameRaw.replace(/</g, " ").trim(),
+      firstName: firstNameRaw.replace(/</g, " ").trim(),
+      sex: normalizeSex(sex),
+      birthDate,
+      expiryDate,
+      nationality,
+      checksumValid: failedCheck === null,
+    },
+    failedCheck,
   };
 }

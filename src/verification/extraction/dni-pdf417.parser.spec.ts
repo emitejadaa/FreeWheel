@@ -1,4 +1,4 @@
-import { parseDniPdf417 } from "./dni-pdf417.parser";
+import { parseDniPdf417, tryParseDniPdf417 } from "./dni-pdf417.parser";
 
 // Payloads sintéticos con la forma del PDF417 real (sin datos de personas).
 const CANONICAL =
@@ -53,5 +53,67 @@ describe("parseDniPdf417", () => {
   it("devuelve null ante un payload que no es del DNI", () => {
     expect(parseDniPdf417("https://example.com/algo")).toBeNull();
     expect(parseDniPdf417("")).toBeNull();
+  });
+});
+
+/**
+ * La versión que devuelve el motivo. Existe porque `null` no distingue "esto
+ * no es un PDF417 del RENAPER" de "sí lo es y se leyó a medias", y esas dos
+ * cosas se arreglan distinto: una es la foto equivocada, la otra es la misma
+ * foto sacada mejor.
+ */
+describe("tryParseDniPdf417", () => {
+  it("dice que no tiene la forma del RENAPER cuando no hay separadores", () => {
+    const result = tryParseDniPdf417("https://ejemplo.test/algo");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("DNI_PDF417_MALFORMED");
+    expect(result.error.message).toContain("ejemplo.test");
+  });
+
+  it("cuenta los campos cuando el código se leyó a medias", () => {
+    const result = tryParseDniPdf417("00123456789@PEREZ@JUAN@M");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("DNI_PDF417_INCOMPLETE");
+    expect(result.error.message).toContain("4 campos");
+    expect(result.error.message).toContain("al menos 8");
+  });
+
+  it("nombra el campo cuando el número de documento no es un DNI", () => {
+    const result = tryParseDniPdf417(
+      "00123456789@PEREZ@JUAN@M@XX@A@01/02/1990@05/03/2015",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("DNI_PDF417_NO_NUMBER");
+    expect(result.error.message).toContain("XX");
+  });
+
+  it("nombra el campo cuando la fecha de nacimiento no se entiende", () => {
+    const result = tryParseDniPdf417(
+      "00123456789@PEREZ@JUAN@M@12345678@A@99/99/9999@05/03/2015",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("DNI_PDF417_NO_BIRTHDATE");
+    expect(result.error.message).toContain("99/99/9999");
+  });
+
+  it("avisa cuando falta el nombre", () => {
+    const result = tryParseDniPdf417(
+      "00123456789@PEREZ@@M@12345678@A@01/02/1990@05/03/2015",
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("DNI_PDF417_NO_NAMES");
+  });
+
+  it("devuelve los datos, sin advertencias, cuando el código está bien", () => {
+    const result = tryParseDniPdf417(CANONICAL);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.dni).toBe("12345678");
+    expect(result.warnings).toEqual([]);
   });
 });

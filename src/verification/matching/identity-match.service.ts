@@ -10,6 +10,7 @@ import {
   DocumentSlot,
   OcrExtraction,
 } from "../extraction/extraction.types";
+import { FieldMatrix, buildFieldMatrix } from "./field-comparison";
 import {
   addressSimilarity,
   ageOn,
@@ -48,6 +49,17 @@ export interface MatchReport {
   /** Número de documento de la fuente autoritativa, si la hubo. */
   documentNumber: string | null;
   licenseExpiresAt: string | null;
+  /**
+   * Qué dijo cada fuente sobre cada dato, y si coinciden entre sí.
+   *
+   * Es la EVIDENCIA detrás de los checks, no la decisión. Cada check tiene su
+   * propio criterio —el domicilio se compara por parecido, los nombres admiten
+   * un segundo nombre de más, el vencimiento se mira contra la fecha de hoy— y
+   * eso no se puede reducir a "estos valores son iguales o distintos". Pero
+   * sin la matriz, un `SURNAME_MISMATCH` no dice qué decía cada documento, y
+   * eso es exactamente lo que hace falta para entender un rechazo.
+   */
+  matrix: FieldMatrix;
 }
 
 const MIN_AGE = 18;
@@ -61,7 +73,7 @@ const ADDRESS_MIN_SIMILARITY = 0.5;
  * automático: preferimos molestar a un admin antes que bloquear a una persona
  * real por una foto con brillo.
  */
-const HARD_FAIL_CODES = new Set([
+export const HARD_FAIL_CODES = new Set([
   "SLOT_CONTENT_MISMATCH",
   "DNI_NUMBER_MISMATCH",
   "LICENSE_DNI_MISMATCH",
@@ -92,7 +104,7 @@ const HARD_FAIL_CODES = new Set([
  * visión caído —o contestando cualquier cosa— ninguna verificación se aprobaba
  * sola, aunque el PDF417 dijera exactamente lo mismo que el formulario.
  */
-const REQUIRED_CODES = new Set([
+export const REQUIRED_CODES = new Set([
   "AUTHORITATIVE_SOURCE",
   "DNI_NUMBER_MISMATCH",
   "SURNAME_MISMATCH",
@@ -172,6 +184,7 @@ export class IdentityMatchService {
       reasonCodes: buildReasonCodes(checks, outcome),
       documentNumber: authoritative?.dni ?? null,
       licenseExpiresAt: licenseExpiry(extraction),
+      matrix: buildFieldMatrix(profile, extraction),
     };
   }
 

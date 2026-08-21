@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { BarcodeDecoderService } from "./barcode-decoder.service";
+import { CodeExtractionService } from "./code-extraction.service";
 import { DocumentPrecheckService } from "./document-precheck.service";
 
 /**
@@ -11,7 +12,15 @@ import { DocumentPrecheckService } from "./document-precheck.service";
  * importándose en círculo.
  */
 @Module({
-  providers: [BarcodeDecoderService, DocumentPrecheckService],
-  exports: [BarcodeDecoderService, DocumentPrecheckService],
+  providers: [
+    BarcodeDecoderService,
+    CodeExtractionService,
+    DocumentPrecheckService,
+  ],
+  exports: [
+    BarcodeDecoderService,
+    CodeExtractionService,
+    DocumentPrecheckService,
+  ],
 })
 export class ExtractionModule {}

@@ -1,3 +1,9 @@
+import {
+  ParseResult,
+  parseOk,
+  sample,
+  verificationError,
+} from "../errors/verification-errors";
 import { normalizeDate, normalizeDni } from "../matching/normalize.util";
 
 /**
@@ -84,10 +90,21 @@ function fromDelimited(payload: string): Partial<LicenseCodeData> {
   return result;
 }
 
-export function parseLicenseCode(payload: string): LicenseCodeData {
+/**
+ * Interpreta el código de la licencia. NUNCA falla: un payload opaco es un
+ * resultado válido —la mayoría de las jurisdicciones imprimen solo un link de
+ * validación— y sale como advertencia, no como error. Lo que importa acá es
+ * que el payload crudo quede a la vista para poder reconocer el formato de
+ * cada provincia a medida que aparecen.
+ */
+export function tryParseLicenseCode(
+  payload: string,
+): ParseResult<LicenseCodeData> {
   const trimmed = payload.trim();
   if (trimmed.length === 0) {
-    return { dni: null, expiryDate: null, parsed: false };
+    return parseOk({ dni: null, expiryDate: null, parsed: false }, [
+      verificationError("LICENSE_CODE_OPAQUE", { sample: "(vacío)" }),
+    ]);
   }
 
   const extracted =
@@ -98,6 +115,23 @@ export function parseLicenseCode(payload: string): LicenseCodeData {
 
   const dni = extracted.dni ?? null;
   const expiryDate = extracted.expiryDate ?? null;
+  const parsed = dni !== null || expiryDate !== null;
 
-  return { dni, expiryDate, parsed: dni !== null || expiryDate !== null };
+  return parseOk(
+    { dni, expiryDate, parsed },
+    parsed
+      ? []
+      : [
+          verificationError("LICENSE_CODE_OPAQUE", {
+            sample: sample(trimmed, 80),
+          }),
+        ],
+  );
+}
+
+export function parseLicenseCode(payload: string): LicenseCodeData {
+  const result = tryParseLicenseCode(payload);
+  return result.ok
+    ? result.data
+    : { dni: null, expiryDate: null, parsed: false };
 }

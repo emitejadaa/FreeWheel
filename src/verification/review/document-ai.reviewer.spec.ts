@@ -1,9 +1,17 @@
 import { CloudinaryService } from "../../media/cloudinary.service";
+import {
+  parseFail,
+  parseOk,
+  verificationError,
+} from "../errors/verification-errors";
 import { BarcodeDecoderService } from "../extraction/barcode-decoder.service";
+import { CodeExtractionService } from "../extraction/code-extraction.service";
 import { DocumentOcrService } from "../extraction/document-ocr.service";
 import { DocumentSlot, OcrExtraction } from "../extraction/extraction.types";
+import { fromOcrExtraction } from "../extraction/ocr/ocr-response.parser";
 import { IdentityDocumentsService } from "../identity/identity-documents.service";
 import { IdentityMatchService } from "../matching/identity-match.service";
+import { IdentityVerificationPipeline } from "../pipeline/identity-verification.pipeline";
 import { DocumentAiReviewer } from "./document-ai.reviewer";
 import { IdentityReviewInput } from "./identity-reviewer.interface";
 
@@ -116,11 +124,19 @@ function makeReviewer(ports: Ports = {}) {
     }),
   } as unknown as BarcodeDecoderService;
 
+  // El fake describe la lectura en su forma plana y `fromOcrExtraction` la
+  // levanta al tipo rico: así el test no tiene que simular la respuesta
+  // completa de un modelo para decir "el frente del DNI dice PEREZ".
   const ocr = {
-    extract: jest.fn((slot: DocumentSlot) => {
+    read: jest.fn((slot: DocumentSlot) => {
       const configured = ports.ocrBySlot?.[slot];
+      const extraction =
+        configured !== undefined ? configured : OCR_BY_SLOT[slot];
+
       return Promise.resolve(
-        configured !== undefined ? configured : OCR_BY_SLOT[slot],
+        extraction
+          ? parseOk(fromOcrExtraction(slot, extraction))
+          : parseFail(verificationError("OCR_MODEL_UNAVAILABLE", { slot })),
       );
     }),
   } as unknown as DocumentOcrService;
@@ -128,9 +144,11 @@ function makeReviewer(ports: Ports = {}) {
   const reviewer = new DocumentAiReviewer(
     cloudinary,
     documents,
-    barcodes,
-    ocr,
-    new IdentityMatchService(),
+    new IdentityVerificationPipeline(
+      new CodeExtractionService(barcodes),
+      ocr,
+      new IdentityMatchService(),
+    ),
   );
 
   return { reviewer, cloudinary, barcodes, ocr };
@@ -232,7 +250,7 @@ describe("DocumentAiReviewer", () => {
     const verdict = await reviewer.review(INPUT);
 
     // El OCR se intentó igual: lo que cambia es que su silencio no bloquea.
-    expect((ocr.extract as jest.Mock).mock.calls).toHaveLength(4);
+    expect((ocr.read as jest.Mock).mock.calls).toHaveLength(4);
     expect(verdict.outcome).toBe("approved");
     expect(verdict.documentNumber).toBe("12345678");
   });

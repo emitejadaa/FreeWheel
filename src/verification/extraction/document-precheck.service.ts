@@ -4,9 +4,8 @@ import type {
   DocumentKind,
   SupportedLang,
 } from "../../ai/ai.service";
-import { BarcodeDecoderService } from "./barcode-decoder.service";
-import { parseDniPdf417 } from "./dni-pdf417.parser";
-import { parseLicenseCode } from "./license-code.parser";
+import { CodeExtractionService } from "./code-extraction.service";
+import { DocumentSlot } from "./extraction.types";
 
 /**
  * Tope de la imagen a decodificar. El DTO ya limita el string a 3 MB; esto es
@@ -69,6 +68,14 @@ export function decodeImageDataUrl(image: string): Uint8Array | null {
   return new Uint8Array(bytes);
 }
 
+/** El slot que le corresponde a cada tipo de documento del proxy de IA. */
+const SLOT_BY_KIND: Record<DocumentKind, DocumentSlot> = {
+  DNI_FRONT: "dni_front",
+  DNI_BACK: "dni_back",
+  LICENSE_FRONT: "license_front",
+  LICENSE_BACK: "license_back",
+};
+
 /**
  * Revisión de una foto de documento SIN modelo de IA: decodifica los códigos
  * impresos y saca conclusiones de lo que dicen.
@@ -88,7 +95,7 @@ export function decodeImageDataUrl(image: string): Uint8Array | null {
 export class DocumentPrecheckService {
   private readonly logger = new Logger(DocumentPrecheckService.name);
 
-  constructor(private readonly barcodes: BarcodeDecoderService) {}
+  constructor(private readonly codes: CodeExtractionService) {}
 
   async check(
     image: string,
@@ -98,27 +105,18 @@ export class DocumentPrecheckService {
     const bytes = decodeImageDataUrl(image);
     if (!bytes) return null;
 
-    let decoded: string[];
-    try {
-      decoded = (await this.barcodes.decode(bytes, ["PDF417", "QRCode"])).map(
-        (result) => result.text,
-      );
-    } catch (error) {
-      // decode() ya no lanza, pero si algún día lo hiciera, esto es un paso
-      // OPCIONAL: nunca puede tumbar la revisión.
-      this.logger.warn(
-        `No se pudo decodificar la foto: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    // Mismo lector que usa la revisión de verdad: un solo camino, un solo
+    // conjunto de mensajes de error.
+    const read = await this.codes.readCodes(SLOT_BY_KIND[kind], bytes);
+    if (read.codes.length === 0) {
+      if (read.error) this.logger.debug(read.error.message);
       return null;
     }
-    if (decoded.length === 0) return null;
 
-    // El PDF417 del RENAPER: prueba que la foto es de un DNI. No dice de qué
+    // El PDF417 del RENAPER prueba que la foto es de un DNI. No dice de qué
     // lado (según el ejemplar el código está en el frente o en el dorso), así
     // que sirve para los dos slots del DNI y para descartar los de la licencia.
-    const dni = decoded.map(parseDniPdf417).find(Boolean);
+    const dni = read.codes.find((code) => code.kind === "dni_pdf417")?.dni;
 
     if (dni) {
       return kind === "DNI_FRONT" || kind === "DNI_BACK"
@@ -138,7 +136,9 @@ export class DocumentPrecheckService {
     }
 
     if (kind === "LICENSE_BACK" || kind === "LICENSE_FRONT") {
-      const license = decoded.map(parseLicenseCode).find((code) => code.parsed);
+      // Solo cuenta como confirmación el código que TRAE datos: uno opaco
+      // (un link de validación) no dice nada sobre de quién es la licencia.
+      const license = read.codes.find((code) => code.license?.parsed)?.license;
       if (license) {
         return {
           matches: true,

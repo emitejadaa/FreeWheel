@@ -3,7 +3,13 @@ import {
   DecodedBarcode,
   IdentityBarcodeFormat,
 } from "../../src/verification/extraction/barcode-decoder.service";
+import {
+  parseFail,
+  parseOk,
+  verificationError,
+} from "../../src/verification/errors/verification-errors";
 import { DocumentOcrService } from "../../src/verification/extraction/document-ocr.service";
+import { fromOcrExtraction } from "../../src/verification/extraction/ocr/ocr-response.parser";
 import {
   DocumentSlot,
   OcrExtraction,
@@ -220,17 +226,33 @@ export class FakeIdentityExtraction {
   }
 
   get ocr(): DocumentOcrService {
-    const extract = (
+    /** Qué "lee" el modelo en esa foto, en la forma plana de siempre. */
+    const plano = (
       slot: DocumentSlot,
       bytes: Uint8Array,
-    ): Promise<OcrExtraction | null> => {
+    ): OcrExtraction | null => {
       if (this.ocrOverrides.has(slot)) {
-        return Promise.resolve(this.ocrOverrides.get(slot) ?? null);
+        return this.ocrOverrides.get(slot) ?? null;
       }
       const persona = this.personaForBytes(bytes);
-      return Promise.resolve(persona ? ocrForPersona(persona)[slot] : null);
+      return persona ? ocrForPersona(persona)[slot] : null;
     };
 
-    return { extract } as unknown as DocumentOcrService;
+    // El pipeline pide `read()`, que devuelve la lectura con evidencia y con
+    // el motivo cuando falla; `fromOcrExtraction` levanta la forma plana a esa
+    // otra, así los tests siguen describiendo la persona en dos líneas.
+    const read = (slot: DocumentSlot, bytes: Uint8Array) => {
+      const extraction = plano(slot, bytes);
+      return Promise.resolve(
+        extraction
+          ? parseOk(fromOcrExtraction(slot, extraction))
+          : parseFail(verificationError("OCR_MODEL_UNAVAILABLE", { slot })),
+      );
+    };
+
+    const extract = (slot: DocumentSlot, bytes: Uint8Array) =>
+      Promise.resolve(plano(slot, bytes));
+
+    return { read, extract } as unknown as DocumentOcrService;
   }
 }

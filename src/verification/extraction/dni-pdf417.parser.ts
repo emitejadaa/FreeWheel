@@ -1,4 +1,11 @@
 import {
+  ParseResult,
+  parseFail,
+  parseOk,
+  sample,
+  verificationError,
+} from "../errors/verification-errors";
+import {
   normalizeDate,
   normalizeDni,
   normalizeSex,
@@ -30,21 +37,62 @@ export interface DniBarcodeData {
 
 const MIN_FIELDS = 8;
 
-export function parseDniPdf417(payload: string): DniBarcodeData | null {
-  const fields = payload.trim().split("@");
-  if (fields.length < MIN_FIELDS) return null;
+/**
+ * Interpreta el payload diciendo POR QUÉ no se pudo, cuando no se puede.
+ *
+ * La versión que devuelve `null` sigue existiendo abajo para todos los que ya
+ * la usan, pero `null` no distingue "esto no es un PDF417 del RENAPER" de
+ * "sí lo es y se leyó a medias", que es justo lo que hay que saber para
+ * arreglar una foto.
+ */
+export function tryParseDniPdf417(
+  payload: string,
+): ParseResult<DniBarcodeData> {
+  const trimmed = payload.trim();
+  const fields = trimmed.split("@");
+
+  if (fields.length < 2) {
+    return parseFail(
+      verificationError("DNI_PDF417_MALFORMED", {
+        sample: sample(trimmed, 40),
+      }),
+    );
+  }
+  if (fields.length < MIN_FIELDS) {
+    return parseFail(
+      verificationError("DNI_PDF417_INCOMPLETE", {
+        fieldCount: fields.length,
+        expected: MIN_FIELDS,
+        sample: sample(trimmed, 40),
+      }),
+    );
+  }
 
   const [procedureNumber, lastName, firstName, sex, dni, copy, birth, issue] =
     fields;
 
-  const normalizedDni = normalizeDni(dni ?? "");
-  const birthDate = normalizeDate(birth ?? "");
-
   // Sin número de documento ni fecha de nacimiento no sirve como ancla.
-  if (!normalizedDni || !birthDate) return null;
-  if (!lastName?.trim() || !firstName?.trim()) return null;
+  const normalizedDni = normalizeDni(dni ?? "");
+  if (!normalizedDni) {
+    return parseFail(
+      verificationError("DNI_PDF417_NO_NUMBER", { got: sample(dni ?? "", 20) }),
+    );
+  }
 
-  return {
+  const birthDate = normalizeDate(birth ?? "");
+  if (!birthDate) {
+    return parseFail(
+      verificationError("DNI_PDF417_NO_BIRTHDATE", {
+        got: sample(birth ?? "", 20),
+      }),
+    );
+  }
+
+  if (!lastName?.trim() || !firstName?.trim()) {
+    return parseFail(verificationError("DNI_PDF417_NO_NAMES"));
+  }
+
+  return parseOk({
     procedureNumber: procedureNumber.trim(),
     lastName: lastName.trim(),
     firstName: firstName.trim(),
@@ -53,5 +101,11 @@ export function parseDniPdf417(payload: string): DniBarcodeData | null {
     copy: (copy ?? "").trim(),
     birthDate,
     issueDate: normalizeDate(issue ?? ""),
-  };
+  });
+}
+
+/** Igual que tryParseDniPdf417 pero sin el motivo. Se usa como predicado. */
+export function parseDniPdf417(payload: string): DniBarcodeData | null {
+  const result = tryParseDniPdf417(payload);
+  return result.ok ? result.data : null;
 }

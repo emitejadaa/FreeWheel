@@ -1,18 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { CloudinaryService } from "../../media/cloudinary.service";
-import { BarcodeDecoderService } from "../extraction/barcode-decoder.service";
-import { DocumentOcrService } from "../extraction/document-ocr.service";
-import {
-  DocumentExtraction,
-  DocumentSlot,
-  OcrExtraction,
-} from "../extraction/extraction.types";
-import { parseDniPdf417 } from "../extraction/dni-pdf417.parser";
-import { parseLicenseCode } from "../extraction/license-code.parser";
-import { parseMrzTd1 } from "../extraction/mrz-td1.parser";
+import { DocumentSlot } from "../extraction/extraction.types";
 import { IdentityDocumentsService } from "../identity/identity-documents.service";
-import { IdentityMatchService } from "../matching/identity-match.service";
+import {
+  IdentityVerificationPipeline,
+  SlotImages,
+} from "../pipeline/identity-verification.pipeline";
 import {
   IdentityReviewer,
   IdentityReviewInput,
@@ -44,15 +38,14 @@ const SLOT_FIELDS: Record<DocumentSlot, keyof IdentityReviewInput> = {
 /**
  * Revisión documental real (IDENTITY_REVIEW_MODE=document_ai).
  *
- * Orquesta: descarga las cuatro imágenes desde el almacenamiento privado →
- * decodifica el PDF417 del DNI y el QR de la licencia (determinístico) → lee
- * el texto impreso con OCR → parsea MRZ y códigos → cruza todo contra sí
- * mismo y contra los datos de la cuenta (IdentityMatchService) → emite el
- * veredicto.
+ * Es un ADAPTADOR: lo único que hace es decirle al pipeline cómo bajar cada
+ * foto del almacenamiento privado, y traducir su resultado al veredicto que
+ * espera el resto de la aplicación. Todo el trabajo —leer los códigos, leer el
+ * texto, cruzar los datos, decidir— vive en el pipeline y en los tres módulos
+ * que orquesta, que se pueden probar sin Cloudinary y sin base de datos.
  *
- * Todo lo pesado corre en paralelo porque la revisión vive dentro del request
- * serverless. No decide nada por sí mismo: la política está en
- * IdentityMatchService, que es puro y testeable.
+ * El rastro completo (qué se intentó, cuánto tardó, qué falló y por qué) queda
+ * guardado en la columna `extracted`, que solo ven los administradores.
  */
 @Injectable()
 export class DocumentAiReviewer implements IdentityReviewer {
@@ -63,19 +56,29 @@ export class DocumentAiReviewer implements IdentityReviewer {
   constructor(
     private readonly cloudinary: CloudinaryService,
     private readonly documents: IdentityDocumentsService,
-    private readonly barcodes: BarcodeDecoderService,
-    private readonly ocr: DocumentOcrService,
-    private readonly matcher: IdentityMatchService,
+    private readonly pipeline: IdentityVerificationPipeline,
   ) {}
 
   async review(input: IdentityReviewInput): Promise<IdentityReviewVerdict> {
-    const extraction = await this.extract(input);
-    const report = this.matcher.match(input.profile, extraction);
+    const result = await this.pipeline.run({
+      profile: input.profile,
+      images: this.imagesFor(input),
+    });
+
+    const { report, extraction } = result;
 
     this.logger.log(
       `Identity review for user ${input.userId}: ${report.outcome} ` +
-        `(${report.reasonCodes.join(", ") || "sin observaciones"})`,
+        `(${report.reasonCodes.join(", ") || "sin observaciones"}) ` +
+        `en ${result.totalMs} ms`,
     );
+    for (const stage of result.stages) {
+      if (stage.error) {
+        this.logger.warn(
+          `Etapa ${stage.stage} (${stage.durationMs} ms): ${stage.error.message}`,
+        );
+      }
+    }
 
     // El nombre se toma de la fuente autoritativa (PDF417 o MRZ validado), no
     // del OCR ni de lo que escribió la persona.
@@ -88,7 +91,26 @@ export class DocumentAiReviewer implements IdentityReviewer {
       outcome: report.outcome,
       reasonCodes: report.reasonCodes,
       notes: summarize(report.outcome, report.reasonCodes),
-      extracted: toJson(extraction),
+      extracted: toJson({
+        ...extraction,
+        trace: {
+          stages: result.stages,
+          totalMs: result.totalMs,
+          dniCode: {
+            found: extraction.dniBarcode !== null,
+            source: result.dniCode.source,
+            attempts: result.dniCode.attempts,
+            error: result.dniCode.error,
+          },
+          licenseCode: {
+            found: extraction.licenseCode !== null,
+            source: result.licenseCode.source,
+            attempts: result.licenseCode.attempts,
+            error: result.licenseCode.error,
+          },
+          mrz: result.mrz.error ? { error: result.mrz.error } : undefined,
+        },
+      }),
       matchReport: toJson(report),
       documentNumber: report.documentNumber ?? undefined,
       fullNameOnDocument,
@@ -98,116 +120,32 @@ export class DocumentAiReviewer implements IdentityReviewer {
     };
   }
 
-  private async extract(
+  /**
+   * Cómo bajar cada foto. Una URL que no parsee (una fila vieja, un dato
+   * migrado) deja ese slot sin fuente en vez de romper la revisión entera.
+   */
+  private imagesFor(
     input: IdentityReviewInput,
-  ): Promise<DocumentExtraction> {
-    const slots: DocumentSlot[] = [
-      "dni_front",
-      "dni_back",
-      "license_front",
-      "license_back",
-    ];
+  ): Partial<Record<DocumentSlot, SlotImages>> {
+    const images: Partial<Record<DocumentSlot, SlotImages>> = {};
 
-    // Una única resolución de publicId por slot; una URL que no parsee (fila
-    // vieja, dato migrado) deja ese slot sin fuente en vez de romper todo.
-    const publicIds = new Map<DocumentSlot, string>();
-    for (const slot of slots) {
+    for (const slot of Object.keys(SLOT_FIELDS) as DocumentSlot[]) {
       const url = input[SLOT_FIELDS[slot]] as string;
       const parsed = this.documents.parsePersistedUrl(url);
-      if (parsed) publicIds.set(slot, parsed.publicId);
-    }
+      if (!parsed) continue;
 
-    const [dniBarcodePayload, licensePayload, ocrResults] = await Promise.all([
-      // El PDF417 del RENAPER se busca en LAS DOS caras del DNI: según el
-      // ejemplar está impreso de un lado o del otro, y dar por sentado que
-      // estaba en el frente dejaba sin ancla —o sea, en revisión manual— a
-      // todo un tipo de documento. Se queda con el payload que realmente
-      // parsea como DNI, así que buscar de más no puede confundir nada.
-      this.decodeFirst(
-        [publicIds.get("dni_front"), publicIds.get("dni_back")],
-        ["PDF417"],
-        (payload) => parseDniPdf417(payload) !== null,
-      ),
-      // Ídem con la licencia; y si lo que se lee es el PDF417 de un DNI, no es
-      // el código de la licencia: se sigue buscando.
-      this.decodeFirst(
-        [publicIds.get("license_back"), publicIds.get("license_front")],
-        ["QRCode", "PDF417"],
-        (payload) => parseDniPdf417(payload) === null,
-      ),
-      Promise.all(
-        slots.map((slot) => this.readSlot(slot, publicIds.get(slot))),
-      ),
-    ]);
-
-    const ocr: DocumentExtraction["ocr"] = {};
-    slots.forEach((slot, index) => {
-      ocr[slot] = ocrResults[index];
-    });
-
-    return {
-      dniBarcode: dniBarcodePayload ? parseDniPdf417(dniBarcodePayload) : null,
-      mrz: parseMrzTd1(ocr.dni_back?.fields.mrzLines ?? []),
-      licenseCode: licensePayload ? parseLicenseCode(licensePayload) : null,
-      ocr,
-    };
-  }
-
-  /**
-   * Recorre las fotos indicadas y, en cada una, las variantes de imagen, hasta
-   * dar con un código que `accept` dé por bueno. Devuelve el payload crudo.
-   */
-  private async decodeFirst(
-    publicIds: (string | undefined)[],
-    formats: ("PDF417" | "QRCode")[],
-    accept: (payload: string) => boolean,
-  ): Promise<string | null> {
-    for (const publicId of publicIds) {
-      if (!publicId) continue;
-
-      for (const transformation of BARCODE_VARIANTS) {
-        try {
-          const { bytes } = await this.cloudinary.download(publicId, {
+      images[slot] = {
+        codeVariants: BARCODE_VARIANTS,
+        ocrVariant: OCR_TRANSFORMATION,
+        load: (transformation) =>
+          this.cloudinary.download(parsed.publicId, {
             transformation,
             format: "jpg",
-          });
-          const decoded = await this.barcodes.decode(bytes, formats);
-          const payload = decoded
-            .map((result) => result.text)
-            .find((text) => accept(text));
-          if (payload) return payload;
-        } catch (error) {
-          this.logger.warn(
-            `No se pudo leer el código (${transformation ?? "original"}): ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
+          }),
+      };
     }
-    return null;
-  }
 
-  private async readSlot(
-    slot: DocumentSlot,
-    publicId: string | undefined,
-  ): Promise<OcrExtraction | null> {
-    if (!publicId) return null;
-
-    try {
-      const { bytes, mimeType } = await this.cloudinary.download(publicId, {
-        transformation: OCR_TRANSFORMATION,
-        format: "jpg",
-      });
-      return await this.ocr.extract(slot, bytes, mimeType);
-    } catch (error) {
-      this.logger.warn(
-        `No se pudo leer el documento ${slot}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return null;
-    }
+    return images;
   }
 }
 

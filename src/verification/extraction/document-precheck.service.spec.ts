@@ -4,6 +4,7 @@ import {
   IdentityBarcodeFormat,
   prepareZxingForNode,
 } from "./barcode-decoder.service";
+import { CodeExtractionService } from "./code-extraction.service";
 import {
   DocumentPrecheckService,
   decodeImageDataUrl,
@@ -40,7 +41,9 @@ describe("DocumentPrecheckService", () => {
   beforeAll(async () => {
     // wasm local: la suite no depende de la red.
     prepareZxingForNode();
-    service = new DocumentPrecheckService(new BarcodeDecoderService());
+    service = new DocumentPrecheckService(
+      new CodeExtractionService(new BarcodeDecoderService()),
+    );
     dniPhoto = await dataUrl(DNI_PDF417, "PDF417");
     licensePhoto = await dataUrl(LICENSE_QR, "QRCode");
   }, 30000);

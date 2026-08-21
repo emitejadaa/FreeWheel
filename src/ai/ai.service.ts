@@ -6,6 +6,10 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import {
+  findJsonObject,
+  stripReasoning,
+} from "../common/utils/json-from-text.util";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -247,6 +251,34 @@ export type AiUnavailableCode =
   | "upstream_error"
   | "unreadable";
 
+/**
+ * Lo que sale de una consulta al modelo de visión.
+ *
+ * El fallo trae el motivo CON el modelo que contestó y una muestra de lo que
+ * dijo. Antes esa información existía pero se guardaba en un campo del
+ * servicio (`lastVisionError`), o sea compartida entre todas las llamadas: con
+ * cuatro fotos revisándose en paralelo, no había forma de saber cuál de las
+ * cuatro había fallado ni por qué.
+ */
+export interface VisionAnswer {
+  ok: true;
+  content: string;
+  /** El modelo que efectivamente contestó (puede no ser el primero). */
+  model: string;
+  durationMs: number;
+}
+
+export interface VisionFailure {
+  ok: false;
+  code: AiUnavailableCode;
+  model: string | null;
+  /** Recorte de lo que sí contestó, cuando contestó algo. */
+  sample: string | null;
+  durationMs: number;
+  /** Todos los modelos que se probaron, en orden. */
+  triedModels: string[];
+}
+
 /** Lo que contesta GET /ai/health. */
 export interface AiHealthReport {
   configured: boolean;
@@ -280,62 +312,6 @@ export interface DocumentInspection {
   documentNumber?: string | null;
   fullName?: string | null;
   expiresAt?: string | null;
-}
-
-/**
- * Saca de la respuesta todo lo que no es la respuesta.
- *
- * POR QUÉ EXISTE: los modelos de razonamiento (qwen3, deepseek-r1) escriben
- * primero su análisis dentro de <think>...</think> y recién después contestan.
- * Ese análisis se lleva casi todos los tokens del tope, así que lo que llegaba
- * era un <think> cortado por la mitad, sin una sola llave, y la revisión
- * terminaba en "no se pudo interpretar la revisión automática" con CUALQUIER
- * imagen. Un <think> sin cerrar es exactamente eso: la respuesta se cortó y
- * después no viene nada.
- */
-export function stripReasoning(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, " ")
-    .replace(/<think>[\s\S]*$/i, " ")
-    .replace(/```json/gi, " ")
-    .replace(/```/g, " ")
-    .trim();
-}
-
-/**
- * El primer objeto JSON COMPLETO del texto, contando llaves y salteando las
- * que estén dentro de un string. El `/\{[\s\S]*\}/` de antes agarraba desde la
- * primera llave que apareciera en el razonamiento hasta la última del texto,
- * así que devolvía algo que no parsea aunque el JSON de verdad estuviera ahí.
- */
-export function findJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
-  if (start < 0) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-
-    if (char === '"') inString = true;
-    else if (char === "{") depth += 1;
-    else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, index + 1);
-    }
-  }
-
-  // Llegar acá es una respuesta cortada: hay apertura y nunca cierre.
-  return null;
 }
 
 /** Recorta el JSON de una respuesta que puede venir con texto alrededor. */
@@ -430,20 +406,30 @@ export class AiService {
     prompt: string,
     maxTokens: number,
     options: { jsonMode?: boolean; requireJson?: boolean } = {},
-  ): Promise<
-    { ok: true; content: string } | { ok: false; code: AiUnavailableCode }
-  > {
+  ): Promise<VisionAnswer | VisionFailure> {
+    const started = Date.now();
+    const triedModels: string[] = [];
+
     if (!this.configured) {
       this.logger.error(
         "Falta GROQ_API_KEY: la revisión por IA queda deshabilitada. " +
           "Cargala en las variables de entorno del backend.",
       );
-      return { ok: false, code: "not_configured" };
+      return {
+        ok: false,
+        code: "not_configured",
+        model: null,
+        sample: null,
+        durationMs: Date.now() - started,
+        triedModels,
+      };
     }
 
     let contestoSinJson = false;
+    let ultimaMuestra: string | null = null;
 
     for (const model of this.visionModels()) {
+      triedModels.push(model);
       const answer = await this.callVisionModel(
         model,
         imageUrl,
@@ -455,12 +441,26 @@ export class AiService {
       // El modelo ya no existe: el siguiente de la lista.
       if (answer.kind === "unusable_model") continue;
       // El problema no es el modelo (clave, cuota, imagen): reintentar no sirve.
-      if (answer.kind === "error") return { ok: false, code: "upstream_error" };
+      if (answer.kind === "error") {
+        return {
+          ok: false,
+          code: "upstream_error",
+          model,
+          sample: null,
+          durationMs: Date.now() - started,
+          triedModels,
+        };
+      }
 
       if (!options.requireJson || findJsonObject(answer.content)) {
         this.lastVisionError = null;
         this.lastVisionSample = null;
-        return { ok: true, content: answer.content };
+        return {
+          ok: true,
+          content: answer.content,
+          model,
+          durationMs: Date.now() - started,
+        };
       }
 
       // Contestó, pero no lo que se le pidió. Un modelo que no devuelve el JSON
@@ -473,6 +473,7 @@ export class AiService {
       this.lastVisionSample =
         answer.raw.slice(0, 300).replace(/\s+/g, " ").trim() ||
         "(respuesta vacía)";
+      ultimaMuestra = this.lastVisionSample;
       this.lastVisionError =
         `${model} → contestó sin el JSON pedido` +
         (answer.truncated ? " (cortado por el tope de tokens)" : "");
@@ -483,14 +484,21 @@ export class AiService {
       );
     }
 
-    if (contestoSinJson) return { ok: false, code: "unreadable" };
+    const fallo = {
+      model: triedModels[triedModels.length - 1] ?? null,
+      sample: ultimaMuestra,
+      durationMs: Date.now() - started,
+      triedModels,
+    };
+
+    if (contestoSinJson) return { ok: false, code: "unreadable", ...fallo };
 
     // Se agotó la lista: todos los modelos dieron "no existe".
     this.logger.error(
       "Ningún modelo de visión de la lista está disponible en Groq. " +
         "Mirá GET /ai/health para ver los que ofrece hoy y cargá uno en GROQ_VISION_MODEL.",
     );
-    return { ok: false, code: "upstream_error" };
+    return { ok: false, code: "upstream_error", ...fallo };
   }
 
   /**
@@ -940,11 +948,29 @@ export class AiService {
     prompt: string,
     maxTokens = DOCUMENT_MAX_TOKENS,
   ): Promise<string | null> {
-    const answer = await this.askVisionModel(imageDataUrl, prompt, maxTokens, {
+    const answer = await this.visionStructuredDetailed(
+      imageDataUrl,
+      prompt,
+      maxTokens,
+    );
+    return answer.ok ? answer.content : null;
+  }
+
+  /**
+   * Igual que visionStructured pero devolviendo POR QUÉ falló, con qué modelo
+   * y qué contestó. Es lo que necesita la lectura de documentos para poder
+   * decir "esta foto no se pudo leer porque el modelo contestó tal cosa" en
+   * vez de un `null` que no se puede diagnosticar.
+   */
+  visionStructuredDetailed(
+    imageDataUrl: string,
+    prompt: string,
+    maxTokens = DOCUMENT_MAX_TOKENS,
+  ): Promise<VisionAnswer | VisionFailure> {
+    return this.askVisionModel(imageDataUrl, prompt, maxTokens, {
       jsonMode: true,
       requireJson: true,
     });
-    return answer.ok ? answer.content : null;
   }
 
   /**

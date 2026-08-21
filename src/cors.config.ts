@@ -16,6 +16,8 @@ const DEV_ORIGINS = [
   "http://localhost:4173", // vite preview
   "http://localhost:3000",
   "http://127.0.0.1:5173",
+  "http://localhost:8080", // `python3 -m http.server 8080`, el front de prueba
+  "http://127.0.0.1:8080",
 ];
 
 /** Los deploys de vista previa de Vercel: un subdominio distinto por rama. */
@@ -43,7 +45,8 @@ function lista(valor: string | undefined): string[] {
  *    ni localhost ni las vistas previas, solo lo que diga la variable);
  *  · si no está, se permite el front de producción (FRONTEND_URL), los puertos de
  *    desarrollo y los deploys de vista previa de Vercel, que cambian de nombre en
- *    cada rama y sin esto quedarían todos afuera.
+ *    cada rama y sin esto quedarían todos afuera;
+ *  · DEMO_ORIGINS se suma en los dos casos, para el front de prueba.
  *
  * Un pedido SIN cabecera Origin (curl, Postman, el webhook de Stripe, cualquier
  * cosa que no sea un navegador) se deja pasar: CORS es una protección del
@@ -52,9 +55,16 @@ function lista(valor: string | undefined): string[] {
 export function createCorsOptions(): CorsOptions {
   const explicitos = lista(process.env.CORS_ORIGINS);
   const estricto = explicitos.length > 0;
-  const permitidos = estricto
-    ? explicitos
-    : [...lista(process.env.FRONTEND_URL), ...DEV_ORIGINS];
+  // DEMO_ORIGINS se suma SIEMPRE, también en modo estricto: es para poder
+  // abrir el front de prueba de la verificación de documentos contra el
+  // backend desplegado sin tener que tocar la lista de producción. Es
+  // temporal; cuando termine esa etapa, se saca la variable y listo.
+  const permitidos = [
+    ...(estricto
+      ? explicitos
+      : [...lista(process.env.FRONTEND_URL), ...DEV_ORIGINS]),
+    ...lista(process.env.DEMO_ORIGINS),
+  ];
 
   return {
     origin(origen, callback) {
