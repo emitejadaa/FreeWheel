@@ -258,6 +258,21 @@ Admin:
 - `GET /admin/bookings`
 - `GET /admin/bookings/:id`
 
+## Probar La API (archivos `.rest`)
+
+Cada modulo de `src/` tiene su propio `<modulo>.rest` (extension **REST
+Client** de VS Code, `humao.rest-client`) con todos sus endpoints listos para
+dispararse y probar cada flujo de punta a punta a mano — por ejemplo
+`src/auth/auth.rest`, `src/bookings/bookings.rest`, `src/payments/payments.rest`,
+etc. `baseUrl` sale de `.vscode/settings.json` (elegir entorno `local` o
+`production` con "Switch Environment" en VS Code). Cada archivo se autocontiene:
+arranca registrando la(s) cuenta(s) de prueba que necesita y encadena tokens/ids
+con `# @name` + `{{request.response.body.$.campo}}`.
+
+Detalle completo (por que cada archivo es autocontenido, como copiar el codigo
+de verificacion de la consola del server, como dejar una cuenta `VERIFIED` o
+`ADMIN` en local) en `backend.md`, seccion "Pruebas manuales (`.rest`)".
+
 ## Integraciones
 
 - PostgreSQL/Neon: persistencia principal via Prisma.

@@ -1,0 +1,95 @@
+### ai.rest — Proxy de IA (Groq): chatbot, visión y transcripción
+### Módulo: src/ai/ai.controller.ts (AiModule)
+### GET /ai/health y POST /ai/chat son públicos. POST /ai/vision, /ai/transcribe
+### y /ai/document requieren JWT. `?probe=1` en /ai/health requiere además rol
+### ADMIN (gasta cuota real contra Groq: no lo pidas seguido).
+### Necesita GROQ_API_KEY configurada en el server para responder de verdad;
+### sin ella, /ai/health lo va a decir.
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta de prueba (detalle del flujo en src/auth/auth.rest) ──────
+@email = ai-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "acceptedTerms": true,
+  "dateOfBirth": "1995-05-20"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### Imagen de 1x1 px como dataURL de ejemplo — reemplazar por una foto real
+### (auto o documento) para que la IA tenga algo que analizar de verdad.
+@sampleImageDataUrl = data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. ¿Está funcionando la revisión por IA? (público, de lectura).
+GET {{baseUrl}}/ai/health
+
+### 2. Prueba cada modelo de visión de verdad (gasta cuota — requiere ADMIN;
+### ver src/admin/admin.rest para promover una cuenta).
+GET {{baseUrl}}/ai/health?probe=1
+Authorization: Bearer {{accessToken}}
+
+### 3. Chatbot de ayuda (público — funciona sin cuenta).
+POST {{baseUrl}}/ai/chat
+Content-Type: {{contentType}}
+
+{
+  "messages": [
+    { "role": "user", "content": "¿Cómo publico mi auto en FreeWheel?" }
+  ],
+  "temperature": 0.7
+}
+
+### 4. Revisa si una foto muestra un vehículo real (requiere sesión).
+POST {{baseUrl}}/ai/vision
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "imageDataUrl": "{{sampleImageDataUrl}}",
+  "lang": "es"
+}
+
+### 5. Transcribe una nota de voz (audioUrl ya subida a Cloudinary).
+POST {{baseUrl}}/ai/transcribe
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "audioUrl": "https://res.cloudinary.com/demo/video/upload/v1/audio/sample.mp3"
+}
+
+### 6. Revisa si una foto es realmente el documento pedido (DNI/licencia).
+### kind: DNI_FRONT, DNI_BACK, LICENSE_FRONT o LICENSE_BACK.
+POST {{baseUrl}}/ai/document
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "image": "{{sampleImageDataUrl}}",
+  "kind": "DNI_FRONT",
+  "lang": "es"
+}

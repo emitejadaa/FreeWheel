@@ -1,0 +1,186 @@
+### admin.rest — Panel de administración (usuarios, verificaciones, listings, bookings)
+### Módulo: src/admin/admin.controller.ts (AdminModule)
+### Todo el controller exige JWT + RolesGuard + @Roles(ADMIN).
+###
+### ⚠️ No hay alta de admin por API (evita que cualquiera se autopromueva). Para
+### tener un admin en local:
+###   1) Corré el bloque de "Setup" de abajo (crea un usuario común).
+###   2) Promovelo a mano en la base: `npx prisma studio` → tabla User → poné
+###      role = ADMIN en la fila de @email; o por SQL:
+###      UPDATE "User" SET role = 'ADMIN' WHERE email = '<el valor de @email de abajo>';
+###   3) NO hace falta volver a loguearse: JwtStrategy relee el usuario de la
+###      base en cada request, así que @accessToken ya sirve como admin.
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: usuario a promover a ADMIN (ver nota arriba) ────────────────────
+@email = admin-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Admin",
+  "lastName": "FreeWheel",
+  "acceptedTerms": true,
+  "dateOfBirth": "1988-01-01"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### ── Setup: usuario/listing/booking "target" para probar los GET/PATCH ──────
+@targetEmail = admin-target-{{$timestamp}}@test.local
+@targetCode = 000000
+
+# @name targetRegisterStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{targetEmail}}" }
+
+# @name targetRegisterComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{targetEmail}}",
+  "code": "{{targetCode}}",
+  "password": "{{password}}",
+  "firstName": "Target",
+  "lastName": "User",
+  "acceptedTerms": true,
+  "dateOfBirth": "1993-04-12"
+}
+
+@targetUserId = {{targetRegisterComplete.response.body.$.user.id}}
+@targetToken = {{targetRegisterComplete.response.body.$.accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Usuarios
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Lista todos los usuarios.
+GET {{baseUrl}}/admin/users
+Authorization: Bearer {{accessToken}}
+
+### 2. Obtiene un usuario.
+GET {{baseUrl}}/admin/users/{{targetUserId}}
+Authorization: Bearer {{accessToken}}
+
+### 3. Cambia el estado de un usuario (ACTIVE, PENDING_VERIFICATION, SUSPENDED, DELETED).
+PATCH {{baseUrl}}/admin/users/{{targetUserId}}/status
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "SUSPENDED"
+}
+
+### 4. Reactiva al usuario (deshace el suspend anterior antes de seguir probando).
+PATCH {{baseUrl}}/admin/users/{{targetUserId}}/status
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "ACTIVE"
+}
+
+### 5. Cambia el rol de un usuario (USER o ADMIN).
+PATCH {{baseUrl}}/admin/users/{{targetUserId}}/role
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "role": "ADMIN"
+}
+
+### 6. Elimina un usuario permanentemente. ⚠️ Destructivo — no correr sobre
+### {{targetUserId}} si lo necesitás para los requests de abajo.
+# DELETE {{baseUrl}}/admin/users/{{targetUserId}}
+# Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Verificaciones de identidad
+### ────────────────────────────────────────────────────────────────────────
+
+### 7. Lista todas las solicitudes de verificación.
+GET {{baseUrl}}/admin/verifications
+Authorization: Bearer {{accessToken}}
+
+### Pegá acá el id de una solicitud real (sale del listado del request #7,
+### o de crear una en src/verification/verification.rest).
+@verificationId = 00000000-0000-0000-0000-000000000000
+
+### 8. Obtiene una solicitud de verificación.
+GET {{baseUrl}}/admin/verifications/{{verificationId}}
+Authorization: Bearer {{accessToken}}
+
+### 9. Documentos con URLs firmadas + extracción y cruces (queda auditado:
+### AuditLogService registra que este admin vio los documentos).
+GET {{baseUrl}}/admin/verifications/{{verificationId}}/documents
+Authorization: Bearer {{accessToken}}
+
+### 10. Revisa la solicitud (aprueba/rechaza a mano, para el modo "manual" o
+### para forzar un veredicto durante pruebas).
+PATCH {{baseUrl}}/admin/verifications/{{verificationId}}/review
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "VERIFIED",
+  "notes": "Documentos verificados a mano por soporte."
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### Listings
+### ────────────────────────────────────────────────────────────────────────
+
+### Pegá acá el id de un listing real (sale de src/listings/listings.rest).
+@listingId = 00000000-0000-0000-0000-000000000000
+
+### 11. Lista todos los listings (cualquier estado).
+GET {{baseUrl}}/admin/listings
+Authorization: Bearer {{accessToken}}
+
+### 12. Cambia el estado de un listing (DRAFT, ACTIVE, PAUSED, DELETED).
+PATCH {{baseUrl}}/admin/listings/{{listingId}}/status
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "PAUSED"
+}
+
+### 13. Elimina un listing PERMANENTEMENTE (no es soft delete). ⚠️ Destructivo.
+# DELETE {{baseUrl}}/admin/listings/{{listingId}}
+# Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### Bookings
+### ────────────────────────────────────────────────────────────────────────
+
+### Pegá acá el id de una reserva real (sale de src/bookings/bookings.rest).
+@bookingId = 00000000-0000-0000-0000-000000000000
+
+### 14. Lista todas las reservas.
+GET {{baseUrl}}/admin/bookings
+Authorization: Bearer {{accessToken}}
+
+### 15. Obtiene una reserva puntual.
+GET {{baseUrl}}/admin/bookings/{{bookingId}}
+Authorization: Bearer {{accessToken}}

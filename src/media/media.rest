@@ -1,0 +1,75 @@
+### media.rest — Firma de uploads Cloudinary y registro de metadata de assets
+### Módulo: src/media/media.controller.ts (MediaModule)
+### Todas las rutas requieren JWT. El backend NO recibe archivos: firma el upload
+### (el API secret nunca sale del backend) y el archivo va directo del cliente a
+### Cloudinary; después se registra la metadata acá.
+###
+### POST /media/cloudinary-signature RECHAZA folder="identity/..." — los
+### documentos de identidad tienen su propio endpoint firmado y privado:
+### POST /verification/identity/upload-signature (ver verification.rest).
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup: cuenta de prueba (detalle del flujo en src/auth/auth.rest) ──────
+@email = media-{{$timestamp}}@test.local
+@password = TestPass123!
+@registerCode = 000000
+
+# @name registerStart
+POST {{baseUrl}}/auth/register/start
+Content-Type: {{contentType}}
+
+{ "email": "{{email}}" }
+
+### ⚠️ Copiá el código de la consola del server antes de correr esto.
+# @name registerComplete
+POST {{baseUrl}}/auth/register/complete
+Content-Type: {{contentType}}
+
+{
+  "email": "{{email}}",
+  "code": "{{registerCode}}",
+  "password": "{{password}}",
+  "firstName": "Ana",
+  "lastName": "Gómez",
+  "acceptedTerms": true,
+  "dateOfBirth": "1995-05-20"
+}
+
+@accessToken = {{registerComplete.response.body.$.accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. Firma un upload de media pública (perfil/vehículos/publicaciones).
+### `folder` es opcional; si se omite usa el default del servicio.
+POST {{baseUrl}}/media/cloudinary-signature
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "folder": "vehicles"
+}
+
+### 2. Registra la metadata de un asset ya subido a Cloudinary (con los
+### parámetros que devolvió el request anterior).
+# @name registerAsset
+POST {{baseUrl}}/media/assets
+Content-Type: {{contentType}}
+Authorization: Bearer {{accessToken}}
+
+{
+  "kind": "VEHICLE_PHOTO",
+  "url": "https://res.cloudinary.com/demo/image/upload/v1/vehicles/sample.jpg",
+  "entityType": "Vehicle",
+  "entityId": "00000000-0000-0000-0000-000000000000",
+  "storageProvider": "cloudinary",
+  "storageKey": "vehicles/sample",
+  "mimeType": "image/jpeg",
+  "sizeBytes": 245678
+}
+
+### 3. Lista los assets propios.
+GET {{baseUrl}}/media/assets/me
+Authorization: Bearer {{accessToken}}
