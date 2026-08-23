@@ -388,4 +388,159 @@ describe("Listings", () => {
         .expect(403);
     });
   });
+  /**
+   * El orden de las fotos decide cuál es la portada: la que se ve en el
+   * buscador, en el inicio, en el globo del mapa y en "Mis autos". Antes era el
+   * orden de subida y no se podía cambiar sin borrar la publicación entera.
+   */
+  describe("photo order", () => {
+    const subirFoto = async (token: string, vehicleId: string, n: number) => {
+      const res = await request(app.getHttpServer())
+        .post("/media/assets")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          kind: "VEHICLE_PHOTO",
+          url: `https://cdn.example.com/foto-${n}.jpg`,
+          entityType: "vehicle",
+          entityId: vehicleId,
+        })
+        .expect(201);
+      return res.body.url as string;
+    };
+
+    const fotosDe = async (listingId: string) => {
+      const res = await request(app.getHttpServer())
+        .get(`/listings/${listingId}`)
+        .expect(200);
+      return res.body.photos as string[];
+    };
+
+    it("the owner reorders the photos and everyone sees the new order", async () => {
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const fotos = [
+        await subirFoto(owner.token, vehicle.id, 1),
+        await subirFoto(owner.token, vehicle.id, 2),
+        await subirFoto(owner.token, vehicle.id, 3),
+      ];
+
+      // Sin tocar nada, salen en el orden en que se subieron.
+      expect(await fotosDe(listing.id)).toEqual(fotos);
+
+      const nuevo = [fotos[2], fotos[0], fotos[1]];
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: nuevo })
+        .expect(200);
+
+      // Y la lista pública —la que ve cualquiera, sin sesión— cambió.
+      expect(await fotosDe(listing.id)).toEqual(nuevo);
+    });
+
+    it("the new cover also travels to the search results", async () => {
+      // La portada no sirve de nada si solo cambia adentro de la publicación:
+      // lo que se ve primero es la tarjeta del buscador.
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const fotos = [
+        await subirFoto(owner.token, vehicle.id, 1),
+        await subirFoto(owner.token, vehicle.id, 2),
+      ];
+
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: [fotos[1], fotos[0]] })
+        .expect(200);
+
+      const busqueda = await request(app.getHttpServer())
+        .get("/listings")
+        .expect(200);
+      const encontrada = (busqueda.body.data as { id: string; photos: string[] }[])
+        .find((l) => l.id === listing.id);
+      expect(encontrada?.photos[0]).toBe(fotos[1]);
+    });
+
+    it("a photo uploaded afterwards goes to the end, it does not steal the cover", async () => {
+      // El caso que rompe si la posición nueva arranca en 0: el dueño elige su
+      // portada, sube otra foto, y la portada le cambia sola.
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const fotos = [
+        await subirFoto(owner.token, vehicle.id, 1),
+        await subirFoto(owner.token, vehicle.id, 2),
+      ];
+
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: [fotos[1], fotos[0]] })
+        .expect(200);
+
+      const tercera = await subirFoto(owner.token, vehicle.id, 3);
+      expect(await fotosDe(listing.id)).toEqual([fotos[1], fotos[0], tercera]);
+    });
+
+    it("rejects a list that does not match the listing's photos (400)", async () => {
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const fotos = [
+        await subirFoto(owner.token, vehicle.id, 1),
+        await subirFoto(owner.token, vehicle.id, 2),
+      ];
+
+      // Falta una.
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: [fotos[0]] })
+        .expect(400);
+
+      // Una repetida en lugar de la otra.
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: [fotos[0], fotos[0]] })
+        .expect(400);
+
+      // Una que no es de este auto.
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ photos: [fotos[0], "https://cdn.example.com/ajena.jpg"] })
+        .expect(400);
+
+      // Y después de todos los rechazos, el orden sigue intacto.
+      expect(await fotosDe(listing.id)).toEqual(fotos);
+    });
+
+    it("only the owner can reorder", async () => {
+      const owner = await registerUser(app);
+      const other = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const fotos = [
+        await subirFoto(owner.token, vehicle.id, 1),
+        await subirFoto(owner.token, vehicle.id, 2),
+      ];
+
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .set("Authorization", `Bearer ${other.token}`)
+        .send({ photos: [fotos[1], fotos[0]] })
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .patch(`/listings/${listing.id}/photos`)
+        .send({ photos: [fotos[1], fotos[0]] })
+        .expect(401);
+
+      expect(await fotosDe(listing.id)).toEqual(fotos);
+    });
+  });
 });

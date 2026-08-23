@@ -258,9 +258,69 @@ export class ListingsService {
         status: MediaAssetStatus.ACTIVE,
       },
       select: { url: true },
-      orderBy: { createdAt: "asc" },
+      // El orden que eligió el dueño primero; createdAt desempata. El desempate
+      // no es un detalle: todas las fotos que ya estaban guardadas tienen
+      // position 0, así que sin él quedarían en un orden cualquiera —el que le
+      // salga a la base— y publicaciones que hoy se ven bien cambiarían de
+      // portada sola al desplegar esto.
+      orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
     return assets.map((a) => a.url);
+  }
+
+  /**
+   * Guarda el orden de las fotos de una publicación. La primera es la portada.
+   *
+   * Solo el dueño, y solo sobre las fotos que ya son de ese auto: la lista que
+   * llega se usa para ORDENAR lo que hay, nunca para agregar ni para sacar. Si
+   * trae una URL que no pertenece al vehículo, se rechaza el pedido entero en
+   * vez de ignorarla, porque una lista que no coincide significa que quien la
+   * mandó estaba mirando otra cosa —otra publicación, o una versión vieja de
+   * esta— y aplicarla a medias dejaría un orden que nadie pidió.
+   */
+  async reorderPhotos(ownerId: string, id: string, urls: string[]) {
+    const listing = await this.findEditable(id);
+    assertOwner(listing.ownerId, ownerId, "You cannot update this listing");
+
+    const assets = await this.prisma.mediaAsset.findMany({
+      where: {
+        entityType: "vehicle",
+        entityId: listing.vehicleId,
+        kind: MediaAssetKind.VEHICLE_PHOTO,
+        status: MediaAssetStatus.ACTIVE,
+      },
+      select: { id: true, url: true },
+    });
+
+    const porUrl = new Map(assets.map((a) => [a.url, a.id]));
+    if (urls.length !== assets.length || new Set(urls).size !== urls.length) {
+      throw new BadRequestException(
+        "La lista de fotos no coincide con las de esta publicación. " +
+          "Volvé a abrirla y probá de nuevo.",
+      );
+    }
+    const enOrden = urls.map((url) => {
+      const assetId = porUrl.get(url);
+      if (!assetId) {
+        throw new BadRequestException(
+          "Una de las fotos no pertenece a esta publicación.",
+        );
+      }
+      return assetId;
+    });
+
+    // Todo junto o nada: a mitad de camino las fotos quedarían con posiciones
+    // repetidas y la portada sería la que la base devuelva primero.
+    await this.prisma.$transaction(
+      enOrden.map((assetId, position) =>
+        this.prisma.mediaAsset.update({
+          where: { id: assetId },
+          data: { position },
+        }),
+      ),
+    );
+
+    return { photos: urls };
   }
 
   /** Público: lo reutiliza FavoritesService para devolver las fotos de cada auto. */
@@ -276,7 +336,9 @@ export class ListingsService {
         status: MediaAssetStatus.ACTIVE,
       },
       select: { entityId: true, url: true },
-      orderBy: { createdAt: "asc" },
+      // El mismo criterio que arriba: la portada que se ve en el buscador y en
+      // el mapa tiene que ser la misma que se ve al abrir la publicación.
+      orderBy: [{ position: "asc" }, { createdAt: "asc" }],
     });
     return assets.reduce(
       (acc, a) => {

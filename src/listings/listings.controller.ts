@@ -20,6 +20,7 @@ import { AvailabilityQueryDto } from "../availability/dto/availability-query.dto
 import { CreateAvailabilityBlockDto } from "../availability/dto/create-availability-block.dto";
 import { CreateListingDto } from "./dto/create-listing.dto";
 import { ListListingsQueryDto } from "./dto/list-listings-query.dto";
+import { ReorderPhotosDto } from "./dto/reorder-photos.dto";
 import { UpdateListingDto } from "./dto/update-listing.dto";
 import {
   ConfirmPriceChangeDto,
@@ -161,6 +162,30 @@ export class ListingsController {
     @Param("id") id: string,
   ) {
     return this.priceChangeService.cancel(user.id, id);
+  }
+
+  /**
+   * El orden de las fotos, que es lo que decide cuál es la portada.
+   *
+   * No va por `PATCH /listings/:id` porque las fotos no son un campo del aviso:
+   * viven en MediaAsset, y lo que se guarda no es un valor sino la posición de
+   * cada una. Metido ahí adentro, `update` tendría que mirar si vino "photos"
+   * y desviarse a otra tabla, que es como se arman los endpoints que hacen
+   * cinco cosas distintas según lo que les mandes.
+   *
+   * Queda declarado antes que `@Patch(":id")` por costumbre —la ruta más
+   * específica primero—, aunque acá las dos tienen distinta cantidad de tramos
+   * y no se pisan.
+   */
+  @Patch(":id/photos")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  reorderPhotos(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: ReorderPhotosDto,
+  ) {
+    return this.listingsService.reorderPhotos(user.id, id, dto.photos);
   }
 
   @Patch(":id")

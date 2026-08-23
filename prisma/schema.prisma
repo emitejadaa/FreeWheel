@@ -592,6 +592,18 @@ model MediaAsset {
   mimeType        String?
   sizeBytes       Int?
   status          MediaAssetStatus @default(ACTIVE)
+  // En qué lugar de la fila va este archivo. Para las fotos de un auto no es un
+  // detalle: la primera es la portada, y la portada es lo que se ve en el
+  // buscador, en el inicio, en el globo del mapa y en "Mis autos".
+  //
+  // Hasta acá el orden era el de subida (createdAt), o sea el que salió del
+  // explorador de archivos al elegirlas: nadie lo decidió, y no se podía
+  // cambiar sin borrar el aviso y cargarlo de nuevo.
+  //
+  // Arranca en 0 para todo lo que ya está guardado. Con todas empatadas, el
+  // desempate por createdAt deja el orden EXACTAMENTE como estaba: ninguna
+  // publicación existente cambia de portada al aplicar esta migración.
+  position        Int              @default(0)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
