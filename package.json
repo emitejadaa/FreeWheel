@@ -22,6 +22,7 @@
     "test:functional:deployed": "ts-node scripts/test-functional.ts",
     "db:migrate:deploy": "prisma migrate deploy",
     "verify:deployed": "ts-node scripts/endpoint-checker/verify-deployed.ts",
+    "cloudinary:limpiar": "ts-node scripts/limpiar-cloudinary.ts",
     "check:env": "ts-node scripts/env-check.ts",
     "check:prisma": "ts-node scripts/prisma-check.ts",
     "preflight": "ts-node scripts/preflight.ts",

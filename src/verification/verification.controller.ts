@@ -5,6 +5,7 @@ import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { ConfirmCodeDto } from "./dto/confirm-code.dto";
+import { InspectDocumentDto } from "./dto/inspect-document.dto";
 import { SubmitDocumentDto } from "./dto/submit-document.dto";
 import { UploadSignatureDto } from "./dto/upload-signature.dto";
 import { DocumentVerificationService } from "./identity/document-verification.service";
@@ -77,6 +78,20 @@ export class VerificationController {
       user.id,
       uploadSignatureDto,
     );
+  }
+
+  /**
+   * Diagnostica UNA url subida, sin verificar nada ni gastar los 5 intentos
+   * del submit. Responde 200 siempre: `ok` dice si serviría, y si no, `error`
+   * dice exactamente qué chequeo falló, qué se esperaba y qué llegó.
+   */
+  @Throttle({ default: { limit: 30, ttl: 300_000 } })
+  @Post("identity/inspect-url")
+  inspectDocumentUrl(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() inspectDocumentDto: InspectDocumentDto,
+  ) {
+    return this.documentVerification.inspectUrl(user.id, inspectDocumentDto);
   }
 
   /**

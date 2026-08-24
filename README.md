@@ -221,6 +221,7 @@ Usuario autenticado:
 - `POST /verification/phone/confirm`
 - `GET /verification/me/status`
 - `POST /verification/identity/upload-signature`
+- `POST /verification/identity/inspect-url` (diagnóstico de una URL, sin efectos)
 - `POST /verification/identity/:document/submit` (`document` = `dni` | `license`)
 - `POST /verification/identity/:document/request-review`
 - `GET /verification/identity/me`
@@ -371,7 +372,8 @@ El usuario carga en su perfil `dni`, `cuil` y `address` (`PATCH /users/me`,
 con validación de checksum del CUIL), pide una firma por cada archivo
 (`POST /verification/identity/upload-signature` con `{ document: "dni"|"license",
 side: "front"|"back" }`), sube cada foto **directo a Cloudinary** con esos
-parámetros, y manda las dos URLs de cada documento a
+parámetros (los de `params`, tal cual: no se manda `folder`, que duplicaría la
+carpeta dentro del `public_id`), y manda las dos URLs de cada documento a
 `POST /verification/identity/:document/submit`. Como el `public_id` lo arma el
 servidor a partir del token (`identity/<userId>/<documento>_<lado>_…`) y los
 assets se suben como `authenticated`, no se puede confundir un documento con
@@ -381,6 +383,12 @@ una URL pública**.
 **DNI y licencia son flujos separados**: cada uno se manda cuando el usuario
 quiere y se aprueba por su cuenta. La cuenta queda `VERIFIED` cuando los dos
 están aprobados.
+
+Para probar el flujo entero a mano hay un front mínimo en
+`public/demo/verificacion.html`, que el backend sirve en
+`/demo/verificacion.html` (mismo origen, sin CORS de por medio). Hace los tres
+pasos reales — firma, subida a Cloudinary y verificación — y muestra en cuál de
+ellos falla, con lo que se esperaba y lo que llegó.
 
 La extracción la hace el subproyecto Python `python-verifier/`, que corre como
 subproceso aislado (JSON por stdin → JSON por stdout, sin red ni credenciales)

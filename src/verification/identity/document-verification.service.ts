@@ -31,10 +31,12 @@ import {
   DocumentMatchService,
   FieldMatrixRow,
 } from "../matching/document-match.service";
+import { InspectDocumentDto } from "../dto/inspect-document.dto";
 import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import {
   DocumentKind,
   IdentityDocumentsService,
+  IdentityUrlInspection,
 } from "./identity-documents.service";
 
 /**
@@ -236,6 +238,18 @@ export class DocumentVerificationService {
     });
 
     return this.toPublicView(row);
+  }
+
+  /**
+   * Diagnóstico de una URL suelta, sin efectos: la misma validación que hace
+   * el submit pero devolviendo el motivo en vez de un 400. Le permite al
+   * front señalar la foto mal cargada antes de gastar un intento.
+   */
+  inspectUrl(
+    userId: string,
+    dto: InspectDocumentDto,
+  ): Promise<IdentityUrlInspection> {
+    return this.documents.inspect(userId, dto.document, dto.side, dto.url);
   }
 
   async requestManualReview(
@@ -565,6 +579,10 @@ export class DocumentVerificationService {
       };
     }
 
+    // Cada etapa se atrapa por separado: si algo se cae, el motivo dice en
+    // CUÁL se cayó. Antes las tres compartían un catch y el usuario (y el
+    // log) solo veían "la verificación no está disponible".
+    let extracted: DocverifyResponse;
     try {
       const [front, back] = await Promise.all([
         this.documents.download(urls.frontUrl),
@@ -576,7 +594,26 @@ export class DocumentVerificationService {
           ? { dni_front: front.bytes, dni_back: back.bytes }
           : { license_front: front.bytes, license_back: back.bytes };
 
-      const extracted = await this.docverify.analyze(slots);
+      try {
+        extracted = await this.docverify.analyze(slots);
+      } catch (error) {
+        return this.unavailable(
+          user.id,
+          "lectura",
+          "el lector de documentos no pudo procesar las fotos",
+          error,
+        );
+      }
+    } catch (error) {
+      return this.unavailable(
+        user.id,
+        "descarga",
+        "no pudimos leer las fotos que subiste desde el almacenamiento",
+        error,
+      );
+    }
+
+    try {
       const documentos = extracted.documentos ?? {};
 
       const profile = {
@@ -601,22 +638,46 @@ export class DocumentVerificationService {
 
       return { match, extracted, manual: false };
     } catch (error) {
-      this.logger.error(
-        `La verificación automática falló para ${user.id}: ` +
-          (error instanceof Error ? error.message : String(error)),
+      const failed = this.unavailable(
+        user.id,
+        "comparación",
+        "no pudimos comparar el documento con los datos de tu cuenta",
+        error,
       );
-      return {
-        match: {
-          approved: false,
-          reasons: [verificationReason("VERIFICACION_NO_DISPONIBLE")],
-          matrix: [],
-          documentNumber: null,
-          expiresAt: null,
-        },
-        extracted: null,
-        manual: false,
-      };
+      // Lo extraído sí sirve: es lo que va a mirar el admin en la revisión.
+      return { ...failed, extracted };
     }
+  }
+
+  /**
+   * Un fallo de infraestructura convertido en veredicto no aprobado, con la
+   * etapa registrada en el log y nombrada en el mensaje del usuario.
+   */
+  private unavailable(
+    userId: string,
+    stage: "descarga" | "lectura" | "comparación",
+    detail: string,
+    error: unknown,
+  ): {
+    match: DocumentMatchResult;
+    extracted: DocverifyResponse | null;
+    manual: false;
+  } {
+    this.logger.error(
+      `La verificación automática de ${userId} falló en la etapa "${stage}": ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    return {
+      match: {
+        approved: false,
+        reasons: [verificationReason("VERIFICACION_NO_DISPONIBLE", { detail })],
+        matrix: [],
+        documentNumber: null,
+        expiresAt: null,
+      },
+      extracted: null,
+      manual: false,
+    };
   }
 
   /**

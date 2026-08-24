@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeWheel · Consola de verificación documental</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg-2: #151b23; --bg-3: #1c232c; --line: #2a333f;
+    --fg: #e6edf3; --fg-2: #9aa7b4; --fg-3: #6b7885;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --info: #58a6ff; --accent: #a371f7;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.55 var(--sans);
+  }
+  code, pre, input, select, textarea, .mono { font-family: var(--mono); }
+
+  header {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header h1 span { color: var(--fg-3); font-weight: 400; }
+  header .grow { flex: 1; }
+
+  .app { display: grid; grid-template-columns: minmax(0,1fr) 460px; gap: 18px; padding: 18px; align-items: start; }
+  @media (max-width: 1180px) { .app { grid-template-columns: minmax(0,1fr); } .log-col { position: static !important; height: auto !important; } }
+
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
+  .card > summary, .card > .head {
+    padding: 11px 14px; background: var(--bg-3); border-bottom: 1px solid var(--line);
+    font-weight: 600; font-size: 13px; cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card > summary::before { content: "▸"; color: var(--fg-3); transition: transform .12s; }
+  .card[open] > summary::before { transform: rotate(90deg); }
+  .card > summary .n {
+    display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px;
+    background: var(--line); color: var(--fg-2); font: 600 11px var(--mono);
+  }
+  .card .body { padding: 14px; }
+
+  .hint { color: var(--fg-2); font-size: 12.5px; margin: 0 0 12px; }
+  .hint code { background: var(--bg-3); padding: 1px 5px; border-radius: 4px; color: var(--info); font-size: 12px; }
+
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--fg-3); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; padding: 7px 9px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; font-size: 13px;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--info); }
+  input[type=file] { padding: 5px; font-size: 12px; }
+  .row { display: grid; gap: 10px; margin-bottom: 10px; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  .row.c3 { grid-template-columns: 1fr 1fr 1fr; }
+  .row.c4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 720px) { .row.c2, .row.c3, .row.c4 { grid-template-columns: 1fr; } }
+
+  button {
+    padding: 7px 13px; background: var(--bg-3); color: var(--fg); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; font: 500 13px var(--sans);
+  }
+  button:hover:not(:disabled) { border-color: var(--fg-3); background: #232b35; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #388bfd; }
+  button.danger { border-color: #6e2b28; color: #ff9a92; }
+  button.danger:hover:not(:disabled) { background: #3d1d1c; }
+  button.ghost { background: transparent; }
+  button.sm { padding: 4px 9px; font-size: 12px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font: 600 11px var(--mono); letter-spacing: .3px; }
+  .b-ok    { background: rgba(63,185,80,.15);  color: var(--ok);   border: 1px solid rgba(63,185,80,.4); }
+  .b-err   { background: rgba(248,81,73,.15);  color: var(--err);  border: 1px solid rgba(248,81,73,.4); }
+  .b-warn  { background: rgba(210,153,34,.15); color: var(--warn); border: 1px solid rgba(210,153,34,.4); }
+  .b-info  { background: rgba(88,166,255,.15); color: var(--info); border: 1px solid rgba(88,166,255,.4); }
+  .b-mute  { background: var(--bg-3); color: var(--fg-3); border: 1px solid var(--line); }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; }
+  .kv dt { color: var(--fg-3); }
+  .kv dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+
+  pre.json {
+    margin: 8px 0 0; padding: 10px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 11.5px; line-height: 1.5; overflow: auto; max-height: 420px; white-space: pre-wrap; word-break: break-word;
+  }
+  .j-k { color: #7ee787; } .j-s { color: #a5d6ff; } .j-n { color: #79c0ff; }
+  .j-b { color: #ffa657; } .j-null { color: var(--fg-3); }
+
+  /* log */
+  .log-col { position: sticky; top: 62px; height: calc(100vh - 80px); display: flex; flex-direction: column; }
+  .log-col .card { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; }
+  #log { overflow: auto; flex: 1; padding: 8px; }
+  .entry { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; background: var(--bg); }
+  .entry > summary {
+    padding: 7px 9px; cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center;
+    font: 12px var(--mono);
+  }
+  .entry > summary::-webkit-details-marker { display: none; }
+  .entry .path { flex: 1; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry .ms { color: var(--fg-3); font-size: 11px; }
+  .entry .inner { padding: 0 9px 9px; }
+  .entry .inner h5 { margin: 8px 0 0; font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .5px; color: var(--fg-3); }
+
+  /* documentos */
+  .slot { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+  .slot h4 { margin: 0 0 8px; font-size: 12px; color: var(--fg-2); font-weight: 600; }
+  .thumb { width: 100%; height: 110px; object-fit: contain; background: #000; border-radius: 5px; margin-top: 8px; display: none; border: 1px solid var(--line); }
+  .url-out { font: 11px var(--mono); color: var(--ok); word-break: break-all; margin-top: 7px; display: none; }
+
+  .verdict { border-radius: 8px; padding: 12px; margin-top: 12px; border: 1px solid var(--line); background: var(--bg); }
+  .verdict .top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .reason { border-left: 3px solid var(--err); padding: 7px 10px; margin: 6px 0; background: var(--bg-3); border-radius: 0 6px 6px 0; }
+  .reason .c { font: 600 11px var(--mono); color: var(--err); }
+  .reason .m { font-size: 12.5px; margin-top: 2px; }
+  .reason .w { font-size: 11px; color: var(--fg-3); margin-top: 3px; font-family: var(--mono); }
+
+  /* diagnóstico de una URL: qué chequeo falló, esperado vs. recibido */
+  .diag { border-left: 3px solid var(--err); padding: 7px 10px; margin: 7px 0; background: var(--bg-3); border-radius: 0 6px 6px 0; }
+  .diag.ok { border-left-color: var(--ok); }
+  .diag .p { font: 600 11px var(--mono); color: var(--err); }
+  .diag.ok .p { color: var(--ok); }
+  .diag .m { font-size: 12.5px; margin-top: 2px; }
+  .diag .w { font-size: 11px; color: var(--fg-3); margin-top: 4px; font-family: var(--mono); }
+  .diag .h { font-size: 12px; color: var(--warn); margin-top: 5px; }
+  .diag .kv { margin-top: 6px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--fg-3); font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .5px; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
+  tr.st-conflicto td { background: rgba(248,81,73,.07); }
+  tr.st-vacio td { background: rgba(210,153,34,.07); }
+  tr.st-advertencia td { background: rgba(210,153,34,.05); }
+
+  .checklist { display: grid; gap: 4px; font-size: 13px; }
+  .checklist div::before { content: "✕ "; color: var(--err); font-family: var(--mono); }
+  .checklist div.on::before { content: "✓ "; color: var(--ok); }
+
+  .admin-row { display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; background: var(--bg); font-size: 12.5px; }
+  .admin-row .who { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .admin-imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .admin-imgs img { width: 100%; border-radius: 6px; border: 1px solid var(--line); background: #000; }
+
+  #preflight { padding: 0 18px; }
+  #preflight .pf {
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    padding: 9px 12px; margin-top: 14px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg-2); font-size: 12.5px;
+  }
+  #preflight .pf.bad { border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.07); }
+  #preflight .item::before { content: "✓ "; color: var(--ok); font-family: var(--mono); }
+  #preflight .item.off::before { content: "✕ "; color: var(--err); font-family: var(--mono); }
+  #preflight .item.off { color: var(--fg-2); }
+  #preflight .why { flex-basis: 100%; color: var(--warn); font-size: 12px; }
+
+  .sep { height: 1px; background: var(--line); margin: 14px 0; }
+  .note { font-size: 12px; color: var(--warn); background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.25);
+          padding: 8px 10px; border-radius: 6px; margin: 10px 0; }
+  .muted { color: var(--fg-3); font-size: 12px; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--info);
+          border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -1px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FreeWheel <span>· consola de verificación documental</span></h1>
+  <span id="version" class="badge b-mute" title="Versión del archivo que está corriendo el navegador. Si no coincide con la del disco, recargá con Ctrl+Shift+R."></span>
+  <div style="min-width:280px"><input id="baseUrl" placeholder="http://localhost:3000"></div>
+  <button class="sm" onclick="probarConexion()">Probar conexión</button>
+  <span id="conn" class="badge b-mute">sin probar</span>
+  <span id="modo" class="badge b-mute">DOCVERIFY_MODE ?</span>
+  <div class="grow"></div>
+  <button class="sm ghost" onclick="if(confirm('¿Borrar sesiones, URLs y log guardados?')){localStorage.clear();location.reload()}">Reset</button>
+</header>
+
+<div id="preflight"></div>
+
+<div class="app">
+<div>
+
+  <!-- ══ 1 · SESIONES ══ -->
+  <details class="card" open>
+    <summary><span class="n">1</span> Sesiones</summary>
+    <div class="body">
+      <p class="hint">Dos sesiones a la vez: la del <b>usuario</b> que verifica y la de un <b>admin</b> para la cola de revisión. El rol ADMIN se asigna a mano en la base (<code>UPDATE "User" SET role='ADMIN' WHERE email='...'</code>).</p>
+
+      <div class="row c2">
+        <div>
+          <label>Email del usuario</label>
+          <div style="display:flex;gap:6px"><input id="email"><button class="sm" onclick="nuevoEmail()">Nuevo</button></div>
+        </div>
+        <div><label>Password</label><input id="password" value="TestPass123!"></div>
+      </div>
+      <div class="row c4">
+        <div><label>Nombre</label><input id="firstName" value="Ana"></div>
+        <div><label>Apellido</label><input id="lastName" value="Gomez"></div>
+        <div><label>Nacimiento (18+)</label><input id="dateOfBirth" value="1990-01-01"></div>
+        <div><label>Teléfono</label><input id="phone" value="+5491100000000"></div>
+      </div>
+      <div class="btns">
+        <button onclick="registerStart()">1· Pedir código</button>
+        <input id="registerCode" placeholder="código de 6 dígitos" style="width:150px">
+        <button class="primary" onclick="registerComplete()">2· Crear cuenta</button>
+        <span class="muted">o</span>
+        <button onclick="login()">Login</button>
+      </div>
+      <div class="note">El código de registro llega por <b>email</b> y se escribe en la <b>consola del server</b> (<code>Verification code for EMAIL …</code>). Copialo de ahí.</div>
+
+      <div class="sep"></div>
+      <div class="row c2">
+        <div>
+          <label>Token del usuario</label>
+          <input id="token" class="mono" placeholder="se completa solo al registrarte o loguearte">
+        </div>
+        <div>
+          <label>Token del admin</label>
+          <div style="display:flex;gap:6px">
+            <input id="adminToken" class="mono" placeholder="pegalo o logueate abajo">
+            <button class="sm" onclick="loginAdmin()">Login admin</button>
+          </div>
+        </div>
+      </div>
+      <div class="row c2">
+        <div><label>Email admin</label><input id="adminEmail" placeholder="admin@test.local"></div>
+        <div><label>Password admin</label><input id="adminPassword" value="TestPass123!"></div>
+      </div>
+    </div>
+  </details>
+
+  <!-- ══ 2 · PERFIL ══ -->
+  <details class="card" open>
+    <summary><span class="n">2</span> Datos de la cuenta <span class="muted">— contra esto se cruzan los documentos</span></summary>
+    <div class="body">
+      <p class="hint">Sin <code>dni</code>, <code>cuil</code> y <code>address</code> el submit responde <code>400 PERFIL_INCOMPLETO</code>. El CUIL tiene que tener checksum válido <b>y contener el DNI</b>.</p>
+      <div class="row c3">
+        <div><label>DNI (7-8 dígitos)</label><input id="dni" value="20123456"></div>
+        <div>
+          <label>CUIL</label>
+          <div style="display:flex;gap:6px"><input id="cuil" value="20-20123456-6"><button class="sm" onclick="generarCuil()" title="Calcula el dígito verificador">Calcular</button></div>
+        </div>
+        <div><label>Sexo (para el prefijo)</label><select id="sexo"><option value="M">M → 20</option><option value="F">F → 27</option></select></div>
+      </div>
+      <div class="row"><div><label>Domicilio</label><input id="address" value="Av. Siempre Viva 742, Springfield, CABA"></div></div>
+      <div class="btns">
+        <button class="primary" onclick="guardarPerfil()">PATCH /users/me</button>
+        <button onclick="verPerfil()">GET /users/me</button>
+      </div>
+    </div>
+  </details>
+
+  <!-- ══ 3 · EMAIL Y TELÉFONO ══ -->
+  <details class="card">
+    <summary><span class="n">3</span> Email y teléfono</summary>
+    <div class="body">
+      <p class="hint">El email ya queda confirmado al registrarte. El teléfono solo bloquea la verificación si <code>REQUIRE_PHONE_VERIFICATION=true</code>.</p>
+      <div class="row c2">
+        <div>
+          <label>Email</label>
+          <div class="btns">
+            <button onclick="api('POST','/verification/email/request')">Pedir código</button>
+            <input id="emailCode" placeholder="código" style="width:110px">
+            <button onclick="api('POST','/verification/email/confirm',{code:val('emailCode')})">Confirmar</button>
+          </div>
+        </div>
+        <div>
+          <label>Teléfono</label>
+          <div class="btns">
+            <button onclick="pedirCodigoTelefono()">Pedir código</button>
+            <input id="phoneCode" placeholder="código" style="width:110px">
+            <button onclick="api('POST','/verification/phone/confirm',{code:val('phoneCode')})">Confirmar</button>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:8px">Con <code>SMS_PROVIDER=mock</code> el código del teléfono llega al <b>email</b>; con <code>VERIFICATION_CODE_IN_RESPONSE=true</code> vuelve en la respuesta y se completa solo.</p>
+    </div>
+  </details>
+
+  <!-- ══ 4 · DOCUMENTOS ══ -->
+  <details class="card" open>
+    <summary><span class="n">4</span> Verificar documentos <span class="muted">— DNI y licencia por separado</span></summary>
+    <div class="body">
+      <div class="note">La lectura de las dos fotos tarda <b>30–60 s</b>. Si <code>DOCVERIFY_MODE</code> es <code>manual</code> (por ejemplo en Vercel, donde no hay Python) el envío queda esperando a un admin sin analizarse.</div>
+      <p class="hint">Subir ya diagnostica cada URL contra el backend (<code>inspect-url</code>): si una foto no sirve se marca <b>en la foto</b>, con el chequeo que falló y qué se esperaba, sin gastar ninguno de los 5 submits.</p>
+      <div id="avisoBackend"></div>
+      <div id="docs"></div>
+    </div>
+  </details>
+
+  <!-- ══ 5 · ESTADO ══ -->
+  <details class="card" open>
+    <summary><span class="n">5</span> Estado de la cuenta</summary>
+    <div class="body">
+      <div class="btns" style="margin-bottom:12px">
+        <button class="primary" onclick="verEstado()">GET /verification/me/status</button>
+        <button onclick="api('GET','/verification/identity/me')">GET /verification/identity/me</button>
+      </div>
+      <div id="estado" class="muted">Sin consultar todavía.</div>
+    </div>
+  </details>
+
+  <!-- ══ 6 · ADMIN ══ -->
+  <details class="card">
+    <summary><span class="n">6</span> Panel de administración</summary>
+    <div class="body">
+      <p class="hint">Usa el <b>token del admin</b>. La cola de casos que pidió el usuario es <code>status=MANUAL_REVIEW</code>.</p>
+      <div class="row c3">
+        <div><label>Estado</label><select id="fStatus"><option value="">(todos)</option><option>MANUAL_REVIEW</option><option>FAILED</option><option>APPROVED</option><option>REJECTED</option></select></div>
+        <div><label>Tipo</label><select id="fType"><option value="">(todos)</option><option>DNI</option><option>LICENSE</option></select></div>
+        <div style="display:flex;align-items:flex-end"><button class="primary" style="width:100%" onclick="listarAdmin()">Listar</button></div>
+      </div>
+      <div id="adminList"></div>
+      <div id="adminDetail"></div>
+    </div>
+  </details>
+
+  <!-- ══ 7 · CASOS DE ERROR ══ -->
+  <details class="card">
+    <summary><span class="n">7</span> Casos de error <span class="muted">— comprobar que cada rechazo llega bien</span></summary>
+    <div class="body">
+      <p class="hint">Cada botón dispara un error concreto del backend. Mirá en el log el <code>problem</code> (qué chequeo falló), el <code>step</code> y los <code>details</code> con lo esperado contra lo recibido.</p>
+      <div class="btns" style="flex-direction:column;align-items:stretch;gap:6px">
+        <button onclick="errUrlAjena()">URL que no firmó el backend → <code>URL_NO_ES_DE_CLOUDINARY</code></button>
+        <button onclick="errOtroCloud()">URL de otra cuenta de Cloudinary → <code>OTRO_CLOUD</code></button>
+        <button onclick="errNoAuthenticated()">Subida pública en vez de authenticated → <code>NO_ES_AUTHENTICATED</code></button>
+        <button onclick="errSlotCruzado()">Dorso de licencia como frente de DNI → <code>OTRO_SLOT</code></button>
+        <button onclick="errNoExiste()">URL bien formada pero sin archivo → <code>ARCHIVO_NO_EXISTE</code></button>
+        <button onclick="errDosMal()">Las dos fotos mal a la vez → <code>errors</code> con los dos</button>
+        <button onclick="errFaltaFoto()">Falta el dorso → <code>400</code> de validación</button>
+        <button onclick="errTipoRaro()">Documento inexistente (<code>/pasaporte/submit</code>) → <code>400</code></button>
+        <button onclick="api('POST','/verification/identity/dni/request-review')">Pedir revisión sin caso fallido → <code>404</code> sin envío previo, <code>400 REVIEW_NOT_AVAILABLE</code> si ya está aprobado</button>
+        <button onclick="api('GET','/admin/verifications',null,{token:val('token')})">Ruta de admin con token de usuario → <code>403</code></button>
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<!-- ══ LOG ══ -->
+<div class="log-col">
+  <div class="card">
+    <div class="head">
+      Log de requests
+      <span id="logCount" class="badge b-mute">0</span>
+      <div style="flex:1"></div>
+      <button class="sm ghost" onclick="document.getElementById('log').innerHTML='';logN=0;document.getElementById('logCount').textContent='0'">Limpiar</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════
+//  Estado y utilidades
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * Se muestra en la barra de arriba. Sirve para saber si el navegador está
+ * ejecutando ESTE archivo o una copia cacheada: una subida firmada por un
+ * front viejo contra un backend nuevo (o al revés) termina en
+ * "Invalid Signature", y desde el error no hay forma de distinguirlo.
+ * Subila cuando cambies el flujo de firma/subida.
+ */
+const VERSION = "v3 · params sin folder + inspect-url";
+
+const $ = (id) => document.getElementById(id);
+const val = (id) => $(id).value.trim();
+$("version").textContent = VERSION;
+const PERSIST = ["baseUrl","email","password","firstName","lastName","dateOfBirth","phone",
+                 "token","adminToken","adminEmail","adminPassword","dni","cuil","address"];
+
+PERSIST.forEach((k) => {
+  const el = $(k); if (!el) return;
+  const saved = localStorage.getItem("fw." + k);
+  if (saved !== null) el.value = saved;
+  el.addEventListener("input", () => localStorage.setItem("fw." + k, el.value));
+});
+// Servida por el propio backend (public/demo) el origen ya es el correcto y
+// no hay CORS de por medio; abierta como archivo suelto, el server local.
+if (!val("baseUrl")) {
+  $("baseUrl").value = location.origin.startsWith("http") ? location.origin : "http://localhost:3000";
+}
+if (!val("email")) nuevoEmail();
+
+function nuevoEmail() {
+  $("email").value = "verif-" + Date.now() + "@test.local";
+  localStorage.setItem("fw.email", $("email").value);
+}
+
+/** URLs subidas, por slot. Se guardan para poder recargar sin volver a subir. */
+let urls = JSON.parse(localStorage.getItem("fw.urls") || "{}");
+const guardarUrls = () => localStorage.setItem("fw.urls", JSON.stringify(urls));
+
+// ── JSON coloreado ────────────────────────────────────────────────────────
+function pintarJson(valor) {
+  const texto = JSON.stringify(valor, null, 2) ?? "undefined";
+  return texto
+    .replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])
+    .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+      (m) => {
+        let cls = "j-n";
+        if (/^"/.test(m)) cls = /:$/.test(m) ? "j-k" : "j-s";
+        else if (/true|false/.test(m)) cls = "j-b";
+        else if (/null/.test(m)) cls = "j-null";
+        return '<span class="' + cls + '">' + m + "</span>";
+      });
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────
+let logN = 0;
+function registrar({ method, url, status, ms, body, data, error }) {
+  logN++; $("logCount").textContent = logN;
+  const ok = status >= 200 && status < 300;
+  const clase = error ? "b-err" : ok ? "b-ok" : status >= 500 ? "b-err" : "b-warn";
+  const d = document.createElement("details");
+  d.className = "entry";
+  d.innerHTML =
+    '<summary><span class="badge ' + clase + '">' + (error ? "ERR" : status) + "</span>" +
+    '<b style="color:var(--info)">' + method + "</b>" +
+    '<span class="path">' + url.replace(/^https?:\/\/[^/]+/, "") + "</span>" +
+    '<span class="ms">' + ms + " ms</span></summary>" +
+    '<div class="inner">' +
+    (body ? "<h5>Request</h5><pre class='json'>" + pintarJson(body) + "</pre>" : "") +
+    "<h5>Response</h5><pre class='json'>" + pintarJson(error || data) + "</pre></div>";
+  $("log").prepend(d);
+  if (logN <= 2) d.open = true;
+}
+
+// ── Cliente HTTP ──────────────────────────────────────────────────────────
+/**
+ * Toda llamada al backend pasa por acá: mide, loguea y nunca tira.
+ * opts.token → cuál usar (por defecto el del usuario); null = sin Authorization.
+ */
+async function api(method, path, body, opts = {}) {
+  const token = "token" in opts ? opts.token : val("token");
+  const url = val("baseUrl").replace(/\/$/, "") + path;
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const ms = Math.round(performance.now() - t0);
+    const texto = await res.text();
+    let data; try { data = texto ? JSON.parse(texto) : null; } catch { data = texto; }
+    registrar({ method, url, status: res.status, ms, body, data: enriquecer(res.status, data) });
+    return { ok: res.ok, status: res.status, data, ms };
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    registrar({ method, url, status: 0, ms, body, error: { mensaje: String(e),
+      pista: "¿El backend está levantado y la URL es correcta? Si el navegador bloqueó por CORS, revisá CORS_STRICT." } });
+    return { ok: false, status: 0, data: null, ms };
+  }
+}
+
+/**
+ * Los tres códigos que más aparecen probando en local no se explican solos.
+ * Se les agrega una pista al log (no toca lo que devuelve api()).
+ */
+const PISTAS = {
+  503: "El backend no tiene configurado el servicio que hace falta. Para los documentos son las CLOUDINARY_*; para los emails, GMAIL_USER y GMAIL_APP_PASSWORD. Mirá la barra de requisitos de arriba.",
+  429: "Rate limit. Los submits son 5 cada 15 min, pedir revisión 3 cada 15 min, firmar subidas 10 cada 5 min, y 120/min global por IP. Esperá o reiniciá el server.",
+  401: "Falta el token o venció. Volvé a loguearte en la sección 1.",
+  403: "El token no alcanza para esta ruta: las de /admin piden una cuenta con role ADMIN.",
+};
+
+function enriquecer(status, data) {
+  const pista = PISTAS[status];
+  if (!pista || !data || typeof data !== "object" || Array.isArray(data)) return data;
+  return { ...data, _pista: pista };
+}
+
+function ocupado(boton, on) {
+  if (!boton) return;
+  boton.disabled = on;
+  if (on) { boton.dataset.txt = boton.innerHTML; boton.innerHTML = '<span class="spin"></span> ' + boton.dataset.txt; }
+  else if (boton.dataset.txt) boton.innerHTML = boton.dataset.txt;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Conexión
+// ══════════════════════════════════════════════════════════════════════════
+async function probarConexion() {
+  const salud = await api("GET", "/health", null, { token: null });
+  $("conn").className = "badge " + (salud.ok ? "b-ok" : "b-err");
+  $("conn").textContent = salud.ok ? "conectado" : "sin conexión";
+
+  const env = await api("GET", "/health/env", null, { token: null });
+  const modo = env.data?.modes?.DOCVERIFY_MODE;
+  if (modo) {
+    $("modo").textContent = "DOCVERIFY_MODE: " + modo;
+    $("modo").className = "badge " + (modo.startsWith("auto ") || modo === "auto" ? "b-ok"
+      : modo === "auto_approve" ? "b-warn" : "b-info");
+  }
+  pintarPreflight(env.data, modo);
+}
+
+/**
+ * Qué se puede probar con la configuración que tiene el backend AHORA. Sin
+ * esto uno descubre que falta Cloudinary recién cuando el submit tira 503.
+ */
+function pintarPreflight(env, modo) {
+  if (!env?.features) { $("preflight").innerHTML = ""; return; }
+  const falta = (v) => (env.missing || []).includes(v);
+
+  const cloud = !falta("CLOUDINARY_CLOUD_NAME") && !falta("CLOUDINARY_API_KEY") && !falta("CLOUDINARY_API_SECRET");
+  const mail = !falta("GMAIL_USER") && !falta("GMAIL_APP_PASSWORD");
+  const items = [
+    { on: env.features["base de datos"], txt: "base de datos" },
+    { on: mail, txt: "emails (registro y códigos)" },
+    { on: cloud, txt: "Cloudinary (subir documentos)" },
+  ];
+
+  const problemas = [];
+  if (!cloud) problemas.push("Sin <b>CLOUDINARY_*</b> no se puede subir ni verificar ningún documento: todo el paso 4 devuelve <code>503</code>.");
+  if (!mail) problemas.push("Sin <b>GMAIL_USER</b> / <b>GMAIL_APP_PASSWORD</b> el registro por código no funciona (<code>503</code>). Creá el usuario por otro medio y usá <b>Login</b>.");
+  if (modo === "auto_approve") problemas.push("Con <b>DOCVERIFY_MODE=auto_approve</b> se aprueba todo sin leer las fotos: sirve para probar el circuito, no la lectura. Poné <code>auto</code> para ejercitar el verificador Python.");
+  if (modo === "manual") problemas.push("Con <b>DOCVERIFY_MODE=manual</b> nada se aprueba solo: todo envío queda esperando a un admin (paso 6).");
+
+  $("preflight").innerHTML =
+    '<div class="pf' + (problemas.length ? " bad" : "") + '">' +
+    '<b style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--fg-3)">Qué se puede probar</b>' +
+    items.map((i) => '<span class="item' + (i.on ? "" : " off") + '">' + i.txt + "</span>").join("") +
+    problemas.map((p) => '<div class="why">▸ ' + p + "</div>").join("") +
+    "</div>";
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Sesiones
+// ══════════════════════════════════════════════════════════════════════════
+async function registerStart() {
+  await api("POST", "/auth/register/start", { email: val("email") }, { token: null });
+}
+
+async function registerComplete() {
+  const r = await api("POST", "/auth/register/complete", {
+    email: val("email"), code: val("registerCode"), password: val("password"),
+    firstName: val("firstName"), lastName: val("lastName"),
+    phone: val("phone") || undefined, acceptedTerms: true, dateOfBirth: val("dateOfBirth"),
+  }, { token: null });
+  if (r.data?.accessToken) guardarToken("token", r.data.accessToken);
+}
+
+async function login() {
+  const r = await api("POST", "/auth/login",
+    { email: val("email"), password: val("password") }, { token: null });
+  if (r.data?.accessToken) guardarToken("token", r.data.accessToken);
+}
+
+async function loginAdmin() {
+  const r = await api("POST", "/auth/login",
+    { email: val("adminEmail"), password: val("adminPassword") }, { token: null });
+  if (r.data?.accessToken) {
+    guardarToken("adminToken", r.data.accessToken);
+    if (r.data.user?.role !== "ADMIN") {
+      alert('Esa cuenta entró pero su role es "' + r.data.user?.role + '", no ADMIN.\n' +
+            'Asignalo en la base:  UPDATE "User" SET role=\'ADMIN\' WHERE email=\'' + val("adminEmail") + "';");
+    }
+  }
+}
+
+function guardarToken(campo, token) {
+  $(campo).value = token;
+  localStorage.setItem("fw." + campo, token);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Perfil
+// ══════════════════════════════════════════════════════════════════════════
+/** CUIL con dígito verificador válido para el DNI y sexo elegidos (mod 11). */
+function generarCuil() {
+  const dni = val("dni").replace(/\D/g, "");
+  if (dni.length < 7) return alert("Cargá primero un DNI de 7 u 8 dígitos.");
+  const pesos = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  for (const prefijo of [val("sexo") === "M" ? "20" : "27", "23", "24"]) {
+    const base = prefijo + dni.padStart(8, "0");
+    const suma = pesos.reduce((acc, p, i) => acc + Number(base[i]) * p, 0);
+    const verificador = (11 - (suma % 11)) % 11;
+    if (verificador !== 10) {
+      $("cuil").value = prefijo + "-" + dni.padStart(8, "0") + "-" + verificador;
+      localStorage.setItem("fw.cuil", $("cuil").value);
+      return;
+    }
+  }
+  alert("Ningún prefijo da un CUIL válido para ese DNI.");
+}
+
+async function guardarPerfil() {
+  await api("PATCH", "/users/me", {
+    dni: val("dni").replace(/\D/g, ""),
+    cuil: val("cuil"),
+    address: val("address"),
+  });
+}
+const verPerfil = () => api("GET", "/users/me");
+
+async function pedirCodigoTelefono() {
+  await api("PATCH", "/users/me", { phone: val("phone") });
+  const r = await api("POST", "/verification/phone/request");
+  if (r.data?.code) $("phoneCode").value = r.data.code;   // modo demo
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Documentos
+// ══════════════════════════════════════════════════════════════════════════
+const DOCUMENTOS = [
+  { kind: "dni", titulo: "DNI", pistaF: "el PDF417 tiene que entrar entero", pistaD: "las 3 líneas del MRZ, completas" },
+  { kind: "license", titulo: "Licencia de conducir", pistaF: "número, nombre y vencimiento", pistaD: "CUIL y la leyenda de principiante" },
+];
+
+$("docs").innerHTML = DOCUMENTOS.map((d) => `
+  <div class="slot" style="margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <h4 style="margin:0;font-size:13px;color:var(--fg)">${d.titulo}</h4>
+      <span id="st-${d.kind}" class="badge b-mute">sin enviar</span>
+    </div>
+    <div class="row c2">
+      <div class="slot">
+        <h4>Frente <span class="muted">— ${d.pistaF}</span></h4>
+        <input type="file" accept="image/*" id="f-${d.kind}-front" onchange="previsualizar('${d.kind}','front')">
+        <img class="thumb" id="th-${d.kind}-front">
+        <div class="url-out" id="u-${d.kind}-front"></div>
+        <div id="d-${d.kind}-front"></div>
+      </div>
+      <div class="slot">
+        <h4>Dorso <span class="muted">— ${d.pistaD}</span></h4>
+        <input type="file" accept="image/*" id="f-${d.kind}-back" onchange="previsualizar('${d.kind}','back')">
+        <img class="thumb" id="th-${d.kind}-back">
+        <div class="url-out" id="u-${d.kind}-back"></div>
+        <div id="d-${d.kind}-back"></div>
+      </div>
+    </div>
+    <div class="btns" style="margin-top:10px">
+      <button onclick="subir('${d.kind}', this)">Subir las dos a Cloudinary</button>
+      <button onclick="diagnosticar('${d.kind}', this)" title="POST /verification/identity/inspect-url — no gasta intentos del submit">Diagnosticar las URLs</button>
+      <button class="primary" onclick="enviar('${d.kind}', this)">Verificar ${d.titulo}</button>
+      <button onclick="pedirRevision('${d.kind}', this)">Pedir revisión manual</button>
+    </div>
+    <div id="v-${d.kind}"></div>
+  </div>`).join("");
+
+function previsualizar(kind, side) {
+  const archivo = $(`f-${kind}-${side}`).files[0];
+  const img = $(`th-${kind}-${side}`);
+  if (!archivo) { img.style.display = "none"; return; }
+  img.src = URL.createObjectURL(archivo);
+  img.style.display = "block";
+}
+
+/** Firma en el backend + subida directa a Cloudinary, un archivo por vez. */
+async function subirUno(kind, side) {
+  const archivo = $(`f-${kind}-${side}`).files[0];
+  if (!archivo) throw new Error(`Falta la foto de ${side} de ${kind}`);
+  $(`d-${kind}-${side}`).innerHTML = "";
+
+  const firma = await api("POST", "/verification/identity/upload-signature",
+    { document: kind, side });
+  if (!firma.ok) throw new Error("No se pudo firmar la subida de " + side);
+  const f = firma.data;
+
+  // Cloudinary valida la firma sobre los params EXACTOS que se le mandan: el
+  // backend los devuelve ya armados en `params` y acá se copian tal cual.
+  // Antes se mandaba además `folder`, y como el public_id ya trae la carpeta
+  // adentro Cloudinary se la anteponía otra vez — el archivo quedaba en
+  // identity/<id>/identity/<id>/… y el submit lo rechazaba con
+  // DOCUMENT_SLOT_MISMATCH.
+  //
+  // Sin `params` el backend es el viejo, que SÍ firmó `folder`: hay que
+  // mandarlo o Cloudinary responde "Invalid Signature" (la firma se calcula
+  // sobre los params recibidos, y si falta uno el string a firmar cambia).
+  const params = f.params || {
+    folder: f.folder, public_id: f.publicId, timestamp: f.timestamp,
+    type: "authenticated", api_key: f.apiKey, signature: f.signature,
+  };
+  if (!f.params) avisarBackendViejo();
+  const form = new FormData();
+  form.append("file", archivo);
+  Object.entries(params).forEach(([clave, valor]) => form.append(clave, valor));
+
+  const url = f.uploadUrl || `https://api.cloudinary.com/v1_1/${f.cloudName}/image/upload`;
+  const t0 = performance.now();
+  const res = await fetch(url, { method: "POST", body: form });
+  const ms = Math.round(performance.now() - t0);
+  const data = await res.json();
+  registrar({ method: "POST", url, status: res.status, ms,
+    body: { file: archivo.name + ` (${Math.round(archivo.size / 1024)} KB)`, ...params, signature: "(firmada por el backend)" },
+    data });
+  if (!res.ok) throw new Error("Cloudinary rechazó la subida: " + (data.error?.message || res.status));
+
+  if (data.public_id !== params.public_id) {
+    $(`d-${kind}-${side}`).innerHTML = pintarDiagnostico({
+      problem: "PUBLIC_ID_CAMBIADO",
+      message: "Cloudinary guardó el archivo con otro public_id del que firmó el backend.",
+      hint: "Mandá solo los campos de `params` (sin `folder`): si se manda la carpeta aparte, Cloudinary la antepone al public_id.",
+      details: { firmado: params.public_id, guardado: data.public_id },
+    });
+  }
+
+  urls[`${kind}_${side}`] = data.secure_url;
+  guardarUrls();
+  mostrarUrl(kind, side, data.secure_url);
+  return data.secure_url;
+}
+
+/**
+ * El backend que responde no tiene el arreglo del `folder` duplicado. La
+ * subida se hace igual (mandando `folder`, o la firma no cierra), pero el
+ * archivo va a quedar en identity/<id>/identity/<id>/… y ese mismo backend lo
+ * va a rechazar en el submit. No hay arreglo del lado del front: hay que
+ * desplegar el backend.
+ */
+function avisarBackendViejo() {
+  const caja = $("avisoBackend");
+  if (!caja || caja.dataset.puesto) return;
+  caja.dataset.puesto = "1";
+  caja.innerHTML =
+    '<div class="note"><b>Backend desactualizado.</b> <code>/verification/identity/upload-signature</code> ' +
+    "no devuelve <code>params</code>: sigue firmando la subida con <code>folder</code>, que duplica la carpeta " +
+    "dentro del <code>public_id</code>. Se sube igual, pero el submit va a responder " +
+    "<code>DOCUMENT_SLOT_MISMATCH</code> hasta que despliegues el backend nuevo.</div>";
+}
+
+function mostrarUrl(kind, side, url) {
+  const salida = $(`u-${kind}-${side}`);
+  salida.textContent = url;
+  salida.style.display = "block";
+}
+
+async function subir(kind, boton) {
+  ocupado(boton, true);
+  try {
+    await subirUno(kind, "front");
+    await subirUno(kind, "back");
+    // El backend valida la URL antes de leer nada: preguntarle ahora hace que
+    // el problema aparezca en la foto, y no recién al apretar "Verificar".
+    await diagnosticar(kind);
+  } catch (e) { alert(e.message); }
+  finally { ocupado(boton, false); }
+}
+
+// ── Diagnóstico de las URLs (POST /verification/identity/inspect-url) ──────
+/**
+ * Devuelve 200 siempre: `ok` dice si esa URL serviría para ese slot y, si no,
+ * `error` trae el chequeo que falló (`problem`), en qué etapa (`step`) y lo
+ * esperado contra lo recibido (`details`). No gasta intentos del submit.
+ */
+async function revisarUrl(kind, side) {
+  const url = urls[`${kind}_${side}`];
+  const caja = $(`d-${kind}-${side}`);
+  if (!url) { caja.innerHTML = ""; return false; }
+
+  const r = await api("POST", "/verification/identity/inspect-url",
+    { document: kind, side, url });
+
+  if (!r.ok) {
+    // Un backend sin este endpoint (404) no es un problema de la foto.
+    caja.innerHTML = r.status === 404
+      ? '<div class="diag"><div class="p">SIN_DIAGNOSTICO</div><div class="m">Este backend todavía no tiene <code>/verification/identity/inspect-url</code>.</div></div>'
+      : pintarDiagnostico(r.data);
+    return false;
+  }
+  caja.innerHTML = r.data.ok
+    ? `<div class="diag ok"><div class="p">LISTA</div><div class="w">${r.data.publicId}</div></div>`
+    : pintarDiagnostico(r.data.error);
+  return r.data.ok;
+}
+
+async function diagnosticar(kind, boton) {
+  ocupado(boton, true);
+  const frente = await revisarUrl(kind, "front");
+  const dorso = await revisarUrl(kind, "back");
+  ocupado(boton, false);
+  return frente && dorso;
+}
+
+const ETIQUETA_ETAPA = {
+  parseo_de_url: "la forma de la URL",
+  pertenencia: "a quién pertenece el archivo",
+  existencia: "que el archivo exista",
+};
+
+/** Un error de archivo del backend, con todo lo que trae. */
+function pintarDiagnostico(e) {
+  if (!e) return "";
+  const detalles = Object.entries(e.details || {})
+    .map(([k, v]) => `<dt>${k}</dt><dd>${Array.isArray(v) ? v.join(", ") : v}</dd>`).join("");
+  return `<div class="diag">
+    <div class="p">${e.problem || e.code || "ERROR"}</div>
+    <div class="m">${e.message || ""}</div>
+    ${(e.step || e.field || e.slot) ? `<div class="w">${[
+      e.step ? "falló en: " + (ETIQUETA_ETAPA[e.step] || e.step) : "",
+      e.field ? "campo: " + e.field : "",
+      e.slot ? "slot: " + e.slot : "",
+    ].filter(Boolean).join("  ·  ")}</div>` : ""}
+    ${detalles ? `<dl class="kv">${detalles}</dl>` : ""}
+    ${e.hint ? `<div class="h">▸ ${e.hint}</div>` : ""}
+  </div>`;
+}
+
+async function enviar(kind, boton) {
+  const frontUrl = urls[`${kind}_front`], backUrl = urls[`${kind}_back`];
+  if (!frontUrl || !backUrl) return alert("Subí primero las dos fotos de " + kind + ".");
+  ocupado(boton, true);
+  // Los diagnósticos viejos se limpian: los que sigan mal los vuelve a pintar
+  // la respuesta de este submit, en la foto que corresponda.
+  ["front", "back"].forEach((lado) => { $(`d-${kind}-${lado}`).innerHTML = ""; });
+  $(`v-${kind}`).innerHTML = '<div class="verdict"><span class="spin"></span> Leyendo las fotos… puede tardar 30–60 s.</div>';
+  const r = await api("POST", `/verification/identity/${kind}/submit`, { frontUrl, backUrl });
+  ocupado(boton, false);
+  pintarVeredicto(kind, r);
+}
+
+async function pedirRevision(kind, boton) {
+  ocupado(boton, true);
+  const r = await api("POST", `/verification/identity/${kind}/request-review`);
+  ocupado(boton, false);
+  pintarVeredicto(kind, r);
+}
+
+const CLASE_ESTADO = { APPROVED: "b-ok", FAILED: "b-err", MANUAL_REVIEW: "b-warn", REJECTED: "b-err" };
+
+function pintarVeredicto(kind, r) {
+  const caja = $(`v-${kind}`);
+  const d = r.data;
+
+  if (!r.ok) {
+    $(`st-${kind}`).className = "badge b-err";
+    $(`st-${kind}`).textContent = "error " + r.status;
+
+    // Los errores de archivo traen `problem`/`step`/`details`: `errors` los
+    // lista a los dos cuando el frente y el dorso están mal. Cada uno se
+    // pinta además en SU foto, para no tener que deducir cuál era.
+    const archivos = d?.errors?.length ? d.errors : d?.problem ? [d] : [];
+    archivos.forEach((e) => {
+      const foto = $(`d-${kind}-${e.field === "backUrl" ? "back" : "front"}`);
+      if (foto) foto.innerHTML = pintarDiagnostico(e);
+    });
+
+    caja.innerHTML = `<div class="verdict">
+      <div class="top"><span class="badge b-err">HTTP ${r.status}</span>
+        <b class="mono">${d?.code || "(sin code)"}</b>
+        ${d?.problem ? `<span class="badge b-warn">${d.problem}</span>` : ""}</div>
+      ${archivos.length
+        ? archivos.map(pintarDiagnostico).join("")
+        : `<div>${d?.message || "(sin mensaje)"}</div>`}
+      ${d?.missing ? `<div class="muted mono" style="margin-top:6px">faltan: ${d.missing.join(", ")}</div>` : ""}
+      <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Respuesta completa</summary>
+        <pre class="json">${pintarJson(d)}</pre></details></div>`;
+    return;
+  }
+
+  $(`st-${kind}`).className = "badge " + (CLASE_ESTADO[d.status] || "b-mute");
+  $(`st-${kind}`).textContent = d.status;
+
+  caja.innerHTML = `<div class="verdict">
+    <div class="top">
+      <span class="badge ${CLASE_ESTADO[d.status] || "b-mute"}">${d.status}</span>
+      <span class="muted mono">${d.type} · ${r.ms} ms</span>
+      <div style="flex:1"></div>
+      ${d.canResubmit ? '<span class="badge b-info">puede reenviar</span>' : ""}
+      ${d.canRequestManualReview ? '<span class="badge b-info">puede pedir revisión</span>' : ""}
+    </div>
+    ${d.reasons?.length
+      ? `<div><b style="font-size:12px">${d.reasons.length} motivo${d.reasons.length > 1 ? "s" : ""}:</b>
+         ${d.reasons.map((m) => `<div class="reason">
+            <div class="c">${m.code}</div>
+            <div class="m">${m.message}</div>
+            ${(m.field || m.slot) ? `<div class="w">${m.field ? "campo: " + m.field : ""}${m.field && m.slot ? "  ·  " : ""}${m.slot ? "foto: " + m.slot : ""}</div>` : ""}
+          </div>`).join("")}</div>`
+      : '<div style="color:var(--ok)">✓ Sin observaciones: todos los datos coinciden.</div>'}
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Respuesta completa</summary>
+      <pre class="json">${pintarJson(d)}</pre></details>
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Estado de la cuenta
+// ══════════════════════════════════════════════════════════════════════════
+async function verEstado() {
+  const r = await api("GET", "/verification/me/status");
+  if (!r.ok) { $("estado").innerHTML = '<span class="badge b-err">HTTP ' + r.status + "</span>"; return; }
+  const d = r.data;
+  const etiquetas = {
+    emailVerified: "Email confirmado", phoneVerified: "Teléfono confirmado",
+    dateOfBirthProvided: "Fecha de nacimiento", identityDataProvided: "DNI + CUIL + domicilio",
+    dniApproved: "DNI verificado", licenseApproved: "Licencia verificada",
+  };
+  const doc = (x, nombre) => x
+    ? `<div class="slot"><h4>${nombre}</h4>
+         <span class="badge ${CLASE_ESTADO[x.status] || "b-mute"}">${x.status}</span>
+         <div class="muted mono" style="margin-top:6px">fotos: ${x.documents.front ? "frente ✓" : "frente ✕"} · ${x.documents.back ? "dorso ✓" : "dorso ✕"}</div>
+         ${x.reasons?.length ? `<div class="muted" style="margin-top:6px">${x.reasons.map((m) => m.code).join(", ")}</div>` : ""}</div>`
+    : `<div class="slot"><h4>${nombre}</h4><span class="badge b-mute">sin enviar</span></div>`;
+
+  $("estado").innerHTML = `
+    <div class="top" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+      <span class="badge ${d.fullyVerified ? "b-ok" : "b-warn"}">${d.verificationStatus}</span>
+      <b>${d.fullyVerified ? "Cuenta verificada" : "Cuenta NO verificada"}</b>
+      <span class="muted">· teléfono ${d.phoneRequired ? "obligatorio" : "opcional"} · código por ${d.phoneCodeChannel}</span>
+    </div>
+    <div class="checklist" style="margin-bottom:12px">
+      ${Object.entries(d.checklist).map(([k, v]) => `<div class="${v ? "on" : ""}">${etiquetas[k] || k}</div>`).join("")}
+    </div>
+    <div class="row c2">${doc(d.documents.dni, "DNI")}${doc(d.documents.license, "Licencia")}</div>
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Respuesta completa</summary>
+      <pre class="json">${pintarJson(d)}</pre></details>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Admin
+// ══════════════════════════════════════════════════════════════════════════
+const adminApi = (method, path, body) => api(method, path, body, { token: val("adminToken") });
+
+async function listarAdmin() {
+  if (!val("adminToken")) return alert("Falta el token del admin (sección 1).");
+  const q = new URLSearchParams();
+  if (val("fStatus")) q.set("status", val("fStatus"));
+  if (val("fType")) q.set("type", val("fType"));
+  const r = await adminApi("GET", "/admin/verifications" + (q.toString() ? "?" + q : ""));
+  if (!r.ok) { $("adminList").innerHTML = '<div class="note">HTTP ' + r.status + " — ¿el token es de una cuenta ADMIN?</div>"; return; }
+  if (!r.data.length) { $("adminList").innerHTML = '<p class="muted">Sin resultados para ese filtro.</p>'; return; }
+
+  $("adminList").innerHTML = r.data.map((v) => `
+    <div class="admin-row">
+      <span class="badge ${CLASE_ESTADO[v.status] || "b-mute"}">${v.status}</span>
+      <span class="badge b-mute">${v.type}</span>
+      <span class="who">${v.user?.email || v.userId} ${v.reasonCodes?.length ? '<span class="muted">· ' + v.reasonCodes.join(", ") + "</span>" : ""}</span>
+      <button class="sm" onclick="verAdmin('${v.id}')">Abrir</button>
+    </div>`).join("");
+}
+
+async function verAdmin(id) {
+  const [detalle, docs] = await Promise.all([
+    adminApi("GET", "/admin/verifications/" + id),
+    adminApi("GET", "/admin/verifications/" + id + "/documents"),
+  ]);
+  if (!docs.ok) { $("adminDetail").innerHTML = '<div class="note">HTTP ' + docs.status + "</div>"; return; }
+  const d = docs.data;
+  const matriz = d.matchReport?.matrix || [];
+  const motivos = d.matchReport?.reasons || [];
+
+  $("adminDetail").innerHTML = `
+    <div class="sep"></div>
+    <div class="top" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="badge ${CLASE_ESTADO[d.status] || "b-mute"}">${d.status}</span>
+      <b>${d.type}</b>
+      <span class="muted mono">${d.userId}</span>
+    </div>
+
+    <div class="admin-imgs">
+      ${d.documents.front ? `<div><div class="muted" style="font-size:11px;margin-bottom:4px">FRENTE</div><img src="${d.documents.front}" alt="frente"></div>` : '<div class="muted">Frente borrado o ausente</div>'}
+      ${d.documents.back ? `<div><div class="muted" style="font-size:11px;margin-bottom:4px">DORSO</div><img src="${d.documents.back}" alt="dorso"></div>` : '<div class="muted">Dorso borrado o ausente</div>'}
+    </div>
+
+    ${motivos.length ? `<h4 style="margin:14px 0 0;font-size:12px">Motivos del último veredicto</h4>
+      ${motivos.map((m) => `<div class="reason"><div class="c">${m.code}</div><div class="m">${m.message}</div></div>`).join("")}` : ""}
+
+    ${matriz.length ? `<h4 style="margin:14px 0 0;font-size:12px">Matriz de evidencia — qué dijo cada fuente</h4>
+      <table><thead><tr><th>Campo</th><th>Lecturas</th><th>Estado</th></tr></thead><tbody>
+      ${matriz.map((f) => `<tr class="st-${f.status}">
+        <td class="mono">${f.field}</td>
+        <td class="mono">${Object.entries(f.readings).map(([k, v]) =>
+          `<div><span style="color:var(--fg-3)">${k}:</span> ${v === null ? '<span class="j-null">null</span>' : v}</div>`).join("")}</td>
+        <td><span class="badge ${f.status === "ok" ? "b-ok" : f.status === "conflicto" ? "b-err" : "b-warn"}">${f.status}</span></td>
+      </tr>`).join("")}</tbody></table>` : ""}
+
+    <div class="btns" style="margin-top:14px">
+      <input id="adminNotes" placeholder="notas (opcional)" style="flex:1;min-width:180px">
+      <button class="primary" onclick="revisar('${id}','APPROVED')">Aprobar</button>
+      <button class="danger" onclick="revisar('${id}','REJECTED')">Rechazar y borrar fotos</button>
+    </div>
+
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">extracted — lo que leyó el verificador Python</summary>
+      <pre class="json">${pintarJson(d.extracted)}</pre></details>
+    <details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">Fila completa (GET /admin/verifications/:id)</summary>
+      <pre class="json">${pintarJson(detalle.data)}</pre></details>`;
+}
+
+async function revisar(id, status) {
+  if (status === "REJECTED" && !confirm("El rechazo BORRA las fotos del storage y no se puede deshacer. ¿Seguir?")) return;
+  const r = await adminApi("PATCH", "/admin/verifications/" + id + "/review",
+    { status, notes: val("adminNotes") || undefined });
+  if (r.ok) { await listarAdmin(); await verAdmin(id); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Casos de error
+// ══════════════════════════════════════════════════════════════════════════
+const urlValida = (slot) => urls[slot] || urls.dni_front || "";
+
+const errUrlAjena = () => api("POST", "/verification/identity/dni/submit",
+  { frontUrl: "https://example.com/dni-front.png", backUrl: urlValida("dni_back") || "https://example.com/b.png" });
+
+const errSlotCruzado = () => api("POST", "/verification/identity/dni/submit",
+  { frontUrl: urls.license_back || urlValida("dni_front"), backUrl: urlValida("dni_back") });
+
+const errNoExiste = () => api("POST", "/verification/identity/dni/submit", {
+  frontUrl: (urlValida("dni_front") || "https://res.cloudinary.com/x/image/authenticated/identity/y/dni_front_1_a.jpg")
+    .replace(/dni_front_[^.]+/, "dni_front_0000000000_deadbeef"),
+  backUrl: urlValida("dni_back") || "https://res.cloudinary.com/x/image/authenticated/identity/y/dni_back_1_a.jpg",
+});
+
+const errOtroCloud = () => api("POST", "/verification/identity/dni/submit", {
+  frontUrl: (urlValida("dni_front") || "https://res.cloudinary.com/x/image/authenticated/identity/y/dni_front_1_a.jpg")
+    .replace(/res\.cloudinary\.com\/[^/]+/, "res.cloudinary.com/otro-cloud"),
+  backUrl: urlValida("dni_back"),
+});
+
+const errNoAuthenticated = () => api("POST", "/verification/identity/dni/submit", {
+  frontUrl: (urlValida("dni_front") || "https://res.cloudinary.com/x/image/authenticated/identity/y/dni_front_1_a.jpg")
+    .replace("/image/authenticated/", "/image/upload/"),
+  backUrl: urlValida("dni_back"),
+});
+
+const errDosMal = () => api("POST", "/verification/identity/dni/submit", {
+  frontUrl: urls.license_back || "https://example.com/a.png",
+  backUrl: "https://example.com/b.png",
+});
+
+const errFaltaFoto = () => api("POST", "/verification/identity/dni/submit", { frontUrl: urlValida("dni_front") });
+const errTipoRaro = () => api("POST", "/verification/identity/pasaporte/submit",
+  { frontUrl: urlValida("dni_front"), backUrl: urlValida("dni_back") });
+
+// Restaurar las URLs subidas de una sesión anterior.
+for (const [slot, url] of Object.entries(urls)) {
+  const salida = $("u-" + slot.replace("_", "-"));
+  if (salida) { salida.textContent = url; salida.style.display = "block"; }
+}
+probarConexion();
+</script>
+</body>
+</html>
