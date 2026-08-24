@@ -30,6 +30,12 @@ export interface TestAppOptions {
    * completo con el verificador Python fakeado.
    */
   docverifyMode?: "auto" | "manual" | "auto_approve";
+  /**
+   * Si el verificador está instalado. `false` reproduce un servidor que pidió
+   * "auto" y no puede cumplirlo —Vercel serverless, sin Python ni tesseract—,
+   * que es donde el modo efectivo pasa a ser "unavailable".
+   */
+  docverifyAvailable?: boolean;
 }
 
 /**
@@ -45,6 +51,7 @@ export async function createTestApp(
   const sms = new FakeSmsService();
   const cloudinary = new FakeCloudinaryService();
   const docverify = new FakePythonDocverifyService();
+  if (options.docverifyAvailable === false) docverify.makeUnavailable();
 
   // El modo auto exige credenciales de storage al arrancar; los adaptadores
   // reales están fakeados, así que alcanzan valores dummy. Se asignan sin

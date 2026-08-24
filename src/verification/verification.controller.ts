@@ -113,6 +113,17 @@ export class VerificationController {
     );
   }
 
+  /**
+   * Por qué este servidor verifica (o no) de forma automática: el modo
+   * efectivo, el motivo si degradó, y si el verificador contesta.
+   *
+   * Es lo primero que hay que mirar cuando "la verificación no anda".
+   */
+  @Get("identity/diagnostics")
+  getDiagnostics() {
+    return this.documentVerification.diagnostics();
+  }
+
   /** Estado de los dos flujos de documentos del usuario. */
   @Get("identity/me")
   getMyIdentity(@CurrentUser() user: CurrentUserPayload) {

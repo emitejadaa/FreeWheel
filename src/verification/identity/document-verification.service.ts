@@ -29,6 +29,7 @@ import {
 import {
   DocumentMatchResult,
   DocumentMatchService,
+  FieldMatrixRow,
 } from "../matching/document-match.service";
 import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import {
@@ -39,12 +40,43 @@ import {
 /**
  * Cómo se revisan los documentos (DOCVERIFY_MODE):
  * - "auto" (default): el verificador Python extrae los datos y el matcher
- *   decide. Si Python no está instalado en el servidor, el módulo cae a
- *   "manual" con una advertencia al arrancar.
- * - "manual": nada se aprueba solo; todo entra a la cola del admin.
+ *   decide.
+ * - "manual": DECISIÓN DEL OPERADOR — nada se aprueba solo; todo entra a la
+ *   cola del admin.
  * - "auto_approve": aprueba todo. Solo desarrollo y tests.
+ * - "unavailable": se pidió "auto" y este servidor NO puede correrlo (sin
+ *   Python, sin las credenciales del storage, sin verificador remoto).
+ *
+ * "unavailable" NO ES LO MISMO QUE "manual", y confundirlos es lo que rompía
+ * el flujo. Antes los dos casos mandaban el documento a la cola del admin, así
+ * que en un servidor sin Python —Vercel serverless, por ejemplo— TODA
+ * submission quedaba en MANUAL_REVIEW sin que nadie la hubiera pedido, y el
+ * siguiente intento se rechazaba con "está esperando la revisión de un
+ * administrador". La persona quedaba trabada sin haber hecho nada.
+ *
+ * Ahora son dos cosas distintas: "manual" es alguien decidiendo que revisa a
+ * mano, y "unavailable" es una falla del servidor, que termina en FAILED con
+ * un motivo que lo dice. Desde FAILED se puede reenviar fotos y se puede pedir
+ * revisión manual: la persona conserva las dos salidas.
  */
-export type DocverifyMode = "auto" | "manual" | "auto_approve";
+export type DocverifyMode = "auto" | "manual" | "auto_approve" | "unavailable";
+
+/**
+ * El modo efectivo con el que arrancó el servidor, y por qué.
+ *
+ * Lleva el motivo adentro porque sin eso el diagnóstico era imposible:
+ * `/health/env` informaba el DOCVERIFY_MODE *configurado* ("auto"), el
+ * servidor se comportaba como otro, y nada en ninguna respuesta decía que
+ * había degradado ni por qué.
+ */
+export interface DocverifyModeInfo {
+  mode: DocverifyMode;
+  /** Lo que pedía la configuración ("auto" cuando no se configuró nada). */
+  configured: string;
+  /** Por qué el modo efectivo no es el configurado. null si coinciden. */
+  degradedReason: string | null;
+}
+
 export const DOCVERIFY_MODE = "DOCVERIFY_MODE";
 
 const KIND_TO_TYPE: Record<DocumentKind, VerifiedDocumentType> = {
@@ -62,7 +94,34 @@ const REQUIRED_PROFILE_FIELDS: { field: keyof User; label: string }[] = [
   { field: "address", label: "domicilio" },
 ];
 
-/** Proyección sin datos personales: lo que ve el propio usuario. */
+/**
+ * TODO lo que el servidor leyó del documento y todo lo que comparó.
+ *
+ * Es el material para entender POR QUÉ un documento no se aprobó: qué leyó
+ * cada protocolo (OCR, PDF417, MRZ), campo por campo, y cómo se comparó cada
+ * uno contra los datos de la cuenta. Sin esto, un FAILED era una pared: el
+ * motivo decía "el nombre no coincide" y no había forma de saber si el
+ * problema era la foto, el OCR o un dato mal cargado en el perfil.
+ *
+ * Se expone al DUEÑO del documento —son sus propios datos, no los de un
+ * tercero— y lo controla VERIFICATION_EXPOSE_EXTRACTION. Los admins lo ven
+ * siempre por GET /admin/verifications/:id.
+ */
+export interface DocumentExtractionReport {
+  /** Con qué modo corrió esta revisión, y por qué si degradó. */
+  mode: DocverifyMode;
+  degradedReason: string | null;
+  /** El JSON crudo del verificador, tal cual: un objeto por foto y protocolo. */
+  extracted: DocverifyResponse | null;
+  /** La comparación campo por campo: qué dijo cada fuente y si cerró. */
+  matrix: FieldMatrixRow[];
+  /** El número leído del documento (no el declarado en el perfil). */
+  documentNumber: string | null;
+  /** Vencimiento leído del documento, ISO AAAA-MM-DD. */
+  expiresAt: string | null;
+}
+
+/** Lo que ve el propio usuario sobre uno de sus documentos. */
 export interface DocumentVerificationView {
   id: string;
   type: VerifiedDocumentType;
@@ -77,6 +136,8 @@ export interface DocumentVerificationView {
   reviewedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Ver DocumentExtractionReport. null cuando está apagado por config. */
+  extraction: DocumentExtractionReport | null;
 }
 
 /**
@@ -104,8 +165,13 @@ export class DocumentVerificationService {
     private readonly matcher: DocumentMatchService,
     private readonly auditLog: AuditLogService,
     private readonly config: ConfigService,
-    @Inject(DOCVERIFY_MODE) private readonly mode: DocverifyMode,
+    @Inject(DOCVERIFY_MODE) private readonly modeInfo: DocverifyModeInfo,
   ) {}
+
+  /** El modo efectivo de este servidor. */
+  private get mode(): DocverifyMode {
+    return this.modeInfo.mode;
+  }
 
   // ── Flujo del usuario ──────────────────────────────────────────────────
 
@@ -129,14 +195,22 @@ export class DocumentVerificationService {
         message: "Este documento ya está verificado",
       });
     }
-    if (existing?.status === DocumentVerificationStatus.MANUAL_REVIEW) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "REVIEW_IN_PROGRESS",
-        message:
-          "Este documento está esperando la revisión de un administrador",
-      });
-    }
+    // Una revisión manual pendiente NO bloquea reenviar fotos.
+    //
+    // Antes sí lo hacía, y era la trampa: en un servidor sin verificador la
+    // primera submission caía sola en MANUAL_REVIEW y a partir de ahí toda
+    // submission daba 400. La persona quedaba encerrada en una cola que nunca
+    // pidió, sin forma de reintentar.
+    //
+    // La regla es que hay UNA revisión viva por documento y la última que se
+    // pide es la que vale: mandar fotos nuevas reemplaza lo que hubiera —el
+    // pedido de revisión manual incluido, que queda sin efecto— porque se está
+    // pidiendo una revisión automática sobre OTROS archivos. Lo aplica
+    // persistOutcome, que pisa la fila entera y limpia reviewRequestedAt.
+    //
+    // Y después de esta submission se puede volver a pedir revisión manual: la
+    // que se pida va a ser sobre estas fotos y este resultado, no sobre los
+    // anteriores.
 
     // Las URLs deben ser nuestras, del slot correcto, de esta cuenta y
     // existir; se persiste la forma canónica sin firma.
@@ -204,6 +278,35 @@ export class DocumentVerificationService {
     });
 
     return this.toPublicView(updated);
+  }
+
+  /**
+   * POR QUÉ este servidor verifica (o no) de forma automática.
+   *
+   * Sale a la red a preguntarle al verificador si contesta. Existe porque "la
+   * verificación no anda" tenía demasiadas causas posibles y ninguna forma de
+   * distinguirlas desde afuera: el servidor decía DOCVERIFY_MODE=auto en el
+   * diagnóstico, se comportaba como manual, y nada explicaba el salto.
+   *
+   * No devuelve ni la URL ni el token del verificador: solo si hay uno, de qué
+   * tipo, y si responde.
+   */
+  async diagnostics(): Promise<{
+    mode: DocverifyMode;
+    configured: string;
+    degradedReason: string | null;
+    canVerifyAutomatically: boolean;
+    exposeExtraction: boolean;
+    verifier: Awaited<ReturnType<PythonDocverifyService["probe"]>>;
+  }> {
+    return {
+      mode: this.mode,
+      configured: this.modeInfo.configured,
+      degradedReason: this.modeInfo.degradedReason,
+      canVerifyAutomatically: this.mode === "auto",
+      exposeExtraction: this.exposeExtraction,
+      verifier: await this.docverify.probe(),
+    };
   }
 
   /** Estado de ambos flujos para el usuario. */
@@ -430,8 +533,36 @@ export class DocumentVerificationService {
         manual: false,
       };
     }
+    // Decisión del operador: nadie se aprueba solo, todo a la cola del admin.
     if (this.mode === "manual") {
       return { match: null, extracted: null, manual: true };
+    }
+
+    // El servidor NO PUEDE verificar (sin Python, sin tesseract, sin
+    // credenciales del storage, sin verificador remoto). Eso es una falla del
+    // servidor, no una decisión: termina FAILED con un motivo que lo dice, y la
+    // persona conserva las dos salidas —reenviar fotos, o pedir revisión
+    // manual— en vez de quedar encolada sin haberlo pedido.
+    if (this.mode === "unavailable") {
+      this.logger.warn(
+        `Submission de ${user.id} sin verificación automática: ` +
+          (this.modeInfo.degradedReason ?? "motivo desconocido"),
+      );
+      return {
+        match: {
+          approved: false,
+          reasons: [
+            verificationReason("VERIFICACION_NO_DISPONIBLE", {
+              detail: this.modeInfo.degradedReason ?? undefined,
+            }),
+          ],
+          matrix: [],
+          documentNumber: null,
+          expiresAt: null,
+        },
+        extracted: null,
+        manual: false,
+      };
     }
 
     try {
@@ -510,6 +641,13 @@ export class DocumentVerificationService {
         (url) => url && url !== urls.frontUrl && url !== urls.backUrl,
       );
       await this.documents.deleteDocuments(previous);
+
+      if (existing.status === DocumentVerificationStatus.MANUAL_REVIEW) {
+        this.logger.log(
+          `La revisión manual pendiente de ${user.id} (${type}) queda sin ` +
+            "efecto: se enviaron fotos nuevas.",
+        );
+      }
     }
 
     let match = outcome.match;
@@ -615,14 +753,52 @@ export class DocumentVerificationService {
       status: row.status,
       reasons: readReasons(row.matchReport),
       documents: { front: Boolean(row.frontUrl), back: Boolean(row.backUrl) },
-      canResubmit:
-        row.status !== DocumentVerificationStatus.APPROVED &&
-        row.status !== DocumentVerificationStatus.MANUAL_REVIEW,
+      // Reenviar fotos se puede SIEMPRE salvo que ya esté aprobado. Con una
+      // revisión manual pendiente también: mandar fotos nuevas la reemplaza.
+      canResubmit: row.status !== DocumentVerificationStatus.APPROVED,
+      // Pedir revisión manual tiene sentido sobre un resultado automático que
+      // no aprobó. Si ya está pedida, no se vuelve a pedir.
       canRequestManualReview: row.status === DocumentVerificationStatus.FAILED,
       reviewRequestedAt: row.reviewRequestedAt,
       reviewedAt: row.reviewedAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      extraction: this.exposeExtraction ? this.extractionReport(row) : null,
+    };
+  }
+
+  /**
+   * ¿Se le devuelve a la persona todo lo que se leyó de su documento?
+   *
+   * Son SUS datos, no los de un tercero, y verlos es la única forma de darse
+   * cuenta de que la foto salió movida o de que el perfil tiene el apellido mal
+   * escrito. Cualquier verificador de identidad serio te muestra qué leyó.
+   *
+   * Se puede apagar con VERIFICATION_EXPOSE_EXTRACTION="false": lo que se filtra
+   * al mostrarlo no son datos personales sino la mecánica de la comparación, y
+   * eso le sirve a quien esté probando cómo falsificar un documento. Mientras
+   * esto sea una demo, verlo vale más que esconderlo.
+   */
+  private get exposeExtraction(): boolean {
+    const flag = (
+      this.config.get<string>("VERIFICATION_EXPOSE_EXTRACTION") ?? ""
+    ).toLowerCase();
+    if (flag === "false") return false;
+    return true;
+  }
+
+  private extractionReport(
+    row: DocumentVerification,
+  ): DocumentExtractionReport {
+    return {
+      mode: this.mode,
+      degradedReason: this.modeInfo.degradedReason,
+      extracted: (row.extracted as DocverifyResponse | null) ?? null,
+      matrix: readMatrix(row.matchReport),
+      documentNumber: row.documentNumber,
+      expiresAt: row.expiresAt
+        ? row.expiresAt.toISOString().slice(0, 10)
+        : null,
     };
   }
 
@@ -642,6 +818,20 @@ export function readReasons(matchReport: unknown): VerificationReason[] {
   ) {
     return (matchReport as { reasons: VerificationReason[] }).reasons.filter(
       (reason) => reason && typeof reason.code === "string",
+    );
+  }
+  return [];
+}
+
+/** La matriz de evidencia guardada en matchReport, tolerando filas viejas. */
+export function readMatrix(matchReport: unknown): FieldMatrixRow[] {
+  if (
+    matchReport &&
+    typeof matchReport === "object" &&
+    Array.isArray((matchReport as { matrix?: unknown }).matrix)
+  ) {
+    return (matchReport as { matrix: FieldMatrixRow[] }).matrix.filter(
+      (row) => row && typeof row.field === "string",
     );
   }
   return [];

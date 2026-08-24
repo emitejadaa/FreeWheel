@@ -178,7 +178,10 @@ que crear una cuenta de Stripe.
 |---|---|---|
 | `JWT_EXPIRES_IN` | `24h` | Cuánto dura la sesión. |
 | `ONBOARDING_JWT_EXPIRES_IN` | `30m` | Cuánto dura el token del registro a medio hacer. |
-| `DOCVERIFY_MODE` | `auto` | Cómo se revisan el DNI y la licencia: `auto` (verificador Python), `manual` o `auto_approve`. En Vercel serverless **no hay Python**, así que `auto` degrada a `manual` avisando. |
+| `DOCVERIFY_MODE` | `auto` | Cómo se revisan el DNI y la licencia: `auto` (verificador Python), `manual` o `auto_approve`. En Vercel **no hay Python**: sin `DOCVERIFY_URL`, `auto` no puede correr y los documentos quedan fallados con ese motivo. Ver abajo. |
+| `DOCVERIFY_URL` | vacío | Dónde corre el verificador de documentos. **Es lo que hace que la verificación automática funcione en Vercel.** Ver abajo. |
+| `DOCVERIFY_TOKEN` | vacío | La clave compartida con ese verificador (la misma de los dos lados). |
+| `VERIFICATION_EXPOSE_EXTRACTION` | encendido | Si la persona recibe todo lo que se leyó de su documento y la comparación. Se apaga con `false`. |
 | `DOCVERIFY_TIMEOUT_MS` | `120000` | Tope del verificador. Solo aplica donde `auto` esté realmente disponible. |
 | `SMS_PROVIDER` | `mock` | Por dónde sale el código del teléfono. Con `mock` llega al **email** de la persona y la verificación funciona igual, sin costo. Con `twilio`, sale por SMS de verdad y hacen falta las tres de abajo. |
 | `TWILIO_ACCOUNT_SID` | — | Solo con `SMS_PROVIDER=twilio`. Está arriba de todo en la consola de Twilio (empieza con `AC`). |
@@ -198,6 +201,35 @@ que crear una cuenta de Stripe.
 
 `CORS` no necesita ninguna variable: la API acepta cualquier origen a propósito,
 para que funcionen tanto el dominio principal como las vistas previas de Vercel.
+
+### Por qué la verificación de documentos no anda en Vercel (y cómo se arregla)
+
+El DNI y la licencia los lee un **subproyecto Python** (`python-verifier/`) que
+necesita Python, varias librerías y **el binario de tesseract**. Nada de eso
+existe en Vercel serverless, y no se puede instalar: son dependencias del
+sistema operativo, no paquetes de npm.
+
+Resultado: en el deploy la revisión automática **no puede correr**. Los
+documentos quedan como fallados con el motivo "la verificación automática no
+está disponible en este servidor", y desde ahí la persona puede reenviar fotos
+o pedir que un admin la revise a mano. `GET /verification/identity/diagnostics`
+lo dice con todas las letras.
+
+**Para que funcione hay que desplegar el verificador aparte** y apuntarle:
+
+1. Desplegá `python-verifier/` con su `Dockerfile` en cualquier lado que corra
+   contenedores (Render, Railway, Fly, un VPS). Poné ahí `DOCVERIFY_TOKEN` con
+   una clave larga al azar.
+2. En Vercel cargá `DOCVERIFY_URL` con la URL que te quedó (sin barra final) y
+   `DOCVERIFY_TOKEN` con **la misma clave**.
+3. Redeploy, y comprobá con `GET /verification/identity/diagnostics`: tiene que
+   decir `"mode": "auto"` y `"reachable": true`.
+
+Mientras tanto, para probar el flujo completo se puede correr el backend en tu
+máquina con el verificador local (`cd python-verifier && python3 -m venv .venv
+&& .venv/bin/pip install -r requirements.txt`, más el binario de tesseract).
+
+---
 
 ### Por qué en producción no se borran cuentas
 

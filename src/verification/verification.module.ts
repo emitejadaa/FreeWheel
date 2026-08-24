@@ -13,7 +13,7 @@ import { IdentityDocumentsService } from "./identity/identity-documents.service"
 import {
   DOCVERIFY_MODE,
   DocumentVerificationService,
-  DocverifyMode,
+  DocverifyModeInfo,
 } from "./identity/document-verification.service";
 
 /**
@@ -29,57 +29,67 @@ const REQUIRED_AUTO_ENV = [
 /**
  * Modo de revisión de documentos (DOCVERIFY_MODE):
  * - "auto" (default): el verificador Python extrae los datos de las fotos y
- *   el matcher del backend decide. Sin Python instalado en el servidor (p.
- *   ej. serverless) o sin credenciales de Cloudinary, cae a "manual" con
- *   una advertencia: la app sigue funcionando y ninguna cuenta se verifica
- *   sola, que es el lado seguro del error. Si "auto" se pidió explícito y
- *   faltan las credenciales del storage, falla al arrancar: pediste una
- *   revisión que no se puede hacer.
+ *   el matcher del backend decide.
  * - "manual": nada se aprueba solo; todo entra a la cola del admin.
  * - "auto_approve": aprueba todo. Solo desarrollo y tests.
+ *
+ * CUANDO SE PIDIÓ "auto" Y NO SE PUEDE, EL MODO EFECTIVO ES "unavailable",
+ * NO "manual". Son dos cosas distintas: "manual" es alguien decidiendo revisar
+ * a mano; "unavailable" es este servidor sin con qué verificar. Antes las dos
+ * caían en "manual" y el resultado era que en un servidor sin Python —Vercel
+ * serverless— toda submission quedaba en MANUAL_REVIEW sin que nadie la
+ * pidiera, y la siguiente se rechazaba. Ahora "unavailable" termina en FAILED
+ * con el motivo puesto, y la persona puede reenviar o pedir revisión manual.
+ *
+ * El motivo de la degradación viaja en el objeto y sale por `/health/env`:
+ * antes el servidor decía "auto" en el diagnóstico y se comportaba como otro.
  *
  * Exportada para poder testear el arranque sin levantar la app.
  */
 export async function resolveDocverifyMode(
   config: ConfigService,
   docverify: PythonDocverifyService,
-): Promise<DocverifyMode> {
+): Promise<DocverifyModeInfo> {
   const logger = new Logger("DocverifyMode");
   const configured = config.get<string>("DOCVERIFY_MODE")?.trim();
   const mode = (configured || "auto").toLowerCase();
 
-  if (mode === "manual" || mode === "auto_approve") return mode;
-
-  if (mode === "auto") {
-    const missing = REQUIRED_AUTO_ENV.filter((key) => !config.get<string>(key));
-    if (missing.length > 0) {
-      if (configured) {
-        throw new Error(`DOCVERIFY_MODE=auto requiere ${missing.join(", ")}`);
-      }
-      logger.warn(
-        `Faltan ${missing.join(", ")}: la verificación automática queda ` +
-          "deshabilitada y los documentos esperan a un admin.",
-      );
-      return "manual";
-    }
-
-    if (!(await docverify.available())) {
-      logger.warn(
-        "El verificador Python no está disponible en este servidor " +
-          "(python-verifier/.venv). La verificación automática queda " +
-          "deshabilitada y los documentos esperan a un admin. Instalalo con: " +
-          "cd python-verifier && python3 -m venv .venv && " +
-          ".venv/bin/pip install -r requirements.txt",
-      );
-      return "manual";
-    }
-
-    return "auto";
+  if (mode === "manual" || mode === "auto_approve") {
+    return { mode, configured: mode, degradedReason: null };
   }
 
-  throw new Error(
-    `Unknown DOCVERIFY_MODE "${mode}" (use "auto", "manual" or "auto_approve")`,
-  );
+  if (mode !== "auto") {
+    throw new Error(
+      `Unknown DOCVERIFY_MODE "${mode}" (use "auto", "manual" or "auto_approve")`,
+    );
+  }
+
+  const degradado = (degradedReason: string): DocverifyModeInfo => {
+    logger.warn(
+      `La verificación automática NO va a correr en este servidor: ` +
+        `${degradedReason}. Las submissions van a quedar FAILED con ese ` +
+        "motivo; se pueden reenviar o mandar a revisión manual.",
+    );
+    return { mode: "unavailable", configured: "auto", degradedReason };
+  };
+
+  // Sin poder bajar las fotos del storage no hay nada que analizar.
+  const missing = REQUIRED_AUTO_ENV.filter((key) => !config.get<string>(key));
+  if (missing.length > 0) {
+    const detalle = `faltan las credenciales del storage (${missing.join(", ")})`;
+    // Pedido explícito y sin con qué cumplirlo: se corta al arrancar en vez de
+    // publicar una API que dice que verifica y no verifica.
+    if (configured) {
+      throw new Error(`DOCVERIFY_MODE=auto requiere ${missing.join(", ")}`);
+    }
+    return degradado(detalle);
+  }
+
+  if (!(await docverify.available())) {
+    return degradado(docverify.unavailableReason());
+  }
+
+  return { mode: "auto", configured: "auto", degradedReason: null };
 }
 
 const docverifyMode: Provider = {

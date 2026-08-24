@@ -482,24 +482,97 @@ describe("Verificación documental (DOCVERIFY_MODE=auto)", () => {
     expect(res.body.code).toBe("REVIEW_NOT_AVAILABLE");
   });
 
-  it("no deja reenviar fotos mientras espera la revisión de un admin", async () => {
-    const { token, id } = await cuentaCoherente();
-    docverify.mutate((res) => {
-      if (res.documentos?.dni_back) res.documentos.dni_back.ocr.cuil = null;
-    });
-    await submit(token, id, "dni").expect(201);
-    await http()
-      .post("/verification/identity/dni/request-review")
-      .set("Authorization", auth(token))
-      .expect(201);
+  /**
+   * UNA revisión viva por documento, y la última que se pide es la que vale.
+   *
+   * Antes una revisión manual pendiente bloqueaba reenviar fotos, y eso dejaba
+   * a la persona encerrada: en un servidor sin verificador la primera
+   * submission caía sola en MANUAL_REVIEW y a partir de ahí todo daba 400.
+   */
+  describe("una sola revisión viva por documento", () => {
+    it("reenviar fotos deja SIN EFECTO la revisión manual pendiente", async () => {
+      const { token, id } = await cuentaCoherente();
+      // Falla la automática...
+      docverify.mutate((res) => {
+        if (res.documentos?.dni_back) res.documentos.dni_back.ocr.cuil = null;
+      });
+      await submit(token, id, "dni").expect(201);
+      // ...y se pide revisión manual.
+      await http()
+        .post("/verification/identity/dni/request-review")
+        .set("Authorization", auth(token))
+        .expect(201);
+      const enCola = await prisma.documentVerification.findFirstOrThrow({
+        where: { userId: id, type: "DNI" },
+      });
+      expect(enCola.status).toBe("MANUAL_REVIEW");
+      expect(enCola.reviewRequestedAt).not.toBeNull();
 
-    const res = await submit(token, id, "dni").expect(400);
-    expect(res.body.code).toBe("REVIEW_IN_PROGRESS");
+      // Y ahora se mandan fotos nuevas, esta vez legibles: NO da 400, y el
+      // pedido manual muere.
+      docverify.clearMutators();
+      const res = await submit(token, id, "dni").expect(201);
+      expect(res.body.status).toBe("APPROVED");
+
+      const fila = await prisma.documentVerification.findFirstOrThrow({
+        where: { userId: id, type: "DNI" },
+      });
+      expect(fila.status).toBe("APPROVED");
+      expect(fila.reviewRequestedAt).toBeNull();
+
+      // Y no quedó una segunda fila: hay una sola revisión viva.
+      expect(
+        await prisma.documentVerification.count({
+          where: { userId: id, type: "DNI" },
+        }),
+      ).toBe(1);
+    });
+
+    it("después de reenviar se puede pedir revisión manual DE NUEVO", async () => {
+      const { token, id } = await cuentaCoherente();
+      docverify.mutate((res) => {
+        if (res.documentos?.dni_back) res.documentos.dni_back.ocr.cuil = null;
+      });
+      await submit(token, id, "dni").expect(201);
+      await http()
+        .post("/verification/identity/dni/request-review")
+        .set("Authorization", auth(token))
+        .expect(201);
+
+      // Otra automática, que también falla (el mutador sigue puesto).
+      const reenvio = await submit(token, id, "dni").expect(201);
+      expect(reenvio.body.status).toBe("FAILED");
+      expect(reenvio.body.canRequestManualReview).toBe(true);
+
+      // La manual se puede volver a pedir, y es sobre ESTE resultado.
+      const pedido = await http()
+        .post("/verification/identity/dni/request-review")
+        .set("Authorization", auth(token))
+        .expect(201);
+      expect(pedido.body.status).toBe("MANUAL_REVIEW");
+    });
+
+    it("con una revisión manual pendiente, canResubmit sigue en true", async () => {
+      const { token, id } = await cuentaCoherente();
+      docverify.mutate((res) => {
+        if (res.documentos?.dni_back) res.documentos.dni_back.ocr.cuil = null;
+      });
+      await submit(token, id, "dni").expect(201);
+      const pedido = await http()
+        .post("/verification/identity/dni/request-review")
+        .set("Authorization", auth(token))
+        .expect(201);
+
+      // Es lo que mira el front para saber si deja subir fotos otra vez.
+      expect(pedido.body.status).toBe("MANUAL_REVIEW");
+      expect(pedido.body.canResubmit).toBe(true);
+      expect(pedido.body.canRequestManualReview).toBe(false);
+    });
   });
 
   it("si el verificador falla, el caso queda reintentables con motivo claro", async () => {
     const { token, id } = await cuentaCoherente();
-    docverify.analyze = () => Promise.reject(new Error("python murió"));
+    docverify.failWith(new Error("python murió"));
 
     const res = await submit(token, id, "dni").expect(201);
     expect(res.body.status).toBe("FAILED");
@@ -507,5 +580,107 @@ describe("Verificación documental (DOCVERIFY_MODE=auto)", () => {
       "VERIFICACION_NO_DISPONIBLE",
     );
     expect(res.body.canRequestManualReview).toBe(true);
+  });
+
+  /**
+   * Lo que el front demo necesita para poder diagnosticar: qué leyó el
+   * verificador campo por campo y cómo se comparó contra la cuenta.
+   */
+  describe("el informe de extracción que ve el usuario", () => {
+    it("trae el JSON crudo del verificador, foto por foto y protocolo por protocolo", async () => {
+      const { token, id } = await cuentaCoherente();
+      const res = await submit(token, id, "dni").expect(201);
+
+      const extraction = res.body.extraction;
+      expect(extraction).not.toBeNull();
+      expect(extraction.mode).toBe("auto");
+      expect(extraction.degradedReason).toBeNull();
+
+      // El contrato entero, tal cual lo devolvió el verificador.
+      const docs = extraction.extracted.documentos;
+      expect(Object.keys(docs).sort()).toEqual(["dni_back", "dni_front"]);
+      expect(docs.dni_front.ocr.nDocumento).toBeTruthy();
+      expect(docs.dni_front.codigo.nDocumento).toBeTruthy();
+      expect(docs.dni_back.mrz.nDocumento).toBeTruthy();
+      expect(docs.dni_back.ocr.cuil).toBeTruthy();
+    });
+
+    it("trae la comparación campo por campo, con qué dijo cada fuente", async () => {
+      const { token, id } = await cuentaCoherente();
+      const res = await submit(token, id, "dni").expect(201);
+
+      const matrix = res.body.extraction.matrix;
+      expect(Array.isArray(matrix)).toBe(true);
+      expect(matrix.length).toBeGreaterThan(0);
+
+      // Cada fila dice el campo, lo que leyó cada fuente y si cerró: es
+      // exactamente lo que hace falta para ver DÓNDE está el problema.
+      for (const fila of matrix) {
+        expect(typeof fila.field).toBe("string");
+        expect(typeof fila.readings).toBe("object");
+        expect(["ok", "vacio", "conflicto", "advertencia"]).toContain(
+          fila.status,
+        );
+      }
+      expect(matrix.map((f: { field: string }) => f.field)).toContain(
+        "nDocumento",
+      );
+    });
+
+    it("cuando algo NO coincide, la matriz muestra el conflicto", async () => {
+      const { token, id } = await cuentaCoherente();
+      docverify.mutate((res) => {
+        if (res.documentos?.dni_front) {
+          res.documentos.dni_front.ocr.apellido = "OTROAPELLIDO";
+        }
+      });
+      const res = await submit(token, id, "dni").expect(201);
+
+      expect(res.body.status).toBe("FAILED");
+      const apellido = res.body.extraction.matrix.find(
+        (f: { field: string }) => f.field === "apellido",
+      );
+      expect(apellido.status).toBe("conflicto");
+      // Y se ve QUÉ leyó cada fuente, que es lo que permite decidir si el
+      // problema es la foto o el dato cargado en el perfil.
+      expect(Object.values(apellido.readings)).toContain("OTROAPELLIDO");
+    });
+
+    it("el número y el vencimiento leídos del documento viajan aparte", async () => {
+      const { token, id } = await cuentaCoherente();
+      const res = await submit(token, id, "dni").expect(201);
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { id } });
+      expect(res.body.extraction.documentNumber).toBe(user.dni);
+      expect(res.body.extraction.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it("GET /verification/identity/me también lo trae", async () => {
+      const { token, id } = await cuentaCoherente();
+      await submit(token, id, "dni").expect(201);
+
+      const res = await http()
+        .get("/verification/identity/me")
+        .set("Authorization", auth(token))
+        .expect(200);
+      expect(res.body.dni.extraction.extracted.documentos.dni_front).toBeTruthy();
+      expect(res.body.license).toBeNull();
+    });
+  });
+
+  describe("diagnóstico del servidor", () => {
+    it("dice con qué modo corre y si el verificador contesta", async () => {
+      const { token } = await cuentaCoherente();
+      const res = await http()
+        .get("/verification/identity/diagnostics")
+        .set("Authorization", auth(token))
+        .expect(200);
+
+      expect(res.body.mode).toBe("auto");
+      expect(res.body.configured).toBe("auto");
+      expect(res.body.degradedReason).toBeNull();
+      expect(res.body.canVerifyAutomatically).toBe(true);
+      expect(res.body.exposeExtraction).toBe(true);
+    });
   });
 });

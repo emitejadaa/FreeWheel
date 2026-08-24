@@ -104,8 +104,13 @@ const CATALOG: Record<VerificationReasonCode, (ctx: ReasonContext) => string> =
       `No pudimos procesar la foto de ${slotLabel(c.slot)}` +
       `${c.detail ? ` (${c.detail})` : ""}. ${RETRY_HINT}`,
 
-    VERIFICACION_NO_DISPONIBLE: () =>
-      "La verificación automática no está disponible en este momento. " +
+    // `detail` dice POR QUÉ no se pudo (falta Python, falta el storage, el
+    // verificador remoto no contestó). Es información de servidor, no del
+    // documento de la persona, así que se puede mostrar sin filtrar nada de
+    // ella — y sin eso el diagnóstico era adivinar.
+    VERIFICACION_NO_DISPONIBLE: (c) =>
+      "La verificación automática no está disponible en este servidor" +
+      `${c.detail ? `: ${c.detail}` : ""}. ` +
       "Podés reintentar más tarde o pedir que un administrador revise tu caso.",
 
     CODIGO_NO_LEIDO: () =>

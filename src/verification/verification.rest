@@ -166,6 +166,16 @@ authenticated
 ### ── #7 · Verificar el DNI (frente + dorso) ────────────────────────────────
 ### La respuesta YA trae el veredicto: status APPROVED o FAILED con sus
 ### motivos (código estable + mensaje listo para mostrar).
+###
+### Y trae "extraction": TODO lo que leyó el verificador (JSON crudo, foto por
+### foto y protocolo por protocolo) más la comparación campo por campo contra
+### los datos de la cuenta. Es lo que permite ver DÓNDE está el problema: si la
+### foto salió mal, si el OCR leyó cualquier cosa, o si el dato del perfil está
+### mal cargado. Se apaga con VERIFICATION_EXPOSE_EXTRACTION=false.
+###
+### SE PUEDE REENVIAR SIEMPRE (salvo que ya esté APPROVED), incluso con una
+### revisión manual pendiente: mandar fotos nuevas la deja sin efecto. Hay UNA
+### revisión viva por documento y la última que se pide es la que vale.
 ### Límite: 5 cada 15 minutos.
 POST {{baseUrl}}/verification/identity/dni/submit
 Authorization: Bearer {{token}}
@@ -190,6 +200,10 @@ Content-Type: {{contentType}}
 ### ── #9 · Pedir revisión de un administrador ───────────────────────────────
 ### Solo sobre un documento en FAILED. Lo pasa a MANUAL_REVIEW y aparece en
 ### GET /admin/verifications?status=MANUAL_REVIEW. Límite: 3 cada 15 minutos.
+###
+### Pedirla NO cierra la puerta a seguir intentando: se puede reenviar fotos
+### igual, y eso deja el pedido sin efecto. Después del reenvío se puede volver
+### a pedir, y la nueva revisión es sobre ESE resultado.
 POST {{baseUrl}}/verification/identity/dni/request-review
 Authorization: Bearer {{token}}
 
@@ -198,8 +212,24 @@ POST {{baseUrl}}/verification/identity/license/request-review
 Authorization: Bearer {{token}}
 
 ### ── #10 · Estado de mis dos documentos ────────────────────────────────────
-### Nunca devuelve las URLs de las fotos: son datos personales.
+### Nunca devuelve las URLs de las fotos: son datos personales. Cada documento
+### trae su "extraction" igual que el submit.
 GET {{baseUrl}}/verification/identity/me
+Authorization: Bearer {{token}}
+
+### ── #11 · Por qué este servidor verifica (o no) automáticamente ───────────
+### LO PRIMERO que hay que mirar cuando "la verificación no anda". Dice el modo
+### efectivo, por qué degradó si degradó, y si el verificador contesta.
+###
+###   "mode": "auto"        → verifica solo
+###   "mode": "unavailable" → NO puede: falta Python o falta DOCVERIFY_URL.
+###                           Los documentos van a quedar FAILED con ese motivo.
+###   "mode": "manual"      → alguien lo configuró así a propósito
+###
+### En Vercel serverless NO hay Python: para que "auto" funcione hay que
+### desplegar python-verifier/ aparte y cargar DOCVERIFY_URL + DOCVERIFY_TOKEN
+### (ver python-verifier/README.md).
+GET {{baseUrl}}/verification/identity/diagnostics
 Authorization: Bearer {{token}}
 
 ### ── Errores esperables del submit ─────────────────────────────────────────
@@ -208,4 +238,7 @@ Authorization: Bearer {{token}}
 ### 400 DOCUMENT_SLOT_MISMATCH → el archivo es de otro slot o de otra cuenta
 ### 400 DOCUMENT_NOT_FOUND     → la URL es válida pero el archivo no existe
 ### 400 DOCUMENT_ALREADY_APPROVED → ese documento ya está verificado
-### 400 REVIEW_IN_PROGRESS     → está esperando a un admin; no se puede reenviar
+###
+### (REVIEW_IN_PROGRESS ya NO existe: una revisión manual pendiente dejó de
+###  bloquear el reenvío. Era lo que dejaba trabada a una cuenta en un servidor
+###  sin verificador, donde la primera submission caía sola en MANUAL_REVIEW.)

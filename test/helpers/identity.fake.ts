@@ -135,6 +135,7 @@ type Mutator = (response: DocverifyResponse) => void;
 export class FakePythonDocverifyService {
   persona: IdentityPersona | null = null;
   private mutators: Mutator[] = [];
+  private failure: Error | null = null;
   /** Con qué slots se llamó cada vez, para asertar el flujo. */
   readonly calls: DocumentSlot[][] = [];
 
@@ -142,19 +143,71 @@ export class FakePythonDocverifyService {
     this.persona = persona;
   }
 
-  /** Ajusta la próxima respuesta (p. ej. borrar un campo o meter un error). */
+  /**
+   * Hace que el verificador explote, para probar qué pasa cuando el Python se
+   * muere o el verificador remoto no contesta.
+   *
+   * Existe para que NO haya que pisar `analyze` a mano. Cuando un test hacía
+   * `docverify.analyze = () => Promise.reject(...)`, el parche quedaba puesto
+   * para siempre —`reset()` no lo deshacía— y TODOS los tests declarados
+   * después recibían un verificador roto sin enterarse. Esto lo limpia
+   * `reset()` como todo lo demás.
+   */
+  failWith(error: Error): void {
+    this.failure = error;
+  }
+
+  /**
+   * Rompe campos puntuales de las respuestas que vengan (p. ej. borrar un
+   * campo o meter un error).
+   *
+   * Queda puesto hasta que se lo saque: se aplica a TODAS las llamadas
+   * siguientes, no solo a la próxima. Para un test que manda dos veces y
+   * espera que la segunda salga bien, `clearMutators()`.
+   */
   mutate(mutator: Mutator): void {
     this.mutators.push(mutator);
+  }
+
+  /** Saca los mutadores y deja la persona: la próxima respuesta sale perfecta. */
+  clearMutators(): void {
+    this.mutators = [];
   }
 
   reset(): void {
     this.persona = null;
     this.mutators = [];
+    this.failure = null;
     this.calls.length = 0;
   }
 
+  private instalado = true;
+
+  /** Simula un servidor sin verificador (Vercel serverless: sin Python). */
+  makeUnavailable(): void {
+    this.instalado = false;
+  }
+
   available(): Promise<boolean> {
-    return Promise.resolve(true);
+    return Promise.resolve(this.instalado);
+  }
+
+  unavailableReason(): string {
+    return "no hay verificador de documentos configurado (test)";
+  }
+
+  probe(): Promise<{
+    transport: "remote" | "local" | "none";
+    reachable: boolean;
+    detail: string;
+    remoteHealth: unknown;
+  }> {
+    return Promise.resolve({
+      transport: "local" as const,
+      reachable: true,
+      detail: "verificador falso (tests)",
+      remoteHealth: null,
+    });
   }
 
   analyze(
@@ -162,6 +215,7 @@ export class FakePythonDocverifyService {
   ): Promise<DocverifyResponse> {
     const slots = Object.keys(images) as DocumentSlot[];
     this.calls.push(slots);
+    if (this.failure) return Promise.reject(this.failure);
     if (!this.persona) {
       throw new Error(
         "FakePythonDocverifyService: llamá a usePersona() antes del submit",
