@@ -5,7 +5,7 @@
 ### llevan @RequireVerifiedAccount() (teléfono + DNI + licencia aprobados). Las
 ### rutas de solo lectura (GET) requieren cuenta verificada también (guard a
 ### nivel de clase), pero no el decorator explícito.
-### Para dejar cuentas VERIFIED rápido en local: IDENTITY_REVIEW_MODE=auto_approve
+### Para dejar cuentas VERIFIED rápido en local: DOCVERIFY_MODE=auto_approve
 ### + src/verification/verification.rest, o forzarlo con
 ### src/admin/admin.rest (PATCH /admin/verifications/:id/review).
 ###

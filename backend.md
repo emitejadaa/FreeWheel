@@ -423,65 +423,93 @@ Archivos:
 
 - `src/verification/verification.controller.ts`
 - `src/verification/verification.service.ts`
+- `src/verification/verification.module.ts` (resuelve `DOCVERIFY_MODE`)
 - `src/verification/dto/confirm-code.dto.ts`
-- `src/verification/dto/submit-identity.dto.ts`
+- `src/verification/dto/submit-document.dto.ts`
 - `src/verification/dto/upload-signature.dto.ts`
-- `src/verification/identity/identity-documents.service.ts`
-- `src/verification/extraction/barcode-decoder.service.ts` (zxing-wasm: PDF417 + QR)
-- `src/verification/extraction/document-ocr.service.ts` (texto impreso via Groq)
-- `src/verification/extraction/dni-pdf417.parser.ts`
-- `src/verification/extraction/mrz-td1.parser.ts`
-- `src/verification/extraction/license-code.parser.ts`
-- `src/verification/extraction/extraction.types.ts`
+- `src/verification/identity/identity-documents.service.ts` (firma, valida y borra archivos)
+- `src/verification/identity/document-verification.service.ts` (el flujo completo)
+- `src/verification/docverify/docverify.types.ts` (contrato con el verificador)
+- `src/verification/docverify/python-docverify.service.ts` (ejecuta el subproceso)
+- `src/verification/matching/document-match.service.ts` (toda la politica de decision)
 - `src/verification/matching/normalize.util.ts`
-- `src/verification/matching/identity-match.service.ts`
-- `src/verification/review/identity-reviewer.interface.ts`
-- `src/verification/review/identity-review.service.ts`
-- `src/verification/review/document-ai.reviewer.ts`
-- `src/verification/review/auto-approve.reviewer.ts`
-- `src/verification/review/manual.reviewer.ts`
+- `src/verification/errors/verification-reasons.ts` (catalogo de motivos)
+- `python-verifier/` (subproyecto Python: extraccion de datos de las fotos)
 
 Responsabilidades:
 
 - Solicitar/confirmar codigo de email (entregado por `EmailService`).
 - Solicitar/confirmar codigo de telefono (entregado por `SmsService`).
-- Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `documentsSubmitted`, `dateOfBirthProvided`, `identityDataProvided`), `fullyVerified` y `lastReview` (outcome + reason codes).
-- Firmar la subida de cada documento por separado (documento + lado), forzando carpeta, `public_id` y entrega privada.
-- Recibir los cuatro documentos (DNI y licencia, frente y dorso) validando que cada URL sea un asset propio del slot correcto.
-- Revisar los documentos y decidir: extraccion determinista (PDF417 del DNI, QR de la licencia, MRZ con digitos verificadores) + OCR del texto impreso + cruce contra los datos de la cuenta.
-- Reintentar la revision de una solicitud pendiente.
-- Tras cada evento dispara `IdentityReviewService.evaluate`: si el checklist esta completo, el revisor configurado decide.
+- Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `dateOfBirthProvided`, `identityDataProvided`, `dniApproved`, `licenseApproved`), `fullyVerified` y el estado de cada documento con sus motivos.
+- Firmar la subida de cada archivo por separado (documento + lado), forzando carpeta, `public_id` y entrega privada.
+- Recibir las dos fotos de UN documento validando que cada URL sea un asset propio del slot correcto, ejecutar el verificador Python y decidir en el momento.
+- Permitir pedir revision manual de un documento en `FAILED`.
+- Recalcular `User.verificationStatus` tras cada evento (email, telefono, documentos, veredicto de admin).
 
 Estado actual:
 
 - Verificaciones internas con codigos hasheados.
 - Codigos numericos con RNG criptografico y TTL de 10 minutos (constante compartida con la verificacion de email de `AuthModule`).
 - El codigo no se devuelve en la respuesta HTTP; en entornos no productivos se loguea para pruebas manuales.
-- SMS via `SmsModule` con interfaz de proveedor (`SMS_PROVIDER`); solo el provider `mock` (loguea el codigo) esta implementado. Un proveedor real (Twilio, etc.) se agrega sin tocar callers.
-- Revision documental real implementada (`IDENTITY_REVIEW_MODE=document_ai`), con veredicto de tres estados.
+- SMS via `SmsModule` con interfaz de proveedor (`SMS_PROVIDER`); solo el provider `mock` (loguea el codigo) esta implementado.
+- Verificacion documental real con el subproyecto Python, en dos flujos independientes (DNI y licencia).
+
+Como decide:
+
+El verificador Python devuelve, por foto, un objeto por protocolo de lectura
+(`ocr`, `codigo`, `mrz`) con SIEMPRE los mismos nombres de campo, para poder
+cruzar el mismo dato entre fuentes independientes:
+
+| Foto | Protocolos | Campos |
+|---|---|---|
+| `dni_front` | `ocr`, `codigo` | apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaEmision, fechaVencimiento (el codigo no trae vencimiento) |
+| `dni_back` | `ocr`, `mrz` | domicilio, cuil / apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaVencimiento |
+| `license_front` | `ocr` | numLicencia, apellido, nombre, domicilio, fechaNacimiento, fechaVencimiento |
+| `license_back` | `ocr` | cuil, esPrincipiante, finPrincipiante |
+
+`DocumentMatchService` (puro, sin IO) aprueba solo si NADA queda vacio ni en
+conflicto: cada dato coincide entre protocolos y contra la cuenta, el PDF417 y
+el MRZ se pudieron leer, el documento esta vigente, la persona es mayor de 18
+segun el documento, el CUIL tiene checksum valido y contiene el DNI leido, la
+licencia pertenece al mismo titular y su periodo de principiante ya se cumplio.
+Los nombres leidos por optica (OCR y la linea de nombres del MRZ, que no tiene
+digito verificador propio) toleran un caracter mal transcripto por token; el
+PDF417 y el formulario se comparan exactos. El domicilio se compara por
+similitud y nunca rechaza solo: deriva a revision humana.
+
+Ciclo de vida de un documento (`DocumentVerification`, una fila viva por
+usuario y tipo):
+
+```
+submit -> APPROVED | FAILED
+FAILED -> reenviar fotos (reemplaza el intento y borra sus archivos)
+       -> request-review -> MANUAL_REVIEW -> admin: APPROVED | REJECTED
+REJECTED -> los archivos se borran del storage; se puede volver a empezar
+```
 
 Diseno reemplazable:
 
-- Seam `IdentityReviewer` (`IDENTITY_REVIEWER`) elegido por `IDENTITY_REVIEW_MODE`:
-  - `document_ai` (default): revision documental completa. Si se pide a mano sin `CLOUDINARY_*` falla al arrancar; si es solo el default y faltan, cae a `manual` avisando. `GROQ_API_KEY` **no** es requisito: sin ella se pierde el OCR (corroboracion), no la verificacion.
-  - `manual`: nada se aprueba solo; decide un admin.
-  - `ai`: revision liviana; un modelo de vision confirma que cada foto sea el documento pedido y extrae los datos visibles. Si la IA no responde, el caso NO se aprueba: queda para el admin.
-  - `auto_approve`: aprueba todo. Solo desarrollo y tests.
-- Puertos de extraccion inyectables y fakeables: `BarcodeDecoderService` (determinista, zxing-wasm) y `DocumentOcrService` (probabilistico, Groq). Cambiar de proveedor de OCR (Claude, Google Vision) toca un solo archivo.
-- `IdentityMatchService` es puro (sin IO): toda la politica de decision vive ahi y se testea con una matriz de casos.
+- `DOCVERIFY_MODE` elige el modo: `auto` (default; sin `CLOUDINARY_*` o sin el verificador Python instalado degrada a `manual` avisando, y si se pidio a mano sin credenciales falla al arrancar), `manual` (decide siempre un admin) y `auto_approve` (aprueba todo; solo desarrollo y tests).
+- `PythonDocverifyService` es el unico punto de contacto con el subproyecto y se fakea entero en los E2E (`test/helpers/identity.fake.ts`).
+- El subproyecto Python es reemplazable por cualquier cosa que respete el contrato de `docverify.types.ts`.
+- `DocumentMatchService` es puro: toda la politica de decision vive ahi y se testea sin base ni red.
 
-Seguridad:
+Seguridad y aislamiento del verificador:
 
-- Los documentos se suben como `type=authenticated`: sus URLs sin firma devuelven 401. La base guarda la URL canonica sin firma; las URLs firmadas se generan al momento y solo para admins.
+- El subproceso no abre puertos, no sale a la red y no recibe ninguna credencial del backend (entorno minimo: `PATH` y `LANG`). No hay forma de llegar a el mas que por `PythonDocverifyService`, que solo usa el flujo de verificacion.
+- Ningun dato del usuario viaja por `argv`: solo rutas de archivo que genera el propio servicio con `randomUUID` en un directorio temporal privado (`0600`), borrado siempre al terminar.
+- Timeout duro con `SIGKILL` (`DOCVERIFY_TIMEOUT_MS`): un analisis colgado nunca deja el request vivo.
+- Los documentos se suben como `type=authenticated`: sus URLs sin firma devuelven 401. La base guarda la URL canonica sin firma; las firmadas se generan al momento y solo para admins.
 - El `public_id` lo arma el servidor a partir del JWT (`identity/<userId>/<documento>_<lado>_...`), asi que un usuario no puede subir a la carpeta de otro ni cruzar un documento de slot.
 - El submit valida cloud, tipo de entrega, prefijo de carpeta, slot y existencia real del asset antes de aceptar una URL.
 - Antifraude: `User.dni`/`User.cuil` son unicos, y la aprobacion revalida dentro de la transaccion que el documento no verifique ya otra cuenta.
-- Minimizacion de datos (Ley 25.326): el usuario solo ve codigos de motivo; los datos extraidos y el reporte de cruces quedan para admins y nunca entran en `AuditLog`.
-- Los campos que respaldan la identidad (`firstName`, `lastName`, `dni`, `cuil`, `address`) quedan inmutables una vez `VERIFIED`.
+- Minimizacion de datos (Ley 25.326): el usuario solo ve motivos con codigo y mensaje, nunca los valores leidos; la extraccion y el reporte de cruces quedan para admins y nunca entran en `AuditLog`. Un rechazo de admin borra las fotos del storage.
+- Los campos que respaldan la identidad (`firstName`, `lastName`, `dni`, `cuil`, `address`) quedan inmutables una vez que hay un documento aprobado.
 
 Pendiente:
 
-- Verificacion facial con prueba de vida (liveness): captura por camara con tareas guiadas al crear la cuenta, y re-chequeo al iniciar sesion en un dispositivo nuevo o ante acciones de alta sensibilidad. La columna `UserVerification.selfieUrl` queda reservada para esto.
+- Verificacion del telefono como requisito (`REQUIRE_PHONE_VERIFICATION`) con una pasarela de SMS real.
+- Verificacion facial con prueba de vida (liveness).
 - Politica de retencion/purga del JSON `extracted` (datos personales) pasados N dias de la decision.
 - Un cambio legitimo de nombre despues de verificar requiere intervencion de un admin.
 
@@ -679,8 +707,8 @@ Query soportada en catalogo:
 | POST | `/verification/phone/confirm` | JWT | Confirma codigo phone |
 | GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`, `lastReview`) |
 | POST | `/verification/identity/upload-signature` | JWT | Firma la subida de UN documento (`document` + `side`) |
-| POST | `/verification/identity/submit` | JWT | Envia DNI y licencia (frente/dorso) por URL y dispara la revision |
-| POST | `/verification/identity/review-retry` | JWT | Reintenta la revision de la solicitud pendiente |
+| POST | `/verification/identity/:document/submit` | JWT | Envia las 2 fotos de un documento (`dni`\|`license`) y devuelve el veredicto |
+| POST | `/verification/identity/:document/request-review` | JWT | Pide que un admin revise a mano un documento en `FAILED` |
 | GET | `/verification/identity/me` | JWT | Solicitudes propias (sin URLs ni datos extraidos) |
 
 ### Bookings
@@ -1029,24 +1057,29 @@ Indices:
 - `userId, targetType, consumedAt`
 - `expiresAt`
 
-#### UserVerification
+#### DocumentVerification
 
-Metadata de verificacion de identidad.
+Verificacion de UN documento. Una fila viva por usuario y tipo: reenviar fotos
+reemplaza la anterior (y borra sus archivos del storage); el historial de
+veredictos queda en `AuditLog`.
 
 Campos:
 
 - `userId`
-- `status`
-- `documentUrl`
-- `selfieUrl`
-- `notes`
-- `reviewedAt`
+- `type` (`DNI` | `LICENSE`)
+- `status` (`APPROVED` | `FAILED` | `MANUAL_REVIEW` | `REJECTED`)
+- `frontUrl`, `backUrl` (canonicas sin firma; en `REJECTED` quedan en null)
+- `documentNumber`, `expiresAt` (leidos del documento, no declarados)
+- `extracted` (JSON crudo del verificador), `matchReport` (motivos + matriz)
+- `reasonCodes` (codigos estables del ultimo veredicto)
+- `reviewRequestedAt`, `reviewedBy`, `reviewedAt`, `notes`
 - timestamps
 
 Indices:
 
-- `userId`
+- `userId, type` (unico)
 - `status`
+- `documentNumber`
 
 #### MediaAsset
 
@@ -1146,136 +1179,111 @@ Indices:
 
 ## 9. Flujos De Dominio
 
-### Verificacion De Identidad (document_ai)
+### Verificacion Documental (DNI y licencia)
 
 Objetivo: que el titular de una cuenta verificada sea una persona real, mayor
 de edad y habilitada para conducir. Es el requisito para todas las acciones
 sensibles (`VerifiedAccountGuard`).
 
+**Dos flujos separados.** DNI y licencia se mandan y se aprueban por separado:
+se pueden hacer los dos a la vez o uno hoy y el otro manana, y puede pasar que
+uno se apruebe y el otro no. La cuenta queda `VERIFIED` cuando los DOS estan
+aprobados (mas el email, y el telefono si `REQUIRE_PHONE_VERIFICATION=true`).
+
 Pasos:
 
 1. El usuario carga a mano en su perfil `dni`, `cuil` y `address`
    (`PATCH /users/me`). El CUIL se valida con checksum mod-11 y debe contener
-   el DNI informado.
-2. Por cada documento y lado pide una firma
+   el DNI informado. Sin estos datos (mas nombre, apellido y fecha de
+   nacimiento) el submit responde `400 PERFIL_INCOMPLETO` diciendo cuales
+   faltan: son contra los que se cruza lo que dicen los documentos.
+2. Por cada archivo pide una firma
    (`POST /verification/identity/upload-signature` con `document` + `side`).
    El servidor devuelve `folder=identity/<userId>`,
    `public_id=<documento>_<lado>_<epoch>_<nonce>` y `type=authenticated`.
 3. El cliente sube el archivo directo a Cloudinary con esos parametros.
-4. Envia las cuatro URLs (`POST /verification/identity/submit`). El backend
-   valida cloud, tipo de entrega, carpeta, slot y existencia de cada asset;
-   persiste la URL canonica sin firma y crea la solicitud en `ID_SUBMITTED`.
-5. Si el checklist esta completo (email + telefono + fecha de nacimiento +
-   datos de identidad + 4 documentos), corre la revision. Son **tres modulos
-   separados**, cada uno testeable por su cuenta, que orquesta
-   `IdentityVerificationPipeline`:
+4. Envia las dos URLs de un documento
+   (`POST /verification/identity/:document/submit`). El backend valida cloud,
+   tipo de entrega, carpeta, slot y existencia de cada asset, y persiste la URL
+   canonica sin firma.
+5. Descarga las dos fotos y se las pasa al **verificador Python**
+   (`python-verifier/`), que corre como subproceso aislado y devuelve, por
+   foto, un objeto por protocolo de lectura con SIEMPRE los mismos nombres de
+   campo:
 
-   | modulo | que hace | depende de un modelo |
+   | Foto | Protocolos | Campos |
    | --- | --- | --- |
-   | `extraction/ocr/` | lee el texto impreso y dice que dato es cada cosa | si |
-   | `extraction/code-extraction.service.ts` | decodifica PDF417 / QR / MRZ | no |
-   | `matching/field-comparison.ts` | cruza cada dato contra cada fuente | no |
+   | `dni_front` | `ocr`, `codigo` | apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaEmision, fechaVencimiento (el codigo no trae vencimiento) |
+   | `dni_back` | `ocr`, `mrz` | domicilio, cuil / apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaVencimiento |
+   | `license_front` | `ocr` | numLicencia, apellido, nombre, domicilio, fechaNacimiento, fechaVencimiento |
+   | `license_back` | `ocr` | cuil, esPrincipiante, finPrincipiante |
 
-   Al modelo se le pide UNA sola cosa: transcribir lo que ve e identificar cada
-   dato. El prompt le prohibe explicitamente comparar o validar contra
-   cualquier otra fuente; eso lo hace el tercer modulo, en codigo.
+   El verificador **no decide nada**: rectifica la foto (bordes, perspectiva,
+   orientacion), decodifica el PDF417 con `zxing-cpp`, lee el MRZ y valida sus
+   digitos verificadores, hace OCR posicional por zonas y limpia cada valor
+   segun su tipo. Un campo que no se pudo leer viene en `null`; un protocolo
+   que fallo entero trae ademas su `error` con codigo y mensaje.
 
-   Cada etapa queda registrada con lo que tardo y, si fallo, con un error del
-   catalogo (`errors/verification-errors.ts`): codigo estable, mensaje que dice
-   que paso y pista que dice que hacer. Ese rastro se guarda en la columna
-   `extracted` bajo `trace`.
+6. `DocumentMatchService` (puro, sin IO) cruza todo y decide. Aprueba **solo**
+   si no queda nada vacio ni en conflicto:
 
-   El detalle de los pasos:
-   - descarga las cuatro imagenes desde el almacenamiento privado;
-   - decodifica el **PDF417** del DNI (fuente autoritativa) y el **QR/PDF417**
-     de la licencia, reintentando con variantes de la imagen (ampliada, escala
-     de grises). Los busca en las **dos caras** de cada documento: segun el
-     ejemplar el codigo esta impreso de un lado o del otro;
-   - lee el **texto impreso** de los cuatro lados con OCR, que ademas
-     clasifica que documento/lado es cada foto. **El OCR es opcional**: es la
-     unica pieza que depende de un modelo de vision, y lo que aporta
-     (domicilio, MRZ, vencimientos) corrobora pero no ancla. Si no contesta, la
-     revision decide igual con el PDF417 y el formulario;
-   - parsea el **MRZ** del dorso del DNI y valida sus digitos verificadores
-     (respaldo autoritativo cuando el PDF417 no se pudo leer);
-   - cruza todo entre si y contra los datos de la cuenta.
-6. Veredicto (tres estados):
-   - **approved**: solicitud y usuario pasan a `VERIFIED`.
-   - **rejected**: hay una contradiccion concluyente (nombre, apellido, numero
-     de documento o fecha de nacimiento distintos; menor de 18; DNI o licencia
-     vencidos; CUIL invalido o de otro DNI; foto en el slot equivocado).
-     Solicitud y usuario quedan `REJECTED`; el usuario reenvia documentos.
-   - **inconclusive**: no se pudo leer algo o hay una senal debil (codigo
-     ilegible, domicilio escrito distinto, PDF417 y MRZ que se contradicen,
-     timeout del proveedor). La solicitud **queda `ID_SUBMITTED`** para la cola
-     de admins y el usuario puede reintentar con
-     `POST /verification/identity/review-retry`.
+   | Chequeo | DNI | Licencia |
+   | --- | --- | --- |
+   | PDF417 legible | obligatorio | - |
+   | MRZ con digitos verificadores validos | obligatorio | - |
+   | Apellido y nombre coinciden con la cuenta | si | si |
+   | Numero de documento coincide entre todas las fuentes y la cuenta | si | el nro de licencia es el DNI del titular |
+   | Fecha de nacimiento coincide entre todas las fuentes y la cuenta | si | si |
+   | Mayor de 18 segun el documento | si | si |
+   | Sexo coincide entre protocolos | si | - |
+   | Fecha de emision coincide entre protocolos | si | - |
+   | Documento vigente | si | si |
+   | CUIL: legible, checksum valido, igual al de la cuenta, contiene el DNI | si | si |
+   | Periodo de principiante ya cumplido | - | si |
+   | Domicilio | compara, no bloquea por si solo | idem |
 
-Criterio de fondo: un dato que no se pudo leer nunca rechaza a una persona
-real; deriva a revision humana. Solo rechaza automaticamente lo que se leyo
-bien y no coincide.
+   Detalles del criterio: los nombres leidos por **optica** (OCR y la linea de
+   nombres del MRZ, que en TD1 no tiene digito verificador propio) toleran un
+   caracter mal transcripto por token de 4+ letras; el PDF417 y el formulario
+   se comparan exactos. La **edad** se evalua sobre lo que dice el documento
+   aunque no coincida con la cuenta: un documento que dice que la persona es
+   menor tiene que decirlo con ese motivo. El **domicilio** se compara por
+   similitud de tokens y su mensaje es mas suave, porque el formato impreso
+   varia tanto que un conflicto suele ser formato y no fraude.
 
-Cruces que se evaluan (fuentes: PDF417, MRZ, OCR de cada lado, codigo de la
-licencia y datos de la cuenta):
+7. Veredicto:
+   - **APPROVED**: el documento queda verificado. Si el otro tambien lo esta,
+     la cuenta pasa a `VERIFIED`.
+   - **FAILED**: la respuesta trae los motivos (codigo estable + mensaje en
+     castellano que dice que campo y en que foto fallo, sin exponer el valor
+     leido). Al usuario le quedan dos salidas: **reenviar fotos** mejores (el
+     nuevo intento reemplaza al anterior y borra sus archivos) o
+     `POST /verification/identity/:document/request-review`, que lo pasa a
+     `MANUAL_REVIEW`.
+   - **MANUAL_REVIEW**: espera a un admin, que resuelve con
+     `PATCH /admin/verifications/:id/review`. `APPROVED` lo aprueba;
+     `REJECTED` lo rechaza **y borra la documentacion del storage**.
 
-Solo la primera columna de "ilegible" manda a revision manual. Todos esos
-chequeos se resuelven con el PDF417 (o un MRZ valido) mas el formulario: son
-justamente los que no dependen de ningun modelo. Los que necesitan OCR frenan
-la aprobacion cuando **contradicen** al documento, pero no cuando no se pueden
-leer; si bloquearan, un problema con el proveedor de IA dejaria todas las
-cuentas esperando a un admin.
-
-| Chequeo | Falla concluyente | Ilegible |
-| --- | --- | --- |
-| Fuente autoritativa presente (PDF417 o MRZ valido) | - | manual |
-| Numero de documento (todas las fuentes + cuenta) | rechaza | manual |
-| Apellido / primer nombre | rechaza | manual |
-| Fecha de nacimiento | rechaza | manual |
-| Mayor de 18 al dia de hoy | rechaza | manual |
-| CUIL: checksum y DNI embebido | rechaza | manual |
-| Foto que el OCR miro y no reconocio | - | manual |
-| Documento/lado correcto por slot | rechaza | no bloquea |
-| DNI vigente (vencimiento del MRZ u OCR) | rechaza | no bloquea |
-| Licencia vigente | rechaza | no bloquea |
-| Licencia del mismo titular que el DNI | rechaza | no bloquea |
-| CUIL: prefijo vs sexo, CUIL impreso | manual | manual |
-| Sexo (PDF417 vs MRZ vs OCR) | manual | manual |
-| Domicilio (similitud de tokens) | manual (nunca rechaza) | manual |
-| PDF417 vs MRZ en desacuerdo | manual (nunca aprueba) | - |
-| Codigo QR de la licencia | informativo | informativo |
+Catalogo de motivos (`errors/verification-reasons.ts`): `PERFIL_INCOMPLETO`,
+`FOTO_NO_PROCESABLE`, `VERIFICACION_NO_DISPONIBLE`, `CODIGO_NO_LEIDO`,
+`MRZ_NO_LEIDO`, `CAMPO_ILEGIBLE`, `CAMPO_NO_COINCIDE`, `DOMICILIO_ILEGIBLE`,
+`DOMICILIO_NO_COINCIDE`, `DNI_VENCIDO`, `LICENCIA_VENCIDA`, `MENOR_DE_EDAD`,
+`PRINCIPIANTE_VIGENTE`, `PRINCIPIANTE_NO_DETERMINADO`,
+`CUIL_NO_CORRESPONDE_AL_DNI`, `LICENCIA_NO_CORRESPONDE_AL_DNI`,
+`DOCUMENTO_YA_VERIFICADO`, `RECHAZADO_POR_ADMIN`.
 
 Antifraude: `User.dni` y `User.cuil` son unicos, la aprobacion revalida dentro
 de la transaccion que el documento no verifique ya otra cuenta, y los campos
-que respaldan la identidad quedan inmutables una vez `VERIFIED`.
+que respaldan la identidad quedan inmutables una vez que hay un documento
+aprobado.
 
-#### Matriz de comparacion
+#### Matriz de evidencia
 
-`matchReport.matrix` trae, para cada dato comparable (`lastName`, `firstName`,
-`documentNumber`, `birthDate`, `sex`, `cuil`, `address`, `dniExpiry`,
-`licenseExpiry`), que dijo cada fuente (`form`, `pdf417_dni`, `mrz`,
-`license_code` y el OCR de cada uno de los cuatro lados), con el texto tal cual
-esta impreso y el normalizado, si coinciden entre si, y de donde sale el valor
-que se toma por bueno. La precedencia entre fuentes esta declarada en
-`FIELD_PRECEDENCE`, con dos asimetrias a proposito: el vencimiento del DNI sale
-del MRZ antes que del texto impreso, y el de la licencia al reves.
-
-La matriz es EVIDENCIA, no decision: cada check conserva su propio criterio (el
-domicilio se compara por parecido, los nombres admiten un segundo nombre de
-mas, los vencimientos se miran contra la fecha de hoy).
-
-#### Diagnostico (solo para probar)
-
-| Ruta | Que hace |
-| --- | --- |
-| `POST /verification/diagnose/document` | Todo lo que se puede leer de UNA foto: codigos con su payload crudo, texto leido con la posicion de cada dato, etapas y errores. Acepta `image` (dataURL) o `url` (un documento propio ya subido). |
-| `POST /verification/diagnose/compare` | La matriz, los checks y el veredicto a partir de lo que devolvio el endpoint anterior. Los codigos se vuelven a interpretar desde su payload crudo: decide el backend, no el cliente. |
-| `GET /verification/diagnose/info` | Las tablas de referencia (fuentes, precedencia, que codigos rechazan y cuales mandan a revision). |
-
-Corren el mismo pipeline que la revision real y **no escriben ninguna fila**:
-no cambian el estado de la cuenta ni dejan registro de auditoria. Hoy piden
-sesion pero no rol de administrador, y devuelven datos personales completos del
-documento que se les manda: **antes de produccion hay que cerrarlos** (esta
-anotado en el encabezado de `diagnostics.controller.ts`).
+`matchReport.matrix` trae, para cada campo comparado, que dijo cada fuente
+(`cuenta`, `ocr <slot>`, `codigo`, `mrz`) y un estado (`ok`, `vacio`,
+`conflicto`, `advertencia`). Es EVIDENCIA para el admin, no la decision: cada
+chequeo conserva su propio criterio. Contiene datos personales, asi que solo se
+expone en `GET /admin/verifications/:id/documents`.
 
 ### Flujo De Reserva Actual
 
@@ -1534,15 +1542,20 @@ SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
 # CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
 CORS_STRICT=""
-# Verificacion de identidad: document_ai (produccion) | manual | auto_approve
-IDENTITY_REVIEW_MODE="auto_approve"
-IDENTITY_REVIEW_TIMEOUT_MS=45000
-# Requeridas por IDENTITY_REVIEW_MODE=document_ai (falla al arrancar sin ellas)
+# Verificacion documental: auto (produccion) | manual | auto_approve
+DOCVERIFY_MODE="auto_approve"
+# Donde vive el subproyecto Python y con que interprete corre (por defecto
+# ./python-verifier y su propio venv). Necesita el binario `tesseract` con el
+# idioma espanol instalado en el sistema.
+DOCVERIFY_DIR=""
+DOCVERIFY_PYTHON=""
+DOCVERIFY_TIMEOUT_MS=120000
+# Requeridas por DOCVERIFY_MODE=auto (falla al arrancar sin ellas)
 CLOUDINARY_CLOUD_NAME=""
 CLOUDINARY_API_KEY=""
 CLOUDINARY_API_SECRET=""
-# Opcional para document_ai: sin ella no hay OCR del texto impreso, pero la
-# revision sigue decidiendo con el PDF417 del DNI y los datos del formulario.
+# Solo para el chatbot y la revision de fotos de VEHICULOS: la verificacion
+# documental no usa ningun modelo de vision.
 GROQ_API_KEY=""
 PAYMENTS_PROVIDER="mock"
 STRIPE_SECRET_KEY=""
@@ -1707,7 +1720,7 @@ Alta prioridad:
   por camara con una serie de tareas guiadas (girar la cabeza, parpadear,
   repetir una frase) al crear la cuenta, guardando el descriptor facial; y
   re-chequeo al iniciar sesion desde un dispositivo nuevo o antes de una
-  accion de alta sensibilidad. La columna `UserVerification.selfieUrl` esta
+  accion de alta sensibilidad. La columna `DocumentVerification` no guarda selfie: esa pieza esta
   reservada para esto y el cruce documental ya deja el hueco donde
   engancharlo.
 - Politica de retencion/purga del JSON `extracted` (datos personales) pasados

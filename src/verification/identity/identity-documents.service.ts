@@ -1,30 +1,12 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
-import { UserVerification, VerificationStatus } from "@prisma/client";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import { CloudinaryService } from "../../media/cloudinary.service";
-import { SubmitIdentityDto } from "../dto/submit-identity.dto";
+import { DocumentSlot } from "../docverify/docverify.types";
+import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import { UploadSignatureDto } from "../dto/upload-signature.dto";
 
-/** Slot = documento + lado. Un slot por columna de UserVerification. */
-export const IDENTITY_SLOTS = [
-  "dni_front",
-  "dni_back",
-  "license_front",
-  "license_back",
-] as const;
-
-export type IdentitySlot = (typeof IDENTITY_SLOTS)[number];
-
-/** Campo del DTO/columna ↔ slot que debe contener. */
-export const SLOT_BY_FIELD: Record<
-  "dniFrontUrl" | "dniBackUrl" | "licenseFrontUrl" | "licenseBackUrl",
-  IdentitySlot
-> = {
-  dniFrontUrl: "dni_front",
-  dniBackUrl: "dni_back",
-  licenseFrontUrl: "license_front",
-  licenseBackUrl: "license_back",
-};
+/** Tipo de documento en minúscula, como viaja en las URLs y los public_id. */
+export type DocumentKind = "dni" | "license";
 
 const ALLOWED_FORMATS = ["jpg", "jpeg", "png", "webp"];
 
@@ -35,18 +17,11 @@ export function identityFolder(userId: string): string {
   return `${IDENTITY_FOLDER_PREFIX}/${userId}`;
 }
 
-export interface IdentitySubmissionView {
-  id: string;
-  status: VerificationStatus;
-  createdAt: Date;
-  reviewedAt: Date | null;
-  reasonCodes: string[];
-  documents: {
-    dniFront: boolean;
-    dniBack: boolean;
-    licenseFront: boolean;
-    licenseBack: boolean;
-  };
+export function slotFor(
+  kind: DocumentKind,
+  side: "front" | "back",
+): DocumentSlot {
+  return `${kind}_${side}`;
 }
 
 interface ParsedAsset {
@@ -55,41 +30,32 @@ interface ParsedAsset {
 }
 
 /**
- * Todo lo que rodea a los archivos de identidad: firma de subida por slot,
+ * Todo lo que rodea a los ARCHIVOS de identidad: firma de subida por slot,
  * validación de que cada URL enviada es realmente nuestra y corresponde al
- * slot en el que llegó, y proyección sanitizada para el usuario.
+ * slot en el que llegó, y borrado definitivo cuando una verificación se
+ * rechaza o se reemplaza.
  *
  * Reglas de seguridad que implementa:
  * - carpeta y public_id los fija el servidor a partir del JWT, nunca el
  *   cliente → nadie puede subir a la carpeta de otro usuario;
  * - type=authenticated → los documentos no son legibles públicamente;
- * - el submit solo acepta URLs de nuestro cloud, bajo identity/<userId>/, con
- *   el prefijo de slot correcto y que existan de verdad en Cloudinary.
+ * - el submit solo acepta URLs de nuestro cloud, bajo identity/<userId>/,
+ *   con el prefijo de slot correcto y que existan de verdad en Cloudinary.
  */
 @Injectable()
 export class IdentityDocumentsService {
+  private readonly logger = new Logger(IdentityDocumentsService.name);
+
   constructor(private readonly cloudinary: CloudinaryService) {}
 
   /**
-   * Firma la subida de UN slot. El cliente hace POST multipart a
-   * https://api.cloudinary.com/v1_1/<cloudName>/image/upload con file,
-   * api_key y exactamente los params firmados que devolvemos.
+   * Firma la subida de UN slot (documento + lado). El cliente hace POST
+   * multipart a https://api.cloudinary.com/v1_1/<cloudName>/image/upload
+   * con file, api_key y exactamente los params firmados que devolvemos.
    */
   signUpload(userId: string, dto: UploadSignatureDto) {
-    // La selfie no tiene lado; los documentos sí, y sin él no habría slot que
-    // atar al archivo (que es lo que impide confundir frente con dorso).
-    if (dto.document === "selfie") {
-      if (dto.side) {
-        throw new BadRequestException("La selfie no lleva lado");
-      }
-    } else if (!dto.side) {
-      throw new BadRequestException(
-        'Falta "side" ("front" o "back") para este documento',
-      );
-    }
-
     const folder = identityFolder(userId);
-    const slot = dto.side ? `${dto.document}_${dto.side}` : dto.document;
+    const slot = slotFor(dto.document, dto.side);
     const publicId = `${folder}/${slot}_${Date.now()}_${randomBytes(4).toString("hex")}`;
     const timestamp = Math.round(Date.now() / 1000);
 
@@ -116,42 +82,37 @@ export class IdentityDocumentsService {
   }
 
   /**
-   * Valida las cuatro URLs (y la selfie si vino) y devuelve las URLs
-   * canónicas sin firma que se persisten. Una URL sin firma sobre un asset
-   * authenticated es inerte: Cloudinary responde 401 a quien la tenga.
+   * Valida las dos URLs de un documento (frente y dorso) y devuelve las
+   * formas canónicas sin firma que se persisten. Una URL sin firma sobre un
+   * asset authenticated es inerte: Cloudinary responde 401 a quien la tenga.
    */
   async validateSubmission(
     userId: string,
-    dto: SubmitIdentityDto,
-  ): Promise<
-    Record<keyof typeof SLOT_BY_FIELD, string> & { selfieUrl?: string }
-  > {
-    const entries = Object.entries(SLOT_BY_FIELD) as [
-      keyof typeof SLOT_BY_FIELD,
-      IdentitySlot,
-    ][];
+    kind: DocumentKind,
+    dto: SubmitDocumentDto,
+  ): Promise<{ frontUrl: string; backUrl: string }> {
+    const parsed = [
+      {
+        slot: slotFor(kind, "front"),
+        asset: this.parseIdentityUrl(
+          userId,
+          slotFor(kind, "front"),
+          dto.frontUrl,
+        ),
+      },
+      {
+        slot: slotFor(kind, "back"),
+        asset: this.parseIdentityUrl(
+          userId,
+          slotFor(kind, "back"),
+          dto.backUrl,
+        ),
+      },
+    ];
 
-    const parsed = entries.map(([field, slot]) => ({
-      field: field as keyof typeof SLOT_BY_FIELD | "selfieUrl",
-      slot: slot as IdentitySlot | "selfie",
-      asset: this.parseIdentityUrl(userId, slot, dto[field]),
-    }));
-
-    // La selfie es opcional, pero si viene se valida igual que un documento:
-    // una URL arbitraria guardada acá la termina abriendo un admin.
-    if (dto.selfieUrl) {
-      parsed.push({
-        field: "selfieUrl",
-        slot: "selfie",
-        asset: this.parseIdentityUrl(userId, "selfie", dto.selfieUrl),
-      });
-    }
-
-    // Existencia en paralelo: cuatro llamadas independientes a la Admin API.
     const existence = await Promise.all(
       parsed.map(({ asset }) => this.cloudinary.resourceExists(asset.publicId)),
     );
-
     parsed.forEach(({ slot }, index) => {
       if (!existence[index]) {
         throw new BadRequestException({
@@ -163,9 +124,46 @@ export class IdentityDocumentsService {
       }
     });
 
-    return Object.fromEntries(
-      parsed.map(({ field, asset }) => [field, this.canonicalUrl(asset)]),
-    ) as Record<keyof typeof SLOT_BY_FIELD, string> & { selfieUrl?: string };
+    return {
+      frontUrl: this.canonicalUrl(parsed[0].asset),
+      backUrl: this.canonicalUrl(parsed[1].asset),
+    };
+  }
+
+  /** Descarga los bytes de un documento ya persistido, acotados en tamaño. */
+  download(url: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
+    const asset = this.parsePersistedUrl(url);
+    if (!asset) {
+      throw new BadRequestException("URL de documento inválida");
+    }
+    // Acotada por Cloudinary al entregar: suficiente para leer códigos y
+    // texto, sin cargar fotos de decenas de MB en memoria.
+    return this.cloudinary.download(asset.publicId, {
+      transformation: "c_limit,w_2000,q_auto:best",
+      format: "jpg",
+    });
+  }
+
+  /**
+   * Borra del storage los archivos de una verificación (rechazo de un
+   * admin, o reemplazo por un reenvío). Best-effort registrado: si un
+   * borrado falla queda en el log — preferimos completar el flujo antes
+   * que dejar al usuario trabado por un fallo de infraestructura.
+   */
+  async deleteDocuments(urls: (string | null)[]): Promise<void> {
+    for (const url of urls) {
+      if (!url) continue;
+      const asset = this.parsePersistedUrl(url);
+      if (!asset) continue;
+      try {
+        await this.cloudinary.destroy(asset.publicId);
+      } catch (error) {
+        this.logger.error(
+          `No se pudo borrar ${asset.publicId} del storage: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
   }
 
   /** publicId + formato desde una URL canónica ya persistida. */
@@ -179,26 +177,9 @@ export class IdentityDocumentsService {
     return { publicId: match[1], format: match[2].toLowerCase() };
   }
 
-  /** Proyección segura: sin URLs, sin notas internas, sin datos extraídos. */
-  toPublicView(submission: UserVerification): IdentitySubmissionView {
-    return {
-      id: submission.id,
-      status: submission.status,
-      createdAt: submission.createdAt,
-      reviewedAt: submission.reviewedAt,
-      reasonCodes: readReasonCodes(submission.matchReport),
-      documents: {
-        dniFront: Boolean(submission.dniFrontUrl),
-        dniBack: Boolean(submission.dniBackUrl),
-        licenseFront: Boolean(submission.licenseFrontUrl),
-        licenseBack: Boolean(submission.licenseBackUrl),
-      },
-    };
-  }
-
   private parseIdentityUrl(
     userId: string,
-    slot: IdentitySlot | "selfie",
+    slot: DocumentSlot,
     url: string,
   ): ParsedAsset {
     const asset = this.parsePersistedUrl(url);
@@ -238,18 +219,4 @@ export class IdentityDocumentsService {
   private escapeRegex(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-}
-
-/** reasonCodes del matchReport (JSON) tolerando filas viejas o vacías. */
-export function readReasonCodes(matchReport: unknown): string[] {
-  if (
-    matchReport &&
-    typeof matchReport === "object" &&
-    Array.isArray((matchReport as { reasonCodes?: unknown }).reasonCodes)
-  ) {
-    return (matchReport as { reasonCodes: unknown[] }).reasonCodes.filter(
-      (code): code is string => typeof code === "string",
-    );
-  }
-  return [];
 }

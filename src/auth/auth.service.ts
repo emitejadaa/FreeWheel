@@ -26,7 +26,7 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { UsersService } from "../users/users.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../email/email.service";
-import { IdentityReviewService } from "../verification/review/identity-review.service";
+import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { GoogleProfilePayload } from "./strategies/google.strategy";
 import { assertFound } from "../common/utils/entity.util";
 import {
@@ -48,7 +48,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
-    private readonly identityReview: IdentityReviewService,
+    private readonly documentVerification: DocumentVerificationService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -234,7 +234,7 @@ export class AuthService {
         },
       });
 
-      await this.identityReview.evaluate(userId);
+      await this.documentVerification.recomputeAccountStatus(userId);
       this.logger.log(`Email verified for user ${userId}`);
     }
 
@@ -277,7 +277,7 @@ export class AuthService {
         data: { dateOfBirth: parseBirthDate(dto.dateOfBirth) },
       });
 
-      await this.identityReview.evaluate(userId);
+      await this.documentVerification.recomputeAccountStatus(userId);
       this.logger.log(`Profile completed (dateOfBirth) for user ${userId}`);
     }
 

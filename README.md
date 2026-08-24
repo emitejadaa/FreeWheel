@@ -32,7 +32,8 @@ src/users                        Perfil propio y serializacion segura de usuario
 src/vehicles                     CRUD de vehiculos con ownership
 src/listings                     CRUD/catalogo publico de publicaciones
 src/availability                 Disponibilidad y bloqueos manuales por listing
-src/verification                 Codigos email/phone e identidad metadata
+src/verification                 Codigos email/phone y verificacion documental
+python-verifier                  Subproyecto Python: extrae datos de las fotos
 src/bookings                     Reservas y tokens de pickup/return
 src/admin                        Operaciones protegidas por rol ADMIN
 src/media                        Registro de assets externos por metadata
@@ -146,12 +147,14 @@ Modelos principales:
 - `ListingAvailabilityBlock`: bloqueos manuales por owner para impedir reservas en rangos concretos.
 - `Booking`: reservas con snapshots de precio, estado y tokens de entrega/devolucion.
 - `VerificationCode`: codigos hasheados para email y password reset.
-- `UserVerification`: metadata de verificacion de identidad.
+- `DocumentVerification`: una fila viva por documento (DNI/licencia) y usuario:
+  estado, fotos, datos extraidos y motivos del ultimo veredicto.
 - `PaymentRecord`: registro de sesiones/eventos del proveedor mock, disenado para reemplazo por proveedor real.
 - `MediaAsset`: metadata de archivos externos.
 - `AuditLog`: auditoria administrativa.
 
-Enums relevantes: `UserRole`, `UserStatus`, `VerificationStatus`, `ListingStatus`, `BookingStatus`, `PaymentStatus`, `MediaAssetKind`, `MediaAssetStatus`.
+Enums relevantes: `UserRole`, `UserStatus`, `VerificationStatus`,
+`VerifiedDocumentType`, `DocumentVerificationStatus`, `ListingStatus`, `BookingStatus`, `PaymentStatus`, `MediaAssetKind`, `MediaAssetStatus`.
 
 Comandos:
 
@@ -169,7 +172,7 @@ No usar migraciones destructivas ni `db push` contra produccion sin confirmacion
 - `UsersModule`: lectura y actualizacion de perfil propio.
 - `VehiclesModule`: alta, lectura, edicion y baja de vehiculos propios.
 - `ListingsModule`: publicaciones propias y catalogo publico activo.
-- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) e identidad (DNI + licencia por URL) con revision configurable; deja la cuenta `VERIFIED` para habilitar acciones sensibles.
+- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) y documental (DNI y licencia en flujos separados). La extraccion de datos la hace el subproyecto Python `python-verifier/`; la comparacion y el veredicto, este backend. Deja la cuenta `VERIFIED` para habilitar acciones sensibles.
 - `SmsModule`: envio de codigos por SMS con interfaz de proveedor (`SMS_PROVIDER`, solo `mock` implementado).
 - `BookingsModule`: solicitudes, aceptacion/rechazo/cancelacion y confirmaciones por token.
 - `AdminModule`: gestion protegida por `ADMIN` de usuarios, verificaciones, listings y bookings.
@@ -218,8 +221,8 @@ Usuario autenticado:
 - `POST /verification/phone/confirm`
 - `GET /verification/me/status`
 - `POST /verification/identity/upload-signature`
-- `POST /verification/identity/submit`
-- `POST /verification/identity/review-retry`
+- `POST /verification/identity/:document/submit` (`document` = `dni` | `license`)
+- `POST /verification/identity/:document/request-review`
 - `GET /verification/identity/me`
 - `POST /bookings`
 - `GET /bookings/me`
@@ -333,45 +336,55 @@ sólo cuando el backend comprueba que sus documentos son reales, están vigentes
 y describen a la misma persona que cargó los datos.
 
 El usuario carga en su perfil `dni`, `cuil` y `address` (`PATCH /users/me`,
-con validación de checksum del CUIL), pide una firma por cada documento y lado
+con validación de checksum del CUIL), pide una firma por cada archivo
 (`POST /verification/identity/upload-signature` con `{ document: "dni"|"license",
-side: "front"|"back" }`), sube cada archivo **directo a Cloudinary** con esos
-parámetros, y envía las cuatro URLs a `POST /verification/identity/submit`.
-Como el `public_id` lo arma el servidor a partir del token
-(`identity/<userId>/<documento>_<lado>_…`) y los assets se suben como
-`authenticated`, no se puede confundir un documento con otro ni subir a la
-carpeta de otra persona, y las fotos **no son legibles con una URL pública**.
+side: "front"|"back" }`), sube cada foto **directo a Cloudinary** con esos
+parámetros, y manda las dos URLs de cada documento a
+`POST /verification/identity/:document/submit`. Como el `public_id` lo arma el
+servidor a partir del token (`identity/<userId>/<documento>_<lado>_…`) y los
+assets se suben como `authenticated`, no se puede confundir un documento con
+otro ni subir a la carpeta de otra persona, y las fotos **no son legibles con
+una URL pública**.
 
-Con el checklist completo corre la revisión (`IDENTITY_REVIEW_MODE=document_ai`):
+**DNI y licencia son flujos separados**: cada uno se manda cuando el usuario
+quiere y se aprueba por su cuenta. La cuenta queda `VERIFIED` cuando los dos
+están aprobados.
 
-- decodifica el **PDF417** del frente del DNI y el **QR** del dorso de la
-  licencia con `zxing-wasm` (determinístico, reintentando con la imagen
-  ampliada y en escala de grises);
-- lee el **texto impreso** de los cuatro lados con el modelo de visión, que
-  además clasifica qué documento y lado es cada foto;
-- valida el **MRZ** del dorso del DNI con sus dígitos verificadores (respaldo
-  autoritativo si el PDF417 no se pudo leer);
-- **cruza todo**: nombre, apellido, nro. de documento, CUIL, domicilio y fecha
-  de nacimiento entre código, MRZ, texto impreso de ambos documentos y los
-  datos de la cuenta; más 18+ al día de hoy, DNI y licencia vigentes, y que la
-  licencia sea del mismo titular.
+La extracción la hace el subproyecto Python `python-verifier/`, que corre como
+subproceso aislado (JSON por stdin → JSON por stdout, sin red ni credenciales)
+y devuelve, por foto, un objeto por protocolo de lectura:
 
-Tres resultados: **aprobado** (cuenta `VERIFIED`), **rechazado** cuando hay una
-contradicción concluyente (el usuario recibe códigos de motivo y reenvía), o
-**pendiente** cuando algo no se pudo leer, en cuyo caso queda para la cola de
-admins y el usuario puede reintentar con
-`POST /verification/identity/review-retry`. Un dato ilegible nunca rechaza a
-una persona real: deriva a revisión humana.
+- **DNI frente**: `codigo` (PDF417 del RENAPER, decodificado con `zxing-cpp`) y
+  `ocr` (lectura posicional tras corregir bordes, perspectiva y orientación).
+- **DNI dorso**: `mrz` (TD1 ICAO, aceptado sólo si cierran sus dígitos
+  verificadores) y `ocr` (domicilio y CUIL, que no están en ningún código).
+- **Licencia frente / dorso**: `ocr` (número, nombre, domicilio, fechas, CUIL y
+  la leyenda de principiante con su fecha límite).
+
+El backend cruza **todo** y sólo aprueba si no queda nada vacío ni en conflicto:
+cada dato debe coincidir entre protocolos y contra los datos de la cuenta, el
+documento tiene que estar vigente, la persona ser mayor de 18 según el
+documento, el CUIL contener el DNI leído, la licencia pertenecer al mismo
+titular y su período de principiante estar cumplido.
+
+Cuando algo no cierra, el usuario recibe **motivos con código estable y mensaje
+en castellano** que dicen qué campo y en qué foto falló, y le quedan dos
+salidas: reenviar fotos mejores (reemplaza el intento anterior y borra sus
+archivos) o `POST /verification/identity/:document/request-review`, que lo pasa
+a la cola de un admin. El admin aprueba o rechaza desde
+`PATCH /admin/verifications/:id/review`; **el rechazo borra la documentación**
+del storage.
 
 Los datos extraídos y el reporte de cruces son información personal sensible:
 sólo los ve un admin (`GET /admin/verifications/:id/documents`, con URLs
-firmadas efímeras y auditoría de acceso), nunca el usuario ni los logs. Un DNI
-o CUIL no puede verificar dos cuentas, y los campos que respaldan la identidad
-quedan inmutables una vez verificada.
+firmadas efímeras y auditoría de acceso), nunca el usuario ni los logs. Un
+mismo documento no puede verificar dos cuentas, y los campos que respaldan la
+identidad quedan inmutables una vez verificada.
 
-Modos (`IDENTITY_REVIEW_MODE`): `document_ai` (producción, exige `CLOUDINARY_*`
-y `GROQ_API_KEY` o no arranca), `manual` (decide siempre un admin) y
-`auto_approve` (aprueba todo; **sólo** desarrollo y tests).
+Modos (`DOCVERIFY_MODE`): `auto` (producción; exige `CLOUDINARY_*` y el
+verificador Python instalado, si no degrada a `manual` avisando), `manual`
+(decide siempre un admin) y `auto_approve` (aprueba todo; **sólo** desarrollo
+y tests).
 
 ## QR Tokens
 

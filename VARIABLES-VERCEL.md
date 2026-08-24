@@ -42,26 +42,31 @@ y el login funcionan). No hace falta tocarlas.
 
 ### Probar la verificación de documentos
 
-Hay un HTML suelto (no está en el repo) que corre el pipeline completo contra
-este backend y muestra todo lo que devuelve cada etapa: el contenido crudo de
-los códigos, el texto que leyó el modelo con la posición de cada dato, la
-matriz de comparación fuente por fuente y el veredicto. No escribe nada: no
-cambia el estado de ninguna cuenta.
+La verificación documental corre el subproyecto Python `python-verifier/` como
+subproceso. **En Vercel serverless no hay Python**, así que ahí `DOCVERIFY_MODE`
+degrada solo a `manual`: los documentos se guardan y quedan esperando a un
+admin (`GET /admin/verifications?status=MANUAL_REVIEW`), sin aprobar nada solo.
 
-1. En la carpeta donde esté el archivo: `python3 -m http.server 8080`.
-2. Abrir `http://localhost:8080/verificacion-demo.html`, poner la URL del
-   backend y entrar con una cuenta.
+Para probar la verificación automática de punta a punta hace falta correr el
+backend donde sí haya Python y el binario `tesseract` con español:
 
-No hace falta configurar nada de CORS: la API contesta a cualquier origen. El
-archivo trae además una sección que prueba el lector de códigos **sin backend**,
-con la misma librería (zxing-wasm), para poder separar un problema de la foto de
-uno del servidor.
+```bash
+cd python-verifier
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# Arch:          sudo pacman -S tesseract tesseract-data-spa tesseract-data-eng
+# Ubuntu/Debian: sudo apt install tesseract-ocr tesseract-ocr-spa
+cd .. && npm run start:dev     # con DOCVERIFY_MODE=auto
+```
 
-Los endpoints que usa (`POST /verification/diagnose/document`,
-`POST /verification/diagnose/compare`, `GET /verification/diagnose/info`) piden
-sesión pero **no** rol de administrador, y devuelven los datos completos del
-documento que se les manda. Es a propósito para esta etapa; antes de producción
-hay que cerrarlos.
+Y probar el verificador solo, sin backend:
+
+```bash
+cd python-verifier
+echo '{"documentos": {"dni_front": "ruta/a/foto.jpg"}}' | .venv/bin/python analyze.py
+```
+
+Los endpoints del flujo están en `src/verification/verification.rest`.
 
 ### Estado al 9 de agosto de 2026
 
@@ -107,7 +112,7 @@ La app no se rompe: la verificación de identidad queda **pendiente de revisión
 manual** y se aprueba desde el panel de administración
 (`PATCH /admin/verifications/:id/review`). Si se prefiere que apruebe sola
 cualquier envío con las cuatro fotos, se puede poner
-`IDENTITY_REVIEW_MODE=auto_approve`, pero entonces no se revisa nada —incluida la
+`DOCVERIFY_MODE=auto_approve`, pero entonces no se revisa nada —incluida la
 foto de un perro como DNI—, así que conviene dejarlo en `ai`.
 
 ---
@@ -173,7 +178,8 @@ que crear una cuenta de Stripe.
 |---|---|---|
 | `JWT_EXPIRES_IN` | `24h` | Cuánto dura la sesión. |
 | `ONBOARDING_JWT_EXPIRES_IN` | `30m` | Cuánto dura el token del registro a medio hacer. |
-| `IDENTITY_REVIEW_MODE` | `ai` | Cómo se revisan el DNI y la licencia: `ai`, `manual` o `auto_approve`. |
+| `DOCVERIFY_MODE` | `auto` | Cómo se revisan el DNI y la licencia: `auto` (verificador Python), `manual` o `auto_approve`. En Vercel serverless **no hay Python**, así que `auto` degrada a `manual` avisando. |
+| `DOCVERIFY_TIMEOUT_MS` | `120000` | Tope del verificador. Solo aplica donde `auto` esté realmente disponible. |
 | `SMS_PROVIDER` | `mock` | Mandar un SMS de verdad es pago. Con `mock`, el código del teléfono llega al **email** de la persona y la verificación funciona igual. |
 | `REQUIRE_PHONE_VERIFICATION` | `false` | Si el teléfono confirmado es obligatorio para publicar y reservar. |
 | `VERIFICATION_CODE_IN_RESPONSE` | `false` | Solo para mostrar la app: con `true`, la pantalla muestra el código en vez de hacer esperar el mail. |

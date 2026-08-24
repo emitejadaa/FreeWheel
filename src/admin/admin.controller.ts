@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Query,
   UseGuards,
 } from "@nestjs/common";
 import { UserRole } from "@prisma/client";
@@ -54,8 +55,11 @@ export class AdminController {
   }
 
   @Get("verifications")
-  listVerifications() {
-    return this.adminService.listVerifications();
+  listVerifications(
+    @Query("status") status?: string,
+    @Query("type") type?: string,
+  ) {
+    return this.adminService.listVerifications({ status, type });
   }
 
   @Get("verifications/:id")

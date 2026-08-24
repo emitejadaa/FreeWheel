@@ -14,10 +14,8 @@ import { OptionalJwtAuthGuard } from "../auth/guards/optional-jwt-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { AiChatDto } from "./dto/ai-chat.dto";
-import { AiDocumentDto } from "./dto/ai-document.dto";
 import { AiTranscribeDto } from "./dto/ai-transcribe.dto";
 import { AiVisionDto } from "./dto/ai-vision.dto";
-import { DocumentPrecheckService } from "../verification/extraction/document-precheck.service";
 import { AiService } from "./ai.service";
 
 /**
@@ -31,10 +29,7 @@ import { AiService } from "./ai.service";
  */
 @Controller("ai")
 export class AiController {
-  constructor(
-    private readonly ai: AiService,
-    private readonly precheck: DocumentPrecheckService,
-  ) {}
+  constructor(private readonly ai: AiService) {}
 
   /**
    * ¿Está funcionando la revisión por IA? Dice si falta la clave, qué contestó
@@ -95,26 +90,5 @@ export class AiController {
   @UseGuards(JwtAuthGuard)
   transcribe(@Body() dto: AiTranscribeDto) {
     return this.ai.transcribe(dto.audioUrl);
-  }
-
-  /**
-   * Revisa si una foto es realmente el documento pedido (DNI o licencia). El
-   * front lo llama al elegir cada foto, para avisar en el momento que no sirve en
-   * vez de dejar subir cualquier imagen.
-   *
-   * PRIMERO SIN IA: si la foto trae el PDF417 del DNI (o el código de la
-   * licencia), eso ya contesta la pregunta —lo imprime el organismo que emite
-   * el documento y lo lee un decodificador, no un modelo—, así que se responde
-   * con eso y no se gasta ninguna llamada de visión. Al modelo se le pregunta
-   * solo por lo que no tiene código legible.
-   */
-  @Post("document")
-  @UseGuards(JwtAuthGuard)
-  async document(@Body() dto: AiDocumentDto) {
-    const lang = dto.lang ?? "es";
-    const fromCode = await this.precheck.check(dto.image, dto.kind, lang);
-    return (
-      fromCode ?? (await this.ai.inspectDocument(dto.image, dto.kind, lang))
-    );
   }
 }

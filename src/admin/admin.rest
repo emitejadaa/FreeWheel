@@ -118,8 +118,11 @@ Authorization: Bearer {{accessToken}}
 ### Verificaciones de identidad
 ### ────────────────────────────────────────────────────────────────────────
 
-### 7. Lista todas las solicitudes de verificación.
-GET {{baseUrl}}/admin/verifications
+### 7. Lista las verificaciones documentales. Filtros opcionales:
+###    ?status=APPROVED|FAILED|MANUAL_REVIEW|REJECTED  y  ?type=DNI|LICENSE
+###    La cola que espera a un admin es ?status=MANUAL_REVIEW (la pide el
+###    propio usuario con POST /verification/identity/:document/request-review).
+GET {{baseUrl}}/admin/verifications?status=MANUAL_REVIEW
 Authorization: Bearer {{accessToken}}
 
 ### Pegá acá el id de una solicitud real (sale del listado del request #7,
@@ -135,14 +138,17 @@ Authorization: Bearer {{accessToken}}
 GET {{baseUrl}}/admin/verifications/{{verificationId}}/documents
 Authorization: Bearer {{accessToken}}
 
-### 10. Revisa la solicitud (aprueba/rechaza a mano, para el modo "manual" o
-### para forzar un veredicto durante pruebas).
+### 10. Veredicto manual sobre UN documento.
+### "APPROVED" lo aprueba (y si el otro documento también lo está, la cuenta
+### queda VERIFIED). "REJECTED" lo rechaza Y BORRA las fotos del storage: es
+### irreversible, el usuario tiene que volver a enviarlas. Un rechazo también
+### sirve para REVOCAR un documento ya aprobado.
 PATCH {{baseUrl}}/admin/verifications/{{verificationId}}/review
 Content-Type: {{contentType}}
 Authorization: Bearer {{accessToken}}
 
 {
-  "status": "VERIFIED",
+  "status": "APPROVED",
   "notes": "Documentos verificados a mano por soporte."
 }
 

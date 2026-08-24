@@ -1,9 +1,10 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import {
+  DocumentVerificationStatus,
   ListingStatus,
   UserRole,
   UserStatus,
-  VerificationStatus,
+  VerifiedDocumentType,
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditLogService } from "../common/services/audit-log.service";
@@ -11,6 +12,7 @@ import { assertFound } from "../common/utils/entity.util";
 import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 import { CloudinaryService } from "../media/cloudinary.service";
 import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
+import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 
 @Injectable()
 export class AdminService {
@@ -19,6 +21,7 @@ export class AdminService {
     private readonly auditLog: AuditLogService,
     private readonly cloudinary: CloudinaryService,
     private readonly identityDocuments: IdentityDocumentsService,
+    private readonly documentVerification: DocumentVerificationService,
   ) {}
 
   listUsers() {
@@ -74,15 +77,31 @@ export class AdminService {
     return user;
   }
 
-  listVerifications() {
-    return this.prisma.userVerification.findMany({
+  /**
+   * Verificaciones documentales, filtrables por estado y tipo. Sin filtros
+   * lista todo; con status=MANUAL_REVIEW es la cola de casos que esperan a
+   * un admin (pedidos por el propio usuario).
+   */
+  listVerifications(filters: { status?: string; type?: string } = {}) {
+    const status = Object.values(DocumentVerificationStatus).find(
+      (value) => value === filters.status,
+    );
+    const type = Object.values(VerifiedDocumentType).find(
+      (value) => value === filters.type,
+    );
+
+    return this.prisma.documentVerification.findMany({
+      where: {
+        ...(status ? { status } : {}),
+        ...(type ? { type } : {}),
+      },
       include: { user: { select: USER_SAFE_SELECT } },
-      orderBy: { createdAt: "desc" },
+      orderBy: { updatedAt: "desc" },
     });
   }
 
   async getVerification(id: string) {
-    const verification = await this.prisma.userVerification.findUnique({
+    const verification = await this.prisma.documentVerification.findUnique({
       where: { id },
       include: { user: { select: USER_SAFE_SELECT } },
     });
@@ -92,7 +111,7 @@ export class AdminService {
   }
 
   /**
-   * Documentos de una solicitud para que un admin los revise a mano. Los
+   * Documentos de una verificación para que un admin los revise a mano. Los
    * assets son privados (type=authenticated): se generan URLs firmadas al
    * momento, que nunca se persisten ni se exponen al titular. Cada acceso
    * queda auditado porque implica ver datos personales sensibles.
@@ -113,65 +132,49 @@ export class AdminService {
       actorId,
       targetUserId: verification.userId,
       action: "admin.verification.documents.view",
-      entityType: "UserVerification",
+      entityType: "DocumentVerification",
       entityId: id,
     });
 
     return {
       id: verification.id,
       userId: verification.userId,
+      type: verification.type,
       status: verification.status,
       documents: {
-        dniFront: signedUrl(verification.dniFrontUrl),
-        dniBack: signedUrl(verification.dniBackUrl),
-        licenseFront: signedUrl(verification.licenseFrontUrl),
-        licenseBack: signedUrl(verification.licenseBackUrl),
+        front: signedUrl(verification.frontUrl),
+        back: signedUrl(verification.backUrl),
       },
       extracted: verification.extracted,
       matchReport: verification.matchReport,
+      notes: verification.notes,
     };
   }
 
+  /**
+   * Veredicto manual: APPROVED aprueba el documento (y puede dejar la
+   * cuenta VERIFIED si el otro también lo está); REJECTED borra los
+   * archivos del storage. La política vive en DocumentVerificationService.
+   */
   async reviewVerification(
     actorId: string,
     id: string,
-    status: VerificationStatus,
+    status: "APPROVED" | "REJECTED",
     notes?: string,
   ) {
-    const verification = await this.getVerification(id);
-    if (
-      status !== VerificationStatus.VERIFIED &&
-      status !== VerificationStatus.REJECTED
-    ) {
-      throw new BadRequestException(
-        "Verification review status must be VERIFIED or REJECTED",
-      );
-    }
-    const reviewedAt = new Date();
-
-    const updated = await this.prisma.userVerification.update({
-      where: { id },
-      data: { status, notes, reviewedAt, reviewedBy: "admin" },
-      include: { user: { select: USER_SAFE_SELECT } },
-    });
-
-    // The admin verdict is an explicit override: VERIFIED applies
-    // unconditionally, regardless of the derived checklist state.
-    await this.prisma.user.update({
-      where: { id: verification.userId },
-      data: { verificationStatus: status },
-    });
-
-    await this.auditLog.create({
+    const updated = await this.documentVerification.adminReview(
       actorId,
-      targetUserId: verification.userId,
-      action: "admin.verification.review",
-      entityType: "UserVerification",
-      entityId: id,
-      metadata: { status },
+      id,
+      status,
+      notes,
+    );
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: updated.userId },
+      select: USER_SAFE_SELECT,
     });
 
-    return updated;
+    return { ...updated, user };
   }
 
   listListings() {
@@ -284,6 +287,12 @@ export class AdminService {
   }
 
   async deleteUserPermanently(actorId: string, id: string) {
+    const identityDocumentUrls =
+      await this.prisma.documentVerification.findMany({
+        where: { userId: id },
+        select: { frontUrl: true, backUrl: true },
+      });
+
     if (actorId === id) {
       throw new BadRequestException("You cannot delete yourself");
     }
@@ -368,10 +377,16 @@ export class AdminService {
       await tx.vehicle.deleteMany({ where: { ownerId: id } });
       await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
       await tx.verificationCode.deleteMany({ where: { userId: id } });
-      await tx.userVerification.deleteMany({ where: { userId: id } });
+      await tx.documentVerification.deleteMany({ where: { userId: id } });
 
       return tx.user.delete({ where: { id } });
     });
+
+    // Los documentos de identidad no deben quedar huérfanos en el storage:
+    // se borran después de la transacción (best-effort, registrado en log).
+    await this.identityDocuments.deleteDocuments(
+      identityDocumentUrls.flatMap((row) => [row.frontUrl, row.backUrl]),
+    );
 
     return { deleted: true };
   }

@@ -24,8 +24,8 @@ function makePrisma(columns: Row[], lastMigration?: string) {
 const ALL_PRESENT: Row[] = [
   { table_name: "Favorite", column_name: "id" },
   { table_name: "Vehicle", column_name: "category" },
-  { table_name: "UserVerification", column_name: "documentNumber" },
-  { table_name: "UserVerification", column_name: "licenseExpiresAt" },
+  { table_name: "DocumentVerification", column_name: "documentNumber" },
+  { table_name: "DocumentVerification", column_name: "reasonCodes" },
 ];
 
 describe("HealthService.checkDatabase", () => {
@@ -44,8 +44,8 @@ describe("HealthService.checkDatabase", () => {
   it("names what is missing when the migrations did not run", async () => {
     // La base vieja: sin tabla Favorite y sin Vehicle.category.
     const { prisma } = makePrisma([
-      { table_name: "UserVerification", column_name: "documentNumber" },
-      { table_name: "UserVerification", column_name: "licenseExpiresAt" },
+      { table_name: "DocumentVerification", column_name: "documentNumber" },
+      { table_name: "DocumentVerification", column_name: "reasonCodes" },
     ]);
     const result = await new HealthService(prisma).checkDatabase();
 

@@ -29,6 +29,26 @@ enum VerificationStatus {
   REJECTED
 }
 
+/// Qué documento cubre un DocumentVerification. Los dos flujos son
+/// independientes: se pueden verificar juntos o cada uno por su lado.
+enum VerifiedDocumentType {
+  DNI
+  LICENSE
+}
+
+/// Estado de la verificación de UN documento.
+/// - APPROVED: la revisión (automática o de un admin) aprobó el documento.
+/// - FAILED: la revisión automática no pudo aprobarlo; el usuario puede
+///   reenviar fotos o pedir revisión manual.
+/// - MANUAL_REVIEW: el usuario pidió revisión manual; espera a un admin.
+/// - REJECTED: un admin lo rechazó; los archivos se borran del storage.
+enum DocumentVerificationStatus {
+  APPROVED
+  FAILED
+  MANUAL_REVIEW
+  REJECTED
+}
+
 enum ListingStatus {
   DRAFT
   ACTIVE
@@ -275,7 +295,7 @@ model User {
   vehicles                  Vehicle[]
   listings                  Listing[]
   listingAvailabilityBlocks ListingAvailabilityBlock[]
-  verifications             UserVerification[]
+  documentVerifications     DocumentVerification[]
   verificationCodes         VerificationCode[]
   bookingsAsOwner           Booking[]                  @relation("BookingOwner")
   bookingsAsRenter          Booking[]                  @relation("BookingRenter")
@@ -298,34 +318,37 @@ model User {
   @@index([verificationStatus])
 }
 
-model UserVerification {
-  id                 String             @id @default(uuid())
-  userId             String
-  user               User               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status             VerificationStatus @default(ID_SUBMITTED)
-  documentUrl        String?
-  selfieUrl          String?
-  dniFrontUrl        String?
-  dniBackUrl         String?
-  licenseFrontUrl    String?
-  licenseBackUrl     String?
-  notes              String?
-  // Datos leídos de los documentos por la revisión automática. Quedan
-  // registrados acá y no se los pide al usuario, así no se pueden falsear.
-  documentNumber     String?
-  fullNameOnDocument String?
-  licenseExpiresAt   DateTime?
-  reviewedBy         String?
-  // Extracción por fuente (código PDF417/QR, MRZ, OCR de cada lado) y reporte
-  // de cruces check por check. Contienen datos personales: solo se exponen a
-  // admins, nunca en las respuestas del propio usuario.
-  extracted          Json?
-  matchReport        Json?
-  reviewedAt         DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+model DocumentVerification {
+  id             String                     @id @default(uuid())
+  userId         String
+  user           User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  type           VerifiedDocumentType
+  status         DocumentVerificationStatus
+  frontUrl       String?
+  backUrl        String?
+  // Datos leídos del documento por el verificador. Quedan registrados acá y
+  // no se le piden al usuario, así no se pueden falsear.
+  documentNumber String?
+  expiresAt      DateTime?
+  // Extracción cruda del verificador Python y comparativa campo por campo.
+  // Contienen datos personales: solo se exponen a admins, nunca en las
+  // respuestas del propio usuario.
+  extracted      Json?
+  matchReport    Json?
+  // Motivos del último veredicto automático, en códigos estables aptos para
+  // mostrarle al usuario (sin datos personales).
+  reasonCodes    String[]                   @default([])
+  // Revisión manual: cuándo la pidió el usuario y quién/cuándo la resolvió.
+  reviewRequestedAt DateTime?
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  notes          String?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
 
-  @@index([userId])
+  // Una fila viva por documento y usuario: reenviar fotos reemplaza la
+  // anterior (y borra sus archivos). El historial queda en AuditLog.
+  @@unique([userId, type])
   @@index([status])
   @@index([documentNumber])
 }

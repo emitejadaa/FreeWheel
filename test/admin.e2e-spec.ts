@@ -9,18 +9,23 @@ import {
   createVehicle,
   futureDate,
   registerUser,
+  setIdentityProfile,
 } from "./helpers/factory";
-import { identityDocs } from "./helpers/cloudinary.fake";
+import {
+  documentUrls,
+  FakeCloudinaryService,
+} from "./helpers/cloudinary.fake";
 
 describe("Admin", () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let cloudinary: FakeCloudinaryService;
 
   const http = () => request(app.getHttpServer());
   const auth = (token: string) => `Bearer ${token}`;
 
   beforeAll(async () => {
-    ({ app, prisma } = await createTestApp());
+    ({ app, prisma, cloudinary } = await createTestApp());
   });
 
   afterAll(async () => {
@@ -29,6 +34,7 @@ describe("Admin", () => {
 
   beforeEach(async () => {
     await cleanDatabase(prisma);
+    cloudinary.reset();
   });
 
   it("forbids non-admins from admin routes (403)", async () => {
@@ -85,32 +91,64 @@ describe("Admin", () => {
       .expect(400);
   });
 
-  it("reviews an identity verification", async () => {
+  it("lists and reviews a document verification", async () => {
     const admin = await createAdmin(app, prisma);
-    // Not fully verified (no phone) so the submission stays ID_SUBMITTED and
-    // waits for the admin verdict instead of being auto-approved.
     const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
     await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .send(identityDocs(user.id))
+      .send(documentUrls(user.id, "dni"))
+      .expect(201);
+
+    // Un admin puede filtrar por tipo y por estado.
+    const list = await http()
+      .get("/admin/verifications?type=DNI")
+      .set("Authorization", auth(admin.token))
+      .expect(200);
+    expect(list.body).toHaveLength(1);
+    const verificationId = list.body[0].id;
+
+    const detail = await http()
+      .get(`/admin/verifications/${verificationId}`)
+      .set("Authorization", auth(admin.token))
+      .expect(200);
+    expect(detail.body.type).toBe("DNI");
+
+    // El admin sí ve las fotos, con URLs firmadas efímeras.
+    const docs = await http()
+      .get(`/admin/verifications/${verificationId}/documents`)
+      .set("Authorization", auth(admin.token))
+      .expect(200);
+    expect(docs.body.documents.front).toContain("cloudinary");
+  });
+
+  it("rejects a document verification and deletes its files", async () => {
+    const admin = await createAdmin(app, prisma);
+    const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
+    await http()
+      .post("/verification/identity/dni/submit")
+      .set("Authorization", auth(user.token))
+      .send(documentUrls(user.id, "dni"))
       .expect(201);
 
     const list = await http()
       .get("/admin/verifications")
       .set("Authorization", auth(admin.token))
       .expect(200);
-    const verificationId = list.body[0].id;
 
-    await http()
-      .get(`/admin/verifications/${verificationId}`)
+    const rejected = await http()
+      .patch(`/admin/verifications/${list.body[0].id}/review`)
       .set("Authorization", auth(admin.token))
+      .send({ status: "REJECTED", notes: "foto de otra persona" })
       .expect(200);
-    await http()
-      .patch(`/admin/verifications/${verificationId}/review`)
-      .set("Authorization", auth(admin.token))
-      .send({ status: "VERIFIED" })
-      .expect(200);
+
+    expect(rejected.body.status).toBe("REJECTED");
+    // La documentación rechazada se borra del storage y de la fila.
+    expect(rejected.body.frontUrl).toBeNull();
+    expect(rejected.body.backUrl).toBeNull();
+    expect(cloudinary.destroyed).toHaveLength(2);
   });
 
   it("manages listings (status change + permanent delete)", async () => {

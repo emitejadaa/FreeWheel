@@ -112,6 +112,55 @@ export class CloudinaryService {
     return `https://res.cloudinary.com/${cloudName}/image/authenticated/s--${signature}--/${path}`;
   }
 
+  /**
+   * Borrado definitivo de un asset. Se usa cuando una verificación se
+   * rechaza o se reemplaza: los documentos de identidad no deben quedar
+   * huérfanos en el storage. Devuelve false si Cloudinary no lo encontró
+   * (ya borrado: el resultado deseado), y lanza 503 en fallos reales para
+   * que quien llama decida si el borrado era imprescindible.
+   */
+  async destroy(
+    publicId: string,
+    deliveryType = "authenticated",
+  ): Promise<boolean> {
+    const { cloudName, apiKey, apiSecret } = this.credentials();
+
+    const timestamp = Math.round(Date.now() / 1000);
+    const params: Record<string, string | number> = {
+      public_id: publicId,
+      timestamp,
+      type: deliveryType,
+      invalidate: "true",
+    };
+    const toSign = Object.keys(params)
+      .sort()
+      .map((key) => `${key}=${params[key]}`)
+      .join("&");
+    const signature = createHash("sha1")
+      .update(toSign + apiSecret)
+      .digest("hex");
+
+    const body = new URLSearchParams({
+      ...Object.fromEntries(
+        Object.entries(params).map(([k, v]) => [k, String(v)]),
+      ),
+      api_key: apiKey,
+      signature,
+    });
+
+    const response = await fetch(
+      `https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`,
+      { method: "POST", body },
+    );
+    if (!response.ok) {
+      throw new ServiceUnavailableException(
+        `Cloudinary destroy respondió ${response.status}`,
+      );
+    }
+    const result = (await response.json()) as { result?: string };
+    return result.result === "ok";
+  }
+
   /** Descarga server-side de un asset authenticated (URL firmada efímera). */
   async download(
     publicId: string,

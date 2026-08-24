@@ -1,9 +1,12 @@
-import { VerificationStatus } from "@prisma/client";
-import { IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 
+/**
+ * Veredicto de un admin sobre una verificación documental. APPROVED aprueba
+ * el documento; REJECTED lo rechaza y borra sus archivos del storage.
+ */
 export class ReviewVerificationDto {
-  @IsEnum(VerificationStatus)
-  status!: VerificationStatus;
+  @IsIn(["APPROVED", "REJECTED"])
+  status!: "APPROVED" | "REJECTED";
 
   @IsOptional()
   @IsString()

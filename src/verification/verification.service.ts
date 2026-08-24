@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  DocumentVerificationStatus,
   User,
   VerificationCodePurpose,
   VerificationCodeTargetType,
@@ -17,17 +18,9 @@ import { PrismaService } from "../prisma/prisma.service";
 import { EmailService } from "../email/email.service";
 import { SmsService } from "../sms/sms.service";
 import { assertFound } from "../common/utils/entity.util";
-import { SubmitIdentityDto } from "./dto/submit-identity.dto";
 import { UploadSignatureDto } from "./dto/upload-signature.dto";
-import {
-  IdentityDocumentsService,
-  readReasonCodes,
-} from "./identity/identity-documents.service";
-import {
-  buildVerificationChecklist,
-  IdentityReviewService,
-  isPhoneVerificationRequired,
-} from "./review/identity-review.service";
+import { IdentityDocumentsService } from "./identity/identity-documents.service";
+import { DocumentVerificationService } from "./identity/document-verification.service";
 import {
   consumeVerificationCode,
   generateNumericCode,
@@ -50,16 +43,6 @@ type SafeVerificationResponse = {
   code?: string;
 };
 
-/** Estado de la última revisión en términos que entiende el front. */
-function describeOutcome(
-  status: VerificationStatus | null,
-): "approved" | "rejected" | "pending" | "none" {
-  if (status === VerificationStatus.VERIFIED) return "approved";
-  if (status === VerificationStatus.REJECTED) return "rejected";
-  if (status === VerificationStatus.ID_SUBMITTED) return "pending";
-  return "none";
-}
-
 @Injectable()
 export class VerificationService {
   private readonly maxAttempts = 5;
@@ -70,7 +53,7 @@ export class VerificationService {
     private readonly emailService: EmailService,
     private readonly smsService: SmsService,
     private readonly identityDocuments: IdentityDocumentsService,
-    private readonly identityReview: IdentityReviewService,
+    private readonly documentVerification: DocumentVerificationService,
     private readonly config: ConfigService,
   ) {}
 
@@ -97,15 +80,9 @@ export class VerificationService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: {
-        emailVerifiedAt: new Date(),
-        verificationStatus: await this.resolveNextStatus(userId, {
-          emailVerified: true,
-        }),
-      },
+      data: { emailVerifiedAt: new Date() },
     });
-
-    await this.identityReview.evaluate(userId);
+    await this.documentVerification.recomputeAccountStatus(userId);
 
     return this.getMyStatus(userId);
   }
@@ -115,120 +92,50 @@ export class VerificationService {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: {
-        phoneVerifiedAt: new Date(),
-        verificationStatus: await this.resolveNextStatus(userId, {
-          phoneVerified: true,
-        }),
-      },
+      data: { phoneVerifiedAt: new Date() },
     });
-
-    await this.identityReview.evaluate(userId);
+    await this.documentVerification.recomputeAccountStatus(userId);
 
     return this.getMyStatus(userId);
   }
 
   /**
-   * Derived checklist for the UI: the enum is a coarse milestone marker, but
-   * phone/documents/date-of-birth complete independently and in any order.
+   * Estado completo para el front: el estado de la cuenta, el checklist
+   * derivado y el estado de cada flujo de documento (DNI y licencia por
+   * separado). Los motivos vienen en códigos estables + mensajes aptos para
+   * mostrar; el detalle de la extracción es dato personal y solo lo ve un
+   * admin.
    */
   async getMyStatus(userId: string) {
     const user = await this.getUser(userId);
-    const latestSubmission = await this.latestSubmission(userId);
-    const checklist = buildVerificationChecklist(user, latestSubmission);
+    const documents = await this.documentVerification.getMyDocuments(userId);
 
     return {
       verificationStatus: user.verificationStatus,
       fullyVerified: user.verificationStatus === VerificationStatus.VERIFIED,
-      checklist,
+      checklist: {
+        emailVerified: Boolean(user.emailVerifiedAt),
+        phoneVerified: Boolean(user.phoneVerifiedAt),
+        dateOfBirthProvided: Boolean(user.dateOfBirth),
+        identityDataProvided: Boolean(user.dni && user.cuil && user.address),
+        dniApproved:
+          documents.dni?.status === DocumentVerificationStatus.APPROVED,
+        licenseApproved:
+          documents.license?.status === DocumentVerificationStatus.APPROVED,
+      },
+      documents,
       emailVerifiedAt: user.emailVerifiedAt,
       phoneVerifiedAt: user.phoneVerifiedAt,
-      // El front necesita saber si el teléfono bloquea o es opcional, y por qué
-      // canal va a llegar el código, para explicarlo en pantalla.
-      phoneRequired: isPhoneVerificationRequired(this.config),
+      // El front necesita saber si el teléfono bloquea o es opcional, y por
+      // qué canal va a llegar el código, para explicarlo en pantalla.
+      phoneRequired: this.documentVerification.isPhoneVerificationRequired(),
       phoneCodeChannel: this.smsService.isMock ? "email" : "sms",
-      // Motivos en códigos estables: el detalle de la extracción es un dato
-      // personal y solo lo ve un admin.
-      lastReview: {
-        outcome: describeOutcome(latestSubmission?.status ?? null),
-        reasonCodes: readReasonCodes(latestSubmission?.matchReport),
-      },
     };
   }
 
   /** Firma la subida de un documento de identidad (documento + lado). */
   signIdentityUpload(userId: string, data: UploadSignatureDto) {
     return this.identityDocuments.signUpload(userId, data);
-  }
-
-  async submitIdentity(userId: string, data: SubmitIdentityDto) {
-    const user = await this.getUser(userId);
-
-    // Cada URL debe ser nuestra, del slot correcto, de esta cuenta y existir:
-    // se persiste la forma canónica sin firma.
-    const documents = await this.identityDocuments.validateSubmission(
-      userId,
-      data,
-    );
-
-    const verification = await this.prisma.userVerification.create({
-      data: {
-        userId,
-        ...documents,
-        notes: data.notes,
-        status: VerificationStatus.ID_SUBMITTED,
-      },
-    });
-
-    if (user.verificationStatus !== VerificationStatus.VERIFIED) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { verificationStatus: VerificationStatus.ID_SUBMITTED },
-      });
-    }
-
-    await this.identityReview.evaluate(userId);
-
-    // Re-read: the review may have already resolved the submission.
-    const reviewed = await this.prisma.userVerification.findUnique({
-      where: { id: verification.id },
-    });
-    assertFound(reviewed, "Verification not found");
-
-    return this.identityDocuments.toPublicView(reviewed);
-  }
-
-  /**
-   * Vuelve a correr la revisión de la última submission pendiente (p. ej.
-   * tras un timeout del proveedor o después de corregir los datos del perfil).
-   */
-  async retryIdentityReview(userId: string) {
-    const submission = await this.latestSubmission(userId);
-    if (!submission) {
-      throw new NotFoundException("No hay documentos enviados para revisar");
-    }
-    if (submission.status !== VerificationStatus.ID_SUBMITTED) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "REVIEW_NOT_PENDING",
-        message: "La última solicitud ya tiene un veredicto",
-      });
-    }
-
-    await this.identityReview.evaluate(userId);
-
-    return this.getMyStatus(userId);
-  }
-
-  async getMyIdentity(userId: string) {
-    const submissions = await this.prisma.userVerification.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return submissions.map((submission) =>
-      this.identityDocuments.toPublicView(submission),
-    );
   }
 
   private async createCode(
@@ -342,50 +249,6 @@ export class VerificationService {
           new ForbiddenException("Verification code attempts exceeded"),
         invalid: () => new BadRequestException("Invalid verification code"),
       },
-    });
-  }
-
-  private async resolveNextStatus(
-    userId: string,
-    overrides: { emailVerified?: boolean; phoneVerified?: boolean } = {},
-  ) {
-    const user = await this.getUser(userId);
-    const emailVerified =
-      overrides.emailVerified ?? Boolean(user.emailVerifiedAt);
-    const phoneVerified =
-      overrides.phoneVerified ?? Boolean(user.phoneVerifiedAt);
-
-    if (user.verificationStatus === VerificationStatus.VERIFIED) {
-      return VerificationStatus.VERIFIED;
-    }
-
-    if (user.verificationStatus === VerificationStatus.ID_SUBMITTED) {
-      return VerificationStatus.ID_SUBMITTED;
-    }
-
-    if (user.verificationStatus === VerificationStatus.REJECTED) {
-      return VerificationStatus.REJECTED;
-    }
-
-    if (emailVerified && phoneVerified) {
-      return VerificationStatus.PHONE_VERIFIED;
-    }
-
-    if (emailVerified) {
-      return VerificationStatus.EMAIL_VERIFIED;
-    }
-
-    if (phoneVerified) {
-      return VerificationStatus.PHONE_VERIFIED;
-    }
-
-    return VerificationStatus.UNVERIFIED;
-  }
-
-  private latestSubmission(userId: string) {
-    return this.prisma.userVerification.findFirst({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
     });
   }
 

@@ -8,7 +8,7 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { registerUser, setIdentityProfile } from "./helpers/factory";
 import {
   FakeCloudinaryService,
-  identityDocs,
+  documentUrls,
   identityDocUrl,
 } from "./helpers/cloudinary.fake";
 
@@ -110,7 +110,8 @@ describe("Verification", () => {
     expect(res.body.checklist).toEqual({
       emailVerified: true,
       phoneVerified: false,
-      documentsSubmitted: false,
+      dniApproved: false,
+      licenseApproved: false,
       dateOfBirthProvided: true,
       identityDataProvided: false,
     });
@@ -146,49 +147,60 @@ describe("Verification", () => {
       .expect(400);
   });
 
-  it("submits and lists identity documents without echoing their URLs", async () => {
+  it("submits a document and lists it without echoing its URLs", async () => {
     const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
+
     const submitted = await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .send(identityDocs(user.id))
+      .send(documentUrls(user.id, "dni"))
       .expect(201);
 
-    expect(submitted.body.documents).toEqual({
-      dniFront: true,
-      dniBack: true,
-      licenseFront: true,
-      licenseBack: true,
-    });
+    expect(submitted.body.type).toBe("DNI");
+    expect(submitted.body.documents).toEqual({ front: true, back: true });
     // Los documentos son PII: la respuesta nunca devuelve las URLs.
     expect(JSON.stringify(submitted.body)).not.toContain("cloudinary");
 
-    const list = await http()
+    const mine = await http()
       .get("/verification/identity/me")
       .set("Authorization", auth(user.token))
       .expect(200);
-    expect(list.body.length).toBeGreaterThanOrEqual(1);
-    expect(JSON.stringify(list.body)).not.toContain("cloudinary");
+    expect(mine.body.dni).not.toBeNull();
+    expect(mine.body.license).toBeNull();
+    expect(JSON.stringify(mine.body)).not.toContain("cloudinary");
   });
 
-  it("rejects an identity submission missing a required document (400)", async () => {
+  it("rejects an unknown document type in the URL (400)", async () => {
     const user = await registerUser(app, { verified: false });
-    const { licenseBackUrl: _omitted, ...incomplete } = identityDocs(user.id);
+    await setIdentityProfile(app, user.token);
     await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/pasaporte/submit")
       .set("Authorization", auth(user.token))
-      .send(incomplete)
+      .send(documentUrls(user.id, "dni"))
+      .expect(400);
+  });
+
+  it("rejects a submission missing one of the two photos (400)", async () => {
+    const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
+    const { frontUrl } = documentUrls(user.id, "dni");
+    await http()
+      .post("/verification/identity/dni/submit")
+      .set("Authorization", auth(user.token))
+      .send({ frontUrl })
       .expect(400);
   });
 
   it("rejects a document URL that is not one we signed (400)", async () => {
     const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
     const res = await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
       .send({
-        ...identityDocs(user.id),
-        dniFrontUrl: "https://example.com/dni-front.png",
+        ...documentUrls(user.id, "dni"),
+        frontUrl: "https://example.com/dni-front.png",
       })
       .expect(400);
     expect(res.body.code).toBe("INVALID_DOCUMENT_URL");
@@ -196,13 +208,14 @@ describe("Verification", () => {
 
   it("rejects a file uploaded for a different slot (400 DOCUMENT_SLOT_MISMATCH)", async () => {
     const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
     const res = await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
       .send({
-        ...identityDocs(user.id),
+        ...documentUrls(user.id, "dni"),
         // El dorso de la licencia enviado como frente del DNI.
-        dniFrontUrl: identityDocUrl(user.id, "license_back"),
+        frontUrl: identityDocUrl(user.id, "license_back"),
       })
       .expect(400);
     expect(res.body.code).toBe("DOCUMENT_SLOT_MISMATCH");
@@ -212,12 +225,13 @@ describe("Verification", () => {
   it("rejects documents belonging to another account (400)", async () => {
     const user = await registerUser(app, { verified: false });
     const other = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
     const res = await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
       .send({
-        ...identityDocs(user.id),
-        dniBackUrl: identityDocUrl(other.id, "dni_back"),
+        ...documentUrls(user.id, "dni"),
+        backUrl: identityDocUrl(other.id, "dni_back"),
       })
       .expect(400);
     expect(res.body.code).toBe("DOCUMENT_SLOT_MISMATCH");
@@ -225,14 +239,28 @@ describe("Verification", () => {
 
   it("rejects a URL whose file was never uploaded (400 DOCUMENT_NOT_FOUND)", async () => {
     const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
     cloudinary.missing.add(`identity/${user.id}/dni_front_1700000000_abcdef01`);
     const res = await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .send(identityDocs(user.id))
+      .send(documentUrls(user.id, "dni"))
       .expect(400);
     expect(res.body.code).toBe("DOCUMENT_NOT_FOUND");
     expect(res.body.slot).toBe("dni_front");
+  });
+
+  it("refuses to start the flow with an incomplete profile (400 PERFIL_INCOMPLETO)", async () => {
+    const user = await registerUser(app, { verified: false });
+    const res = await http()
+      .post("/verification/identity/dni/submit")
+      .set("Authorization", auth(user.token))
+      .send(documentUrls(user.id, "dni"))
+      .expect(400);
+    expect(res.body.code).toBe("PERFIL_INCOMPLETO");
+    expect(res.body.missing).toEqual(
+      expect.arrayContaining(["DNI", "CUIL", "domicilio"]),
+    );
   });
 
   it("keeps the identity/ folder off the generic media signature endpoint", async () => {
@@ -245,15 +273,32 @@ describe("Verification", () => {
     expect(res.body.code).toBe("RESERVED_MEDIA_FOLDER");
   });
 
-  it("auto-verifies once phone, identity data and documents are complete", async () => {
+  it("verifies the account only once BOTH documents are approved", async () => {
     const user = await registerUser(app, { verified: false });
-
     await verifyPhone(user.token);
     await setIdentityProfile(app, user.token);
+
+    // Solo el DNI: la cuenta todavía no está verificada.
     await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .send(identityDocs(user.id))
+      .send(documentUrls(user.id, "dni"))
+      .expect(201);
+
+    const parcial = await http()
+      .get("/verification/me/status")
+      .set("Authorization", auth(user.token))
+      .expect(200);
+    expect(parcial.body.fullyVerified).toBe(false);
+    expect(parcial.body.verificationStatus).toBe("ID_SUBMITTED");
+    expect(parcial.body.checklist.dniApproved).toBe(true);
+    expect(parcial.body.checklist.licenseApproved).toBe(false);
+
+    // Con la licencia también aprobada, la cuenta queda VERIFIED.
+    await http()
+      .post("/verification/identity/license/submit")
+      .set("Authorization", auth(user.token))
+      .send(documentUrls(user.id, "license"))
       .expect(201);
 
     const status = await http()
@@ -265,40 +310,28 @@ describe("Verification", () => {
     expect(status.body.checklist).toEqual({
       emailVerified: true,
       phoneVerified: true,
-      documentsSubmitted: true,
       dateOfBirthProvided: true,
       identityDataProvided: true,
+      dniApproved: true,
+      licenseApproved: true,
     });
   });
 
-  it("does not auto-verify while dni/cuil/address are missing, then unlocks via PATCH /users/me", async () => {
+  it("refuses to resubmit a document that is already approved (400)", async () => {
     const user = await registerUser(app, { verified: false });
-
-    await verifyPhone(user.token);
+    await setIdentityProfile(app, user.token);
     await http()
-      .post("/verification/identity/submit")
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .send(identityDocs(user.id))
+      .send(documentUrls(user.id, "dni"))
       .expect(201);
 
-    const pending = await http()
-      .get("/verification/me/status")
+    const res = await http()
+      .post("/verification/identity/dni/submit")
       .set("Authorization", auth(user.token))
-      .expect(200);
-    expect(pending.body.fullyVerified).toBe(false);
-    expect(pending.body.verificationStatus).toBe("ID_SUBMITTED");
-    expect(pending.body.checklist.identityDataProvided).toBe(false);
-
-    // Completing the manual identity data is the last checklist item: the
-    // profile update itself re-runs the review and verifies the account.
-    await setIdentityProfile(app, user.token);
-
-    const status = await http()
-      .get("/verification/me/status")
-      .set("Authorization", auth(user.token))
-      .expect(200);
-    expect(status.body.fullyVerified).toBe(true);
-    expect(status.body.verificationStatus).toBe("VERIFIED");
+      .send(documentUrls(user.id, "dni"))
+      .expect(400);
+    expect(res.body.code).toBe("DOCUMENT_ALREADY_APPROVED");
   });
 
   it("requires authentication", async () => {

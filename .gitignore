@@ -64,3 +64,11 @@ ENDPOINTS.md
 
 # External skill repos (local only, not committed)
 .tools/
+
+# Subproyecto Python de verificación de documentos
+python-verifier/.venv/
+python-verifier/__pycache__/
+python-verifier/**/__pycache__/
+python-verifier/.pytest_cache/
+# Fotos reales de prueba: documentos personales, solo locales
+python-verifier/testDocuments/

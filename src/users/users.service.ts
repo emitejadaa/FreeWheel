@@ -8,7 +8,7 @@ import { Prisma, User, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
 import { dniMatchesCuil, normalizeCuil } from "../common/utils/cuil.util";
-import { IdentityReviewService } from "../verification/review/identity-review.service";
+import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 
 type SafeUser = Omit<User, "password">;
@@ -31,7 +31,7 @@ const IDENTITY_LOCKED_FIELDS = [
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly identityReview: IdentityReviewService,
+    private readonly documentVerification: DocumentVerificationService,
   ) {}
 
   async findByEmail(email: string) {
@@ -85,13 +85,17 @@ export class UsersService {
 
     const verified = user.verificationStatus === "VERIFIED";
 
-    // Los últimos cuatro dígitos del documento con el que se verificó. Se lee de
-    // la última solicitud aprobada, no de lo que la persona haya escrito.
+    // Los últimos cuatro dígitos del documento con el que se verificó. Se leen
+    // del DNI aprobado, no de lo que la persona haya escrito.
     let documentLast4: string | null = null;
     if (verified) {
-      const approved = await this.prisma.userVerification.findFirst({
-        where: { userId, status: "VERIFIED", documentNumber: { not: null } },
-        orderBy: { reviewedAt: "desc" },
+      const approved = await this.prisma.documentVerification.findFirst({
+        where: {
+          userId,
+          type: "DNI",
+          status: "APPROVED",
+          documentNumber: { not: null },
+        },
         select: { documentNumber: true },
       });
       const digits = (approved?.documentNumber ?? "").replace(/\D/g, "");
@@ -121,9 +125,13 @@ export class UsersService {
     const touchedIdentityFields = IDENTITY_LOCKED_FIELDS.filter(
       (field) => data[field] !== undefined,
     );
+    // Con la cuenta VERIFIED —o con al menos UN documento ya aprobado contra
+    // estos datos— la identidad queda inmutable: cambiarla invalidaría la
+    // comparación que aprobó el documento.
     if (
-      current.verificationStatus === VerificationStatus.VERIFIED &&
-      touchedIdentityFields.length > 0
+      touchedIdentityFields.length > 0 &&
+      (current.verificationStatus === VerificationStatus.VERIFIED ||
+        (await this.documentVerification.hasApprovedDocument(userId)))
     ) {
       throw new ForbiddenException({
         statusCode: 403,
@@ -165,19 +173,6 @@ export class UsersService {
       where: { id: userId },
       data: updateData,
     });
-
-    // Completar dni/cuil/address puede ser el último ítem del checklist de
-    // verificación: re-evaluar (no-op si falta algo o no hay documentos).
-    if (
-      data.dni !== undefined ||
-      data.cuil !== undefined ||
-      data.address !== undefined
-    ) {
-      await this.identityReview.evaluate(userId);
-      const refreshed = await this.findById(userId);
-      assertFound(refreshed, "User not found");
-      return this.toSafeUser(refreshed);
-    }
 
     return this.toSafeUser(user);
   }

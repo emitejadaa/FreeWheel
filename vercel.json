@@ -4,8 +4,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/index.ts": {
-      "maxDuration": 60,
-      "includeFiles": "node_modules/zxing-wasm/dist/**"
+      "maxDuration": 60
     }
   },
   "rewrites": [

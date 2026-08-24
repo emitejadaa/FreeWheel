@@ -51,9 +51,19 @@ export class FakeCloudinaryService {
     });
   }
 
+  /** publicIds borrados vía destroy(), para poder asertarlo en los tests. */
+  readonly destroyed: string[] = [];
+
+  destroy(publicId: string): Promise<boolean> {
+    this.destroyed.push(publicId);
+    this.missing.add(publicId);
+    return Promise.resolve(true);
+  }
+
   reset(): void {
     this.missing.clear();
     this.bytesByPublicId.clear();
+    this.destroyed.length = 0;
   }
 
   /** Tipado para .overrideProvider(CloudinaryService).useValue(fake). */
@@ -74,12 +84,14 @@ export function identityDocUrl(
   );
 }
 
-/** Las cuatro URLs válidas para un usuario. */
-export function identityDocs(userId: string) {
+/** Las dos URLs (frente y dorso) de un documento, con formato válido. */
+export function documentUrls(
+  userId: string,
+  kind: "dni" | "license",
+  suffix = "1700000000_abcdef01",
+) {
   return {
-    dniFrontUrl: identityDocUrl(userId, "dni_front"),
-    dniBackUrl: identityDocUrl(userId, "dni_back"),
-    licenseFrontUrl: identityDocUrl(userId, "license_front"),
-    licenseBackUrl: identityDocUrl(userId, "license_back"),
+    frontUrl: identityDocUrl(userId, `${kind}_front`, suffix),
+    backUrl: identityDocUrl(userId, `${kind}_back`, suffix),
   };
 }

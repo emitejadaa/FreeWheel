@@ -1,26 +1,18 @@
 import {
-  BarcodeDecoderService,
-  DecodedBarcode,
-  IdentityBarcodeFormat,
-} from "../../src/verification/extraction/barcode-decoder.service";
-import {
-  parseFail,
-  parseOk,
-  verificationError,
-} from "../../src/verification/errors/verification-errors";
-import { DocumentOcrService } from "../../src/verification/extraction/document-ocr.service";
-import { fromOcrExtraction } from "../../src/verification/extraction/ocr/ocr-response.parser";
-import {
+  DniBackResult,
+  DniFrontResult,
   DocumentSlot,
-  OcrExtraction,
-} from "../../src/verification/extraction/extraction.types";
-import { mrzCheckDigit } from "../../src/verification/extraction/mrz-td1.parser";
+  DocverifyResponse,
+  LicenseBackResult,
+  LicenseFrontResult,
+} from "../../src/verification/docverify/docverify.types";
+import { PythonDocverifyService } from "../../src/verification/docverify/python-docverify.service";
 
 /**
- * Identidad sintética coherente: a partir de estos datos se generan el
- * payload del PDF417, las líneas del MRZ (con dígitos verificadores reales) y
- * lo que "lee" el OCR de cada lado. Permite ejercitar el pipeline completo en
- * E2E sin una sola foto de un documento real.
+ * Identidad sintética coherente: a partir de estos datos el fake del
+ * verificador Python arma el contrato completo (OCR, PDF417 y MRZ) como si
+ * las fotos se hubieran leído perfectas. Permite ejercitar el flujo entero
+ * en E2E sin una sola foto real y sin Python instalado.
  */
 export interface IdentityPersona {
   dni: string;
@@ -35,6 +27,10 @@ export interface IdentityPersona {
   dniExpiry: string;
   /** ISO YYYY-MM-DD */
   licenseExpiry: string;
+  issueDate: string;
+  esPrincipiante: boolean;
+  /** ISO YYYY-MM-DD, solo si esPrincipiante. */
+  finPrincipiante: string | null;
 }
 
 export function personaFor(
@@ -48,211 +44,136 @@ export function personaFor(
     address: "Av. Siempre Viva 742, Springfield, CABA",
     dniExpiry: "2035-02-15",
     licenseExpiry: "2031-05-20",
+    issueDate: "2015-03-05",
+    esPrincipiante: false,
+    finPrincipiante: null,
     ...overrides,
   };
 }
 
-function toDdMmYyyy(iso: string): string {
-  const [year, month, day] = iso.split("-");
-  return `${day}/${month}/${year}`;
-}
-
-function toYyMmDd(iso: string): string {
-  const [year, month, day] = iso.split("-");
-  return `${year.slice(2)}${month}${day}`;
-}
-
-function pad(value: string, length: number): string {
-  return value.padEnd(length, "<");
-}
-
-/** Payload del PDF417 del frente del DNI. */
-export function pdf417Payload(persona: IdentityPersona): string {
-  return [
-    "00123456789",
-    persona.lastName,
-    persona.firstName,
-    persona.sex,
-    persona.dni,
-    "A",
-    toDdMmYyyy(persona.birthDate),
-    "05/03/2015",
-  ].join("@");
-}
-
-/** Tres líneas TD1 con dígitos verificadores válidos. */
-export function mrzLines(persona: IdentityPersona): string[] {
-  const documentField = pad(persona.dni, 9);
-  const birth = toYyMmDd(persona.birthDate);
-  const expiry = toYyMmDd(persona.dniExpiry);
-
-  const line1 = `I<ARG${documentField}${mrzCheckDigit(documentField)}${"<".repeat(15)}`;
-  const line2Head =
-    `${birth}${mrzCheckDigit(birth)}${persona.sex}` +
-    `${expiry}${mrzCheckDigit(expiry)}ARG${"<".repeat(11)}`;
-
-  const compositeBase =
-    line1.slice(5, 30) +
-    line2Head.slice(0, 7) +
-    line2Head.slice(8, 15) +
-    line2Head.slice(18, 29);
-  const line2 = `${line2Head}${mrzCheckDigit(compositeBase)}`;
-
-  const names = `${persona.lastName}<<${persona.firstName.replace(/ /g, "<")}`;
-  return [line1, line2, pad(names, 30)];
-}
-
-/** Lo que el OCR "lee" en cada lado para esta persona. */
-export function ocrForPersona(
+/** El contrato completo que devolvería el verificador para esta persona. */
+export function docverifyResponseFor(
   persona: IdentityPersona,
-): Record<DocumentSlot, OcrExtraction> {
+  slots: DocumentSlot[],
+): DocverifyResponse {
+  const dniFront: DniFrontResult = {
+    ocr: {
+      title: "ocr",
+      apellido: persona.lastName,
+      nombre: persona.firstName,
+      sexo: persona.sex,
+      nDocumento: persona.dni,
+      fechaNacimiento: persona.birthDate,
+      fechaEmision: persona.issueDate,
+      fechaVencimiento: persona.dniExpiry,
+    },
+    codigo: {
+      title: "codigo",
+      apellido: persona.lastName,
+      nombre: persona.firstName,
+      sexo: persona.sex,
+      nDocumento: persona.dni,
+      fechaNacimiento: persona.birthDate,
+      fechaEmision: persona.issueDate,
+    },
+  };
+  const dniBack: DniBackResult = {
+    ocr: { title: "ocr", domicilio: persona.address, cuil: persona.cuil },
+    mrz: {
+      title: "mrz",
+      apellido: persona.lastName,
+      nombre: persona.firstName,
+      sexo: persona.sex,
+      nDocumento: persona.dni,
+      fechaNacimiento: persona.birthDate,
+      fechaVencimiento: persona.dniExpiry,
+    },
+  };
+  const licenseFront: LicenseFrontResult = {
+    ocr: {
+      title: "ocr",
+      numLicencia: persona.dni,
+      apellido: persona.lastName,
+      nombre: persona.firstName,
+      domicilio: persona.address,
+      fechaNacimiento: persona.birthDate,
+      fechaVencimiento: persona.licenseExpiry,
+    },
+  };
+  const licenseBack: LicenseBackResult = {
+    ocr: {
+      title: "ocr",
+      cuil: persona.cuil,
+      esPrincipiante: persona.esPrincipiante,
+      finPrincipiante: persona.finPrincipiante,
+    },
+  };
+
+  const all = {
+    dni_front: dniFront,
+    dni_back: dniBack,
+    license_front: licenseFront,
+    license_back: licenseBack,
+  };
+
   return {
-    dni_front: {
-      classifiedAs: "dni_front",
-      fields: {
-        apellido: persona.lastName,
-        nombre: persona.firstName,
-        sexo: persona.sex,
-        nroDocumento: persona.dni,
-        fechaNacimiento: toDdMmYyyy(persona.birthDate),
-        fechaVencimiento: toDdMmYyyy(persona.dniExpiry),
-      },
-    },
-    dni_back: {
-      classifiedAs: "dni_back",
-      fields: {
-        domicilio: persona.address,
-        cuil: persona.cuil,
-        mrzLines: mrzLines(persona),
-      },
-    },
-    license_front: {
-      classifiedAs: "license_front",
-      fields: {
-        apellido: persona.lastName,
-        nombre: persona.firstName,
-        nroDocumento: persona.dni,
-        domicilio: persona.address,
-        fechaNacimiento: toDdMmYyyy(persona.birthDate),
-        fechaVencimiento: toDdMmYyyy(persona.licenseExpiry),
-      },
-    },
-    license_back: { classifiedAs: "license_back", fields: {} },
+    ok: true,
+    version: "test",
+    documentos: Object.fromEntries(
+      slots.map((slot) => [slot, all[slot]]),
+    ) as DocverifyResponse["documentos"],
   };
 }
 
-/** El publicId viaja como "bytes" (ver FakeCloudinaryService.download). */
-function slotFromBytes(bytes: Uint8Array): DocumentSlot | null {
-  const publicId = new TextDecoder().decode(bytes);
-  const slots: DocumentSlot[] = [
-    "dni_front",
-    "dni_back",
-    "license_front",
-    "license_back",
-  ];
-  return slots.find((slot) => publicId.includes(`/${slot}_`)) ?? null;
-}
+type Mutator = (response: DocverifyResponse) => void;
 
 /**
- * Decodificador y OCR en memoria. Por defecto responden con la persona
- * registrada para ese usuario; los tests pueden romper un slot concreto para
- * simular un código ilegible o una foto equivocada.
+ * Reemplaza a PythonDocverifyService en los E2E: devuelve el contrato de la
+ * persona configurada, sin ejecutar ningún subproceso. `mutate` deja romper
+ * campos puntuales para probar los motivos de fallo.
  */
-export class FakeIdentityExtraction {
-  private readonly personas = new Map<string, IdentityPersona>();
-  private readonly barcodeOverrides = new Map<DocumentSlot, string | null>();
-  private readonly ocrOverrides = new Map<DocumentSlot, OcrExtraction | null>();
+export class FakePythonDocverifyService {
+  persona: IdentityPersona | null = null;
+  private mutators: Mutator[] = [];
+  /** Con qué slots se llamó cada vez, para asertar el flujo. */
+  readonly calls: DocumentSlot[][] = [];
 
-  /** Registra la identidad que "muestran" los documentos de un usuario. */
-  register(userId: string, persona: IdentityPersona): IdentityPersona {
-    this.personas.set(userId, persona);
-    return persona;
+  usePersona(persona: IdentityPersona): void {
+    this.persona = persona;
   }
 
-  breakBarcode(slot: DocumentSlot): void {
-    this.barcodeOverrides.set(slot, null);
-  }
-
-  setOcr(slot: DocumentSlot, extraction: OcrExtraction | null): void {
-    this.ocrOverrides.set(slot, extraction);
+  /** Ajusta la próxima respuesta (p. ej. borrar un campo o meter un error). */
+  mutate(mutator: Mutator): void {
+    this.mutators.push(mutator);
   }
 
   reset(): void {
-    this.personas.clear();
-    this.barcodeOverrides.clear();
-    this.ocrOverrides.clear();
+    this.persona = null;
+    this.mutators = [];
+    this.calls.length = 0;
   }
 
-  private personaForBytes(bytes: Uint8Array): IdentityPersona | null {
-    const publicId = new TextDecoder().decode(bytes);
-    for (const [userId, persona] of this.personas) {
-      if (publicId.includes(`identity/${userId}/`)) return persona;
-    }
-    return null;
+  available(): Promise<boolean> {
+    return Promise.resolve(true);
   }
 
-  get barcodes(): BarcodeDecoderService {
-    const decode = (
-      bytes: Uint8Array,
-      formats: IdentityBarcodeFormat[],
-    ): Promise<DecodedBarcode[]> => {
-      const slot = slotFromBytes(bytes);
-      const persona = this.personaForBytes(bytes);
-      if (!slot || !persona) return Promise.resolve([]);
-
-      if (this.barcodeOverrides.has(slot)) {
-        const override = this.barcodeOverrides.get(slot);
-        if (!override) return Promise.resolve([]);
-        return Promise.resolve([{ format: formats[0], text: override }]);
-      }
-
-      if (slot === "dni_front" && formats.includes("PDF417")) {
-        return Promise.resolve([
-          { format: "PDF417", text: pdf417Payload(persona) },
-        ]);
-      }
-      if (slot === "license_back" && formats.includes("QRCode")) {
-        return Promise.resolve([
-          {
-            format: "QRCode",
-            text: `DNI=${persona.dni};VTO=${toDdMmYyyy(persona.licenseExpiry)}`,
-          },
-        ]);
-      }
-      return Promise.resolve([]);
-    };
-
-    return { decode } as unknown as BarcodeDecoderService;
-  }
-
-  get ocr(): DocumentOcrService {
-    /** Qué "lee" el modelo en esa foto, en la forma plana de siempre. */
-    const plano = (
-      slot: DocumentSlot,
-      bytes: Uint8Array,
-    ): OcrExtraction | null => {
-      if (this.ocrOverrides.has(slot)) {
-        return this.ocrOverrides.get(slot) ?? null;
-      }
-      const persona = this.personaForBytes(bytes);
-      return persona ? ocrForPersona(persona)[slot] : null;
-    };
-
-    // El pipeline pide `read()`, que devuelve la lectura con evidencia y con
-    // el motivo cuando falla; `fromOcrExtraction` levanta la forma plana a esa
-    // otra, así los tests siguen describiendo la persona en dos líneas.
-    const read = (slot: DocumentSlot, bytes: Uint8Array) => {
-      const extraction = plano(slot, bytes);
-      return Promise.resolve(
-        extraction
-          ? parseOk(fromOcrExtraction(slot, extraction))
-          : parseFail(verificationError("OCR_MODEL_UNAVAILABLE", { slot })),
+  analyze(
+    images: Partial<Record<DocumentSlot, Uint8Array>>,
+  ): Promise<DocverifyResponse> {
+    const slots = Object.keys(images) as DocumentSlot[];
+    this.calls.push(slots);
+    if (!this.persona) {
+      throw new Error(
+        "FakePythonDocverifyService: llamá a usePersona() antes del submit",
       );
-    };
+    }
+    const response = docverifyResponseFor(this.persona, slots);
+    for (const mutator of this.mutators) mutator(response);
+    return Promise.resolve(response);
+  }
 
-    const extract = (slot: DocumentSlot, bytes: Uint8Array) =>
-      Promise.resolve(plano(slot, bytes));
-
-    return { read, extract } as unknown as DocumentOcrService;
+  /** Tipado para .overrideProvider(PythonDocverifyService).useValue(fake). */
+  asService(): PythonDocverifyService {
+    return this as unknown as PythonDocverifyService;
   }
 }

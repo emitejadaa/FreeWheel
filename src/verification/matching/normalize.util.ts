@@ -179,3 +179,77 @@ export function addressSimilarity(a: string, b: string): number {
   const shared = left.filter((token) => right.has(token)).length;
   return shared / left.length;
 }
+
+/**
+ * Distancia de Levenshtein acotada a 2: alcanza para decidir si dos tokens
+ * son "el mismo con un error de OCR" y corta temprano en cuanto se pasa.
+ */
+function editDistanceAtMost2(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 3;
+
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      );
+      rowMin = Math.min(rowMin, current[j]);
+    }
+    if (rowMin > 2) return 3;
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+/** ¿Son el mismo token, tolerando UN caracter mal leído en tokens largos? */
+function sameTokenTolerant(a: string, b: string): boolean {
+  if (a === b) return true;
+  // Solo tokens con sustancia: "LUZ" vs "LUX" en 3 letras es otra palabra,
+  // "ARAGON" vs "ABAGON" en 6 es un error de lectura.
+  if (Math.min(a.length, b.length) < 4) return false;
+  return editDistanceAtMost2(a, b) <= 1;
+}
+
+/**
+ * Igual que compareNames, pero tolera UN caracter mal transcripto por token
+ * (en tokens de 4+ letras). Es para las fuentes que pasan por lectura óptica
+ * — el OCR posicional y la línea de nombres del MRZ, que no tiene dígito
+ * verificador propio (TD1 solo protege documento y fechas): "TEJADA" leído
+ * como "TEADA" es ruido de lectura, no otra persona. Las fuentes
+ * decodificadas (PDF417) y el formulario se comparan con compareNames, sin
+ * tolerancia.
+ */
+export function compareNamesOcr(
+  accountValue: string,
+  documentValue: string,
+): "match" | "partial" | "mismatch" {
+  const exact = compareNames(accountValue, documentValue);
+  if (exact !== "mismatch") return exact;
+
+  const accountTokens = tokenize(accountValue);
+  const documentTokens = tokenize(documentValue);
+  if (accountTokens.length === 0 || documentTokens.length === 0) {
+    return "mismatch";
+  }
+
+  const matched = accountTokens.filter((token) =>
+    documentTokens.some((candidate) => sameTokenTolerant(token, candidate)),
+  );
+
+  if (
+    !matched.some((token) => sameTokenTolerant(token, accountTokens[0])) &&
+    !documentTokens.some((c) => sameTokenTolerant(accountTokens[0], c))
+  ) {
+    return "mismatch";
+  }
+  if (matched.length === accountTokens.length) {
+    return accountTokens.length === documentTokens.length ? "match" : "partial";
+  }
+  return "mismatch";
+}

@@ -91,13 +91,6 @@ const DOCUMENT_MAX_TOKENS = 1200;
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 
-/** Documentos que sabe revisar inspectDocument(). */
-export type DocumentKind =
-  | "DNI_FRONT"
-  | "DNI_BACK"
-  | "LICENSE_FRONT"
-  | "LICENSE_BACK";
-
 /**
  * IDIOMA DE LAS RESPUESTAS DE LA IA
  *
@@ -128,67 +121,16 @@ const answerInLanguage = (lang: SupportedLang, fields: string[]): string =>
   `Escribí el contenido de ${fields.map((f) => `"${f}"`).join(" y ")} en ${LANG_NAME[lang]}. ` +
   "Las claves del JSON no se traducen: van tal cual están escritas acá.";
 
-// Los textos que NO los escribe el modelo (fallos del servicio y respaldos).
-const UNAVAILABLE: Record<
-  SupportedLang,
-  { notConfigured: string; unavailable: string; unreadable: string }
-> = {
-  es: {
-    notConfigured: "La revisión automática no está configurada en el servidor.",
-    unavailable: "La revisión automática no está disponible en este momento.",
-    unreadable: "No se pudo interpretar la revisión automática.",
-  },
-  en: {
-    notConfigured: "The automatic review is not configured on the server.",
-    unavailable: "The automatic review is not available right now.",
-    unreadable: "The automatic review could not be interpreted.",
-  },
-  pt: {
-    notConfigured: "A revisão automática não está configurada no servidor.",
-    unavailable: "A revisão automática não está disponível neste momento.",
-    unreadable: "Não foi possível interpretar a revisão automática.",
-  },
-  it: {
-    notConfigured: "Il controllo automatico non è configurato sul server.",
-    unavailable: "Il controllo automatico non è disponibile in questo momento.",
-    unreadable: "Non è stato possibile interpretare il controllo automatico.",
-  },
-  zh: {
-    notConfigured: "服务器上尚未配置自动审核。",
-    unavailable: "自动审核目前不可用。",
-    unreadable: "无法解析自动审核的结果。",
-  },
-};
-
-/** Qué texto de UNAVAILABLE le corresponde a cada motivo de fallo. */
-const UNAVAILABLE_TEXT: Record<
-  AiUnavailableCode,
-  "notConfigured" | "unavailable" | "unreadable"
-> = {
-  not_configured: "notConfigured",
-  upstream_error: "unavailable",
-  unreadable: "unreadable",
-};
-
-const DOC_RESULT: Record<SupportedLang, { ok: string; bad: string }> = {
-  es: {
-    ok: "El documento coincide con lo esperado.",
-    bad: "La imagen no corresponde al documento pedido.",
-  },
-  en: {
-    ok: "The document matches what was expected.",
-    bad: "The image is not the document that was asked for.",
-  },
-  pt: {
-    ok: "O documento corresponde ao esperado.",
-    bad: "A imagem não corresponde ao documento pedido.",
-  },
-  it: {
-    ok: "Il documento corrisponde a quanto atteso.",
-    bad: "L'immagine non corrisponde al documento richiesto.",
-  },
-  zh: { ok: "证件与要求相符。", bad: "图片不是要求的证件。" },
-};
+/**
+ * Por qué no se pudo revisar una imagen. Se devuelve al front para que pueda
+ * distinguir "el servicio no está configurado" (falta la GROQ_API_KEY en el
+ * servidor) de "el proveedor falló": son dos problemas muy distintos y antes los
+ * dos llegaban como un genérico "no se pudo revisar".
+ */
+export type AiUnavailableCode =
+  | "not_configured"
+  | "upstream_error"
+  | "unreadable";
 
 const VISION_RESULT: Record<
   SupportedLang,
@@ -235,28 +177,6 @@ const VISION_RESULT: Record<
     notAVehicleSeen: (d) => `这不是车辆${d ? `：看到的是${d}` : ""}。`,
   },
 };
-
-const DOCUMENT_PROMPTS: Record<DocumentKind, string> = {
-  DNI_FRONT:
-    "el FRENTE de un documento nacional de identidad (DNI), con la foto de la persona, su nombre y el número de documento",
-  DNI_BACK:
-    "el DORSO de un documento nacional de identidad (DNI), con datos como domicilio, fecha de emisión o código de barras",
-  LICENSE_FRONT:
-    "el FRENTE de una licencia de conducir, con la foto de la persona, su nombre y el número de licencia",
-  LICENSE_BACK:
-    "el DORSO de una licencia de conducir, con las categorías habilitadas y/o la fecha de vencimiento",
-};
-
-/**
- * Por qué no se pudo revisar una imagen. Se devuelve al front para que pueda
- * distinguir "el servicio no está configurado" (falta la GROQ_API_KEY en el
- * servidor) de "el proveedor falló": son dos problemas muy distintos y antes los
- * dos llegaban como un genérico "no se pudo revisar".
- */
-export type AiUnavailableCode =
-  | "not_configured"
-  | "upstream_error"
-  | "unreadable";
 
 /**
  * Lo que sale de una consulta al modelo de visión.
@@ -316,18 +236,6 @@ export interface AiHealthReport {
   note?: string;
 }
 
-export interface DocumentInspection {
-  /** true = corresponde, false = no corresponde, null = no se pudo revisar. */
-  matches: boolean | null;
-  reason: string;
-  /** Solo cuando matches es null: por qué no se pudo revisar. */
-  code?: AiUnavailableCode;
-  detectedType?: string | null;
-  documentNumber?: string | null;
-  fullName?: string | null;
-  expiresAt?: string | null;
-}
-
 /** Recorta el JSON de una respuesta que puede venir con texto alrededor. */
 function extractJson(text: string): Record<string, unknown> | null {
   const candidate = findJsonObject(stripReasoning(text));
@@ -345,21 +253,6 @@ const asText = (value: unknown): string | null =>
   value.trim().toLowerCase() !== "null"
     ? value.trim().slice(0, 160)
     : null;
-
-const asDigits = (value: unknown): string | null => {
-  const text = asText(value);
-  if (!text) return null;
-  const digits = text.replace(/\D/g, "");
-  return digits.length >= 5 ? digits.slice(0, 20) : null;
-};
-
-const asDate = (value: unknown): string | null => {
-  const text = asText(value);
-  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
-  return Number.isNaN(new Date(`${text}T00:00:00.000Z`).getTime())
-    ? null
-    : text;
-};
 
 /** Recorte de una respuesta del proveedor, para poder mostrarla en una línea. */
 function sampleOf(texto: string): string {
@@ -897,114 +790,6 @@ export class AiService {
 
     const data = (await res.json()) as { text?: string };
     return { text: (data.text ?? "").trim() };
-  }
-
-  /**
-   * Revisa con IA si una foto es realmente el documento que se pidió, y extrae
-   * los datos que se ven en él.
-   *
-   * Es lo que evita que se suba "cualquier foto" como DNI o licencia: el modelo
-   * mira la imagen y responde si corresponde al tipo de documento esperado, si
-   * es legible, y qué número y nombre figuran. Con eso el backend puede aprobar
-   * o rechazar la verificación y guardar los datos en la base.
-   *
-   * Devuelve `matches: null` cuando la IA no está disponible: en ese caso el
-   * llamador decide (no se toma como rechazo).
-   */
-  async inspectDocument(
-    imageUrl: string,
-    kind: DocumentKind,
-    lang: SupportedLang = "es",
-  ): Promise<DocumentInspection> {
-    const expected = DOCUMENT_PROMPTS[kind];
-
-    const answer = await this.askVisionModel(
-      imageUrl,
-      `Analizá la imagen. Se espera ${expected}.\n` +
-        "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
-        '{"corresponde": true|false, "legible": true|false, ' +
-        '"tipo_detectado": "texto corto", "numero": "solo dígitos o null", ' +
-        '"nombre": "nombre completo o null", "vencimiento": "YYYY-MM-DD o null", ' +
-        '"motivo": "una frase explicando la decisión"}\n' +
-        "Si la imagen no es un documento de identidad (por ejemplo un paisaje, " +
-        "una mascota, una captura de pantalla o una persona sin documento), " +
-        '"corresponde" debe ser false.\n' +
-        answerInLanguage(lang, ["motivo", "tipo_detectado"]),
-      DOCUMENT_MAX_TOKENS,
-      { jsonMode: true, requireJson: true },
-    );
-
-    if (!answer.ok) {
-      return {
-        matches: null,
-        code: answer.code,
-        reason: UNAVAILABLE[lang][UNAVAILABLE_TEXT[answer.code]],
-      };
-    }
-
-    const parsed = extractJson(answer.content);
-    if (!parsed) {
-      return {
-        matches: null,
-        code: "unreadable",
-        reason: UNAVAILABLE[lang].unreadable,
-      };
-    }
-
-    const matches = parsed.corresponde === true && parsed.legible !== false;
-    return {
-      matches,
-      reason:
-        typeof parsed.motivo === "string" && parsed.motivo
-          ? parsed.motivo
-          : matches
-            ? DOC_RESULT[lang].ok
-            : DOC_RESULT[lang].bad,
-      detectedType: asText(parsed.tipo_detectado),
-      documentNumber: asDigits(parsed.numero),
-      fullName: asText(parsed.nombre),
-      expiresAt: asDate(parsed.vencimiento),
-    };
-  }
-
-  /**
-   * Extracción estructurada libre sobre una imagen: mismo modelo de visión,
-   * pero con el prompt que arme el llamador. La usa el OCR de documentos de la
-   * verificación de identidad (modo document_ai), que necesita leer campos
-   * concretos de cada lado del DNI y de la licencia.
-   *
-   * Devuelve el texto crudo del modelo (el llamador parsea el JSON) o null si
-   * el proveedor no está disponible: ese null significa "fuente no
-   * disponible", nunca un dato válido.
-   */
-  async visionStructured(
-    imageDataUrl: string,
-    prompt: string,
-    maxTokens = DOCUMENT_MAX_TOKENS,
-  ): Promise<string | null> {
-    const answer = await this.visionStructuredDetailed(
-      imageDataUrl,
-      prompt,
-      maxTokens,
-    );
-    return answer.ok ? answer.content : null;
-  }
-
-  /**
-   * Igual que visionStructured pero devolviendo POR QUÉ falló, con qué modelo
-   * y qué contestó. Es lo que necesita la lectura de documentos para poder
-   * decir "esta foto no se pudo leer porque el modelo contestó tal cosa" en
-   * vez de un `null` que no se puede diagnosticar.
-   */
-  visionStructuredDetailed(
-    imageDataUrl: string,
-    prompt: string,
-    maxTokens = DOCUMENT_MAX_TOKENS,
-  ): Promise<VisionAnswer | VisionFailure> {
-    return this.askVisionModel(imageDataUrl, prompt, maxTokens, {
-      jsonMode: true,
-      requireJson: true,
-    });
   }
 
   /**

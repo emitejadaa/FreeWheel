@@ -1,26 +1,14 @@
-import { IsIn, IsOptional } from "class-validator";
-
-export const IDENTITY_DOCUMENTS = ["dni", "license", "selfie"] as const;
-export const IDENTITY_SIDES = ["front", "back"] as const;
-
-export type IdentityDocument = (typeof IDENTITY_DOCUMENTS)[number];
-export type IdentitySide = (typeof IDENTITY_SIDES)[number];
+import { IsIn } from "class-validator";
 
 /**
- * Pedido de firma de subida para UN archivo de identidad concreto. El cliente
- * solo elige documento y lado; carpeta, public_id y tipo de entrega
- * (authenticated) los fija el servidor — así el slot queda ligado
- * estructuralmente al archivo y es imposible confundir DNI con licencia o
- * frente con dorso.
- *
- * "selfie" no lleva lado (queda reservada para la verificación de rostro).
+ * Qué archivo se está por subir. El servidor arma la carpeta y el public_id
+ * a partir del usuario del JWT más estos dos datos: el cliente no elige
+ * nada más.
  */
 export class UploadSignatureDto {
-  @IsIn(IDENTITY_DOCUMENTS)
-  document!: IdentityDocument;
+  @IsIn(["dni", "license"])
+  document!: "dni" | "license";
 
-  // Obligatorio para dni y license, prohibido para selfie: lo valida el service.
-  @IsOptional()
-  @IsIn(IDENTITY_SIDES)
-  side?: IdentitySide;
+  @IsIn(["front", "back"])
+  side!: "front" | "back";
 }

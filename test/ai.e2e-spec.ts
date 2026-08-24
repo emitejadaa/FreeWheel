@@ -94,13 +94,6 @@ describe("Rutas de IA: quién gasta la cuota", () => {
     expect(res.status).not.toBe(401);
   });
 
-  it("POST /ai/document sigue pidiendo cuenta: 401", async () => {
-    await request(app.getHttpServer())
-      .post("/ai/document")
-      .send({ image: IMAGEN, kind: "DNI_FRONT" })
-      .expect(401);
-  });
-
   it("POST /ai/transcribe sigue pidiendo cuenta: 401", async () => {
     await request(app.getHttpServer())
       .post("/ai/transcribe")

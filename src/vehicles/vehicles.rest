@@ -5,7 +5,7 @@
 ### requieren JWT + cuenta VERIFICADA (JwtAuthGuard, VerifiedAccountGuard,
 ### @RequireVerifiedAccount — teléfono + DNI + licencia aprobados). Sin cuenta
 ### verificada estos tres devuelven 403 { code: "ACCOUNT_NOT_VERIFIED" }.
-### Para levantar una cuenta VERIFIED rápido en local: IDENTITY_REVIEW_MODE=auto_approve
+### Para levantar una cuenta VERIFIED rápido en local: DOCVERIFY_MODE=auto_approve
 ### en .env y completar el flujo de src/verification/verification.rest, o forzarlo
 ### desde src/admin/admin.rest (PATCH /admin/verifications/:id/review).
 ###

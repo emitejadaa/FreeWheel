@@ -1,0 +1,14 @@
+# Entorno virtual (creado con venv) — no se versiona.
+bin/
+lib/
+lib64
+include/
+pyvenv.cfg
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Workspace de subagent-driven-development
+.superpowers/

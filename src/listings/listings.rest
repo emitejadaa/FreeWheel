@@ -6,7 +6,7 @@
 ### POST/PATCH/DELETE de listing, availability-blocks (crear/borrar) y price-change
 ### (request/confirm) requieren JWT + cuenta VERIFICADA. GET del catálogo es público.
 ### Ver src/verification/verification.rest o src/admin/admin.rest para dejar una
-### cuenta VERIFIED en local (IDENTITY_REVIEW_MODE=auto_approve).
+### cuenta VERIFIED en local (DOCVERIFY_MODE=auto_approve).
 ###
 ### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
 ### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo

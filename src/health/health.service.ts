@@ -14,14 +14,18 @@ const REQUIRED_SCHEMA: {
   { feature: "favoritos", table: "Favorite" },
   { feature: "filtro por categoría", table: "Vehicle", column: "category" },
   {
-    feature: "datos leídos del DNI",
-    table: "UserVerification",
+    feature: "verificación documental",
+    table: "DocumentVerification",
+  },
+  {
+    feature: "datos leídos del documento",
+    table: "DocumentVerification",
     column: "documentNumber",
   },
   {
-    feature: "vencimiento de la licencia",
-    table: "UserVerification",
-    column: "licenseExpiresAt",
+    feature: "motivos del veredicto",
+    table: "DocumentVerification",
+    column: "reasonCodes",
   },
 ];
 
