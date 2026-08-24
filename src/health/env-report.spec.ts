@@ -26,7 +26,7 @@ describe("buildEnvReport", () => {
       "FRONTEND_URL",
       "GOOGLE_CLIENT_ID",
       "GOOGLE_CLIENT_SECRET",
-      "IDENTITY_REVIEW_MODE",
+      "DOCVERIFY_MODE",
       "PAYMENTS_PROVIDER",
       "SMS_PROVIDER",
       "REQUIRE_PHONE_VERIFICATION",
@@ -105,12 +105,12 @@ describe("buildEnvReport", () => {
     soloCon({
       DATABASE_URL: "postgres://x",
       JWT_SECRET: "s",
-      IDENTITY_REVIEW_MODE: "manual",
+      DOCVERIFY_MODE: "manual",
     });
 
     const reporte = buildEnvReport();
 
-    expect(reporte.modes.IDENTITY_REVIEW_MODE).toBe("manual");
+    expect(reporte.modes.DOCVERIFY_MODE).toBe("manual");
     // Los que no están cargados dicen cuál es el valor por defecto.
     expect(reporte.modes.PAYMENTS_PROVIDER).toContain("defecto");
   });

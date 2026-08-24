@@ -61,11 +61,37 @@ export class MediaService {
     return { cloudName, apiKey, timestamp, signature, folder };
   }
 
-  registerAsset(ownerId: string, data: RegisterMediaAssetDto) {
+  /**
+   * Guarda un archivo ya subido (a Cloudinary) como asset del usuario.
+   *
+   * El archivo entra AL FINAL de la fila, no al principio. Ahora que el dueño
+   * puede ordenar las fotos de su auto, el lugar por defecto importa: con
+   * position 0 —el valor de la columna—, una foto agregada después de haber
+   * ordenado quedaría empatada con la que el dueño puso de portada, y la base
+   * elegiría cuál va primero. Agregar una foto le cambiaría la portada al aviso
+   * sin que nadie lo haya pedido.
+   *
+   * Se cuenta lo que ya hay en la misma entidad para saber cuál es el final.
+   * Cuando el asset no está pegado a nada (entityId vacío), no hay fila en la
+   * que ponerse y queda en 0, que es lo que valía antes.
+   */
+  async registerAsset(ownerId: string, data: RegisterMediaAssetDto) {
+    const position =
+      data.entityType && data.entityId
+        ? await this.prisma.mediaAsset.count({
+            where: {
+              entityType: data.entityType,
+              entityId: data.entityId,
+              kind: data.kind,
+            },
+          })
+        : 0;
+
     return this.prisma.mediaAsset.create({
       data: {
         ...data,
         ownerId,
+        position,
       },
     });
   }

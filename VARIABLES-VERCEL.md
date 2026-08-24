@@ -180,7 +180,10 @@ que crear una cuenta de Stripe.
 | `ONBOARDING_JWT_EXPIRES_IN` | `30m` | Cuánto dura el token del registro a medio hacer. |
 | `DOCVERIFY_MODE` | `auto` | Cómo se revisan el DNI y la licencia: `auto` (verificador Python), `manual` o `auto_approve`. En Vercel serverless **no hay Python**, así que `auto` degrada a `manual` avisando. |
 | `DOCVERIFY_TIMEOUT_MS` | `120000` | Tope del verificador. Solo aplica donde `auto` esté realmente disponible. |
-| `SMS_PROVIDER` | `mock` | Mandar un SMS de verdad es pago. Con `mock`, el código del teléfono llega al **email** de la persona y la verificación funciona igual. |
+| `SMS_PROVIDER` | `mock` | Por dónde sale el código del teléfono. Con `mock` llega al **email** de la persona y la verificación funciona igual, sin costo. Con `twilio`, sale por SMS de verdad y hacen falta las tres de abajo. |
+| `TWILIO_ACCOUNT_SID` | — | Solo con `SMS_PROVIDER=twilio`. Está arriba de todo en la consola de Twilio (empieza con `AC`). |
+| `TWILIO_AUTH_TOKEN` | — | Solo con `SMS_PROVIDER=twilio`. Al lado del anterior. |
+| `TWILIO_FROM_NUMBER` | — | Solo con `SMS_PROVIDER=twilio`. El número que te dio Twilio (`+1...`). Se puede reemplazar por `TWILIO_MESSAGING_SERVICE_SID` (`MG...`); va uno de los dos. |
 | `REQUIRE_PHONE_VERIFICATION` | `false` | Si el teléfono confirmado es obligatorio para publicar y reservar. |
 | `VERIFICATION_CODE_IN_RESPONSE` | `false` | Solo para mostrar la app: con `true`, la pantalla muestra el código en vez de hacer esperar el mail. |
 | `PRICE_CHANGE_COOLDOWN_HOURS` | `24` | Cada cuánto se puede cambiar el precio de una publicación. |
