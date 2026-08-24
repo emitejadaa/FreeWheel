@@ -1,4 +1,7 @@
-import { CloudinaryService } from "../../src/media/cloudinary.service";
+import {
+  CloudinaryService,
+  parseCloudinaryUrl,
+} from "../../src/media/cloudinary.service";
 
 export const FAKE_CLOUD_NAME = "test-cloud";
 
@@ -58,6 +61,18 @@ export class FakeCloudinaryService {
     this.destroyed.push(publicId);
     this.missing.add(publicId);
     return Promise.resolve(true);
+  }
+
+  // Usa la misma función que el servicio real: si el fake parseara distinto,
+  // los tests estarían probando otro parser que el que corre en producción.
+  parseAssetUrl(url: string) {
+    return parseCloudinaryUrl(FAKE_CLOUD_NAME, url);
+  }
+
+  destroyByUrl(url: string): Promise<boolean> {
+    const asset = this.parseAssetUrl(url);
+    if (!asset) return Promise.resolve(false);
+    return this.destroy(asset.publicId);
   }
 
   reset(): void {

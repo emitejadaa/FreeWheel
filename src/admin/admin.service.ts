@@ -11,6 +11,7 @@ import { AuditLogService } from "../common/services/audit-log.service";
 import { assertFound } from "../common/utils/entity.util";
 import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 import { CloudinaryService } from "../media/cloudinary.service";
+import { MediaCleanupService } from "../media/media-cleanup.service";
 import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
@@ -26,6 +27,7 @@ export class AdminService {
     private readonly documentVerification: DocumentVerificationService,
     private readonly deletionPolicy: AccountDeletionPolicy,
     private readonly reviews: ReviewsService,
+    private readonly mediaCleanup: MediaCleanupService,
   ) {}
 
   listUsers() {
@@ -63,20 +65,48 @@ export class AdminService {
           "acceso al panel.",
       );
     }
-    const user = await this.prisma.user.update({
-      where: { id },
-      data: { status },
-      select: USER_SAFE_SELECT,
-    });
+
+    const [user, listingsTakenDown] = await this.prisma.$transaction(
+      async (tx) => {
+        const updated = await tx.user.update({
+          where: { id },
+          data: { status },
+          select: USER_SAFE_SELECT,
+        });
+
+        // Sacar a la cuenta de circulación tiene que sacar TAMBIÉN sus avisos:
+        // si no, los autos de una cuenta suspendida siguen apareciendo en el
+        // buscador y se pueden reservar, y quien reserva no tiene forma de
+        // enterarse de que del otro lado no hay nadie.
+        //
+        // Es el mismo DELETED que usa el dueño cuando borra su propio aviso
+        // (DELETE /listings/:id): desaparece del buscador, del detalle y no se
+        // puede editar. La fila queda porque de ella cuelgan las reservas, los
+        // contratos y los pagos de OTRAS personas, que no se tocan.
+        const bajas =
+          status === UserStatus.ACTIVE
+            ? { count: 0 }
+            : await tx.listing.updateMany({
+                where: { ownerId: id, status: { not: ListingStatus.DELETED } },
+                data: { status: ListingStatus.DELETED },
+              });
+
+        return [updated, bajas.count] as const;
+      },
+    );
+
     await this.auditLog.create({
       actorId,
       targetUserId: id,
       action: "admin.user.status.update",
       entityType: "User",
       entityId: id,
-      metadata: { status },
+      metadata: { status, listingsTakenDown },
     });
-    return user;
+
+    // Las fotos y los documentos NO se tocan: la cuenta sigue existiendo y esto
+    // se puede revertir. Borrarlos es cosa del borrado definitivo.
+    return { ...user, listingsTakenDown };
   }
 
   /**
@@ -357,12 +387,11 @@ export class AdminService {
 
     const user = await this.getUser(id);
 
-    // Se leen ANTES de la transacción porque después las filas ya no están.
-    const identityDocumentUrls =
-      await this.prisma.documentVerification.findMany({
-        where: { userId: id },
-        select: { frontUrl: true, backUrl: true },
-      });
+    // Se lee ANTES de la transacción porque después las filas ya no están, y
+    // sin ellas no hay forma de saber qué archivos había que borrar del
+    // storage. Junta las fotos de perfil, las de los autos y los avisos, y los
+    // documentos de identidad.
+    const ownedMedia = await this.mediaCleanup.collectOwnedMedia(id);
 
     // Las reseñas que escribió esta persona se van por cascada, y con ellas se
     // mueve el promedio de quien las recibió. Hay que saber a quién antes de
@@ -372,7 +401,7 @@ export class AdminService {
       select: { targetUserId: true, listingId: true },
     });
 
-    await this.prisma.$transaction(async (tx) => {
+    const removed = await this.prisma.$transaction(async (tx) => {
       const listings = await tx.listing.findMany({
         where: { ownerId: id },
         select: { id: true },
@@ -451,7 +480,7 @@ export class AdminService {
       });
 
       await tx.listing.deleteMany({ where: { ownerId: id } });
-      await tx.vehicle.deleteMany({ where: { ownerId: id } });
+      const vehicles = await tx.vehicle.deleteMany({ where: { ownerId: id } });
       await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
       await tx.verificationCode.deleteMany({ where: { userId: id } });
       await tx.documentVerification.deleteMany({ where: { userId: id } });
@@ -462,7 +491,13 @@ export class AdminService {
       // que quede libre.
       await tx.pendingRegistration.deleteMany({ where: { email: user.email } });
 
-      return tx.user.delete({ where: { id } });
+      await tx.user.delete({ where: { id } });
+
+      return {
+        listings: listingIds.length,
+        vehicles: vehicles.count,
+        bookings: bookingIds.length,
+      };
     });
 
     // Va DESPUÉS de la transacción y sin targetUserId: el usuario ya no existe,
@@ -478,6 +513,7 @@ export class AdminService {
         phone: user.phone,
         role: user.role,
         status: user.status,
+        removed,
       },
     });
 
@@ -490,11 +526,15 @@ export class AdminService {
         .filter((listingId): listingId is string => listingId !== null),
     );
 
-    // Los documentos de identidad no deben quedar huérfanos en el storage:
-    // se borran después de la transacción (best-effort, registrado en log).
-    await this.identityDocuments.deleteDocuments(
-      identityDocumentUrls.flatMap((row) => [row.frontUrl, row.backUrl]),
-    );
+    // Y recién ahora los archivos del storage: las fotos de perfil, las de los
+    // autos y los avisos, y los documentos de identidad.
+    //
+    // VA DESPUÉS DE LA TRANSACCIÓN a propósito. Borrar en Cloudinary no se
+    // deshace, así que si se hiciera adentro y la transacción fallara al final,
+    // las filas seguirían en la base apuntando a fotos que ya no existen. Al
+    // revés, lo peor que puede pasar es que quede un archivo huérfano ocupando
+    // lugar, que no le rompe nada a nadie.
+    const media = await this.mediaCleanup.deleteMedia(ownedMedia);
 
     // Qué quedó libre para volver a usarse. Es el dato que se busca al borrar
     // una cuenta de demostración, así que se contesta en vez de tener que ir a
@@ -505,6 +545,14 @@ export class AdminService {
       freed: {
         email: user.email,
         phone: user.phone,
+      },
+      removed: {
+        ...removed,
+        // Archivos borrados de Cloudinary. `mediaFilesFailed` > 0 significa que
+        // quedaron huérfanos (Cloudinary caído o sin credenciales): la cuenta
+        // ya no existe igual, pero conviene mirarlo.
+        mediaFiles: media.deleted,
+        mediaFilesFailed: media.failed,
       },
     };
   }

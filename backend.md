@@ -770,9 +770,9 @@ Query soportada en catalogo:
 | GET | `/admin/settings` | JWT ADMIN | Que puede hacer el panel en este servidor (hoy: si el borrado definitivo esta habilitado) |
 | GET | `/admin/users` | JWT ADMIN | Lista usuarios |
 | GET | `/admin/users/:id` | JWT ADMIN | Obtiene usuario |
-| PATCH | `/admin/users/:id/status` | JWT ADMIN | Cambia estado de usuario (SUSPENDED / DELETED la sacan de circulacion sin soltar sus datos) |
+| PATCH | `/admin/users/:id/status` | JWT ADMIN | Cambia estado de usuario. SUSPENDED / DELETED la sacan de circulacion y dan de baja sus publicaciones, sin soltar sus datos ni borrar sus imagenes. Devuelve `listingsTakenDown` |
 | PATCH | `/admin/users/:id/role` | JWT ADMIN | Cambia rol de usuario (no el propio) |
-| DELETE | `/admin/users/:id` | JWT ADMIN | Borra la cuenta y todo lo suyo, y libera sus datos unicos. **403 en produccion** (ver `ALLOW_ACCOUNT_HARD_DELETE`) |
+| DELETE | `/admin/users/:id` | JWT ADMIN | Borra la cuenta, todo lo suyo y sus archivos de Cloudinary, y libera sus datos unicos. **403 en produccion** (ver `ALLOW_ACCOUNT_HARD_DELETE`) |
 | GET | `/admin/verifications` | JWT ADMIN | Lista verificaciones |
 | GET | `/admin/verifications/:id` | JWT ADMIN | Obtiene verificacion |
 | GET | `/admin/verifications/:id/documents` | JWT ADMIN | Documentos con URLs firmadas + extraccion y cruces (auditado) |

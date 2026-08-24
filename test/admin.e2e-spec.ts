@@ -15,6 +15,7 @@ import {
 } from "./helpers/factory";
 import {
   documentUrls,
+  FAKE_CLOUD_NAME,
   FakeCloudinaryService,
 } from "./helpers/cloudinary.fake";
 
@@ -83,6 +84,173 @@ describe("Admin", () => {
       .send({ role: "ADMIN" })
       .expect(200)
       .expect((res) => expect(res.body.role).toBe("ADMIN"));
+  });
+
+  /**
+   * Suspender o dar de baja una cuenta: se va de circulación con sus avisos,
+   * pero sus datos y sus archivos siguen ahí.
+   */
+  describe("suspender o dar de baja una cuenta", () => {
+    it("baja las publicaciones de la cuenta y las saca del buscador", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      // Antes de suspender, el aviso está a la vista de cualquiera.
+      const renter = await registerUser(app);
+      await http()
+        .get(`/listings/${listing.id}`)
+        .set("Authorization", auth(renter.token))
+        .expect(200);
+
+      const res = await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "SUSPENDED" })
+        .expect(200);
+      expect(res.body.listingsTakenDown).toBe(1);
+
+      // Y después ya no: ni en el detalle ni en el buscador. Si siguiera, se
+      // podría reservar un auto de alguien que no puede ni entrar a la app.
+      await http()
+        .get(`/listings/${listing.id}`)
+        .set("Authorization", auth(renter.token))
+        .expect(404);
+      const busqueda = await http().get("/listings").expect(200);
+      expect(busqueda.body.total).toBe(0);
+      expect(busqueda.body.data).toEqual([]);
+
+      const fila = await prisma.listing.findUnique({
+        where: { id: listing.id },
+      });
+      expect(fila?.status).toBe("DELETED");
+    });
+
+    it("darla de baja (DELETED) hace lo mismo que suspenderla", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      await createListing(app, owner.token, vehicle.id);
+
+      const res = await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "DELETED" })
+        .expect(200);
+      expect(res.body.listingsTakenDown).toBe(1);
+    });
+
+    it("NO borra las imágenes de Cloudinary: la cuenta sigue existiendo", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      await createListing(app, owner.token, vehicle.id);
+
+      const foto = `https://res.cloudinary.com/${FAKE_CLOUD_NAME}/image/upload/v1700000000/freewheel/auto.jpg`;
+      await prisma.mediaAsset.create({
+        data: {
+          ownerId: owner.id,
+          kind: "VEHICLE_PHOTO",
+          entityType: "vehicle",
+          entityId: String(vehicle.id),
+          url: foto,
+        },
+      });
+      const docs = documentUrls(owner.id, "dni");
+      await prisma.documentVerification.create({
+        data: {
+          userId: owner.id,
+          type: "DNI",
+          status: "APPROVED",
+          frontUrl: docs.frontUrl,
+          backUrl: docs.backUrl,
+        },
+      });
+
+      await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "SUSPENDED" })
+        .expect(200);
+
+      // Ni una sola llamada al storage: los documentos son la prueba de por qué
+      // se suspendió la cuenta, y esto se puede revertir.
+      expect(cloudinary.destroyed).toEqual([]);
+      expect(await prisma.mediaAsset.count({ where: { ownerId: owner.id } })).toBe(1);
+      expect(
+        await prisma.documentVerification.count({ where: { userId: owner.id } }),
+      ).toBe(1);
+    });
+
+    it("reactivar NO devuelve las publicaciones: hay que volver a publicarlas", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "SUSPENDED" })
+        .expect(200);
+
+      const res = await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "ACTIVE" })
+        .expect(200);
+      expect(res.body.listingsTakenDown).toBe(0);
+
+      // Un aviso dado de baja no se distingue de uno que el dueño borró por su
+      // cuenta, así que no se puede saber cuáles habría que devolver. El auto
+      // sigue estando: se publica de nuevo.
+      const fila = await prisma.listing.findUnique({
+        where: { id: listing.id },
+      });
+      expect(fila?.status).toBe("DELETED");
+      expect(
+        await prisma.vehicle.count({ where: { id: String(vehicle.id) } }),
+      ).toBe(1);
+    });
+
+    it("no toca las reservas ni los pagos de las otras personas", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const renter = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+
+      const booking = await http()
+        .post("/bookings")
+        .set("Authorization", auth(renter.token))
+        .send({
+          listingId: listing.id,
+          startDate: futureDate(5),
+          endDate: futureDate(8),
+        })
+        .expect(201);
+      await http()
+        .patch(`/bookings/${booking.body.id}/accept`)
+        .set("Authorization", auth(owner.token))
+        .expect(200);
+
+      await http()
+        .patch(`/admin/users/${owner.id}/status`)
+        .set("Authorization", auth(admin.token))
+        .send({ status: "SUSPENDED" })
+        .expect(200);
+
+      // Es la diferencia con borrar: acá hay plata y un contrato de por medio,
+      // y del otro lado hay alguien que no hizo nada.
+      expect(await prisma.booking.count()).toBe(1);
+      expect(await prisma.contract.count()).toBe(1);
+      await http()
+        .get("/bookings/me")
+        .set("Authorization", auth(renter.token))
+        .expect(200)
+        .expect((res) => expect(res.body.length).toBe(1));
+    });
   });
 
   it("cannot delete itself", async () => {
@@ -253,6 +421,107 @@ describe("Admin", () => {
       const reused = await registerUser(app, { email: user.email });
       expect(reused.email).toBe(user.email);
       await prisma.user.update({ where: { id: reused.id }, data: { phone } });
+    });
+
+    it("borra de Cloudinary las fotos y los documentos de la cuenta", async () => {
+      const admin = await createAdmin(app, prisma);
+      // Verificada: publicar un auto lo exige.
+      const user = await registerUser(app);
+      const vehicle = await createVehicle(app, user.token);
+
+      // Una foto de perfil, dos del auto y los dos lados del DNI.
+      const fotoPerfil = `https://res.cloudinary.com/${FAKE_CLOUD_NAME}/image/upload/v1700000000/freewheel/perfil-${user.id}.jpg`;
+      const fotosAuto = [1, 2].map(
+        (n) =>
+          `https://res.cloudinary.com/${FAKE_CLOUD_NAME}/image/upload/v1700000000/freewheel/auto-${vehicle.id}-${n}.jpg`,
+      );
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { profilePhotoUrl: fotoPerfil },
+      });
+      await prisma.mediaAsset.createMany({
+        data: [
+          { ownerId: user.id, kind: "PROFILE_PHOTO", url: fotoPerfil },
+          ...fotosAuto.map((url, i) => ({
+            ownerId: user.id,
+            kind: "VEHICLE_PHOTO" as const,
+            entityType: "vehicle",
+            entityId: String(vehicle.id),
+            url,
+            position: i,
+          })),
+        ],
+      });
+      const docs = documentUrls(user.id, "dni");
+      await prisma.documentVerification.create({
+        data: {
+          userId: user.id,
+          type: "DNI",
+          status: "APPROVED",
+          frontUrl: docs.frontUrl,
+          backUrl: docs.backUrl,
+        },
+      });
+
+      const res = await http()
+        .delete(`/admin/users/${user.id}`)
+        .set("Authorization", auth(admin.token))
+        .expect(200);
+
+      // Los cinco archivos, borrados del storage — no solo las filas.
+      expect(res.body.removed.mediaFiles).toBe(5);
+      expect(res.body.removed.mediaFilesFailed).toBe(0);
+      expect(cloudinary.destroyed.sort()).toEqual(
+        [
+          `freewheel/perfil-${user.id}`,
+          `freewheel/auto-${vehicle.id}-1`,
+          `freewheel/auto-${vehicle.id}-2`,
+          `identity/${user.id}/dni_front_1700000000_abcdef01`,
+          `identity/${user.id}/dni_back_1700000000_abcdef01`,
+        ].sort(),
+      );
+      expect(await prisma.mediaAsset.count()).toBe(0);
+    });
+
+    it("no cuenta dos veces la foto de perfil, que está guardada en dos lugares", async () => {
+      const admin = await createAdmin(app, prisma);
+      const user = await registerUser(app, { verified: false });
+      const foto = `https://res.cloudinary.com/${FAKE_CLOUD_NAME}/image/upload/v1700000000/freewheel/perfil.jpg`;
+
+      // Vive en User.profilePhotoUrl Y en su fila de MediaAsset.
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { profilePhotoUrl: foto },
+      });
+      await prisma.mediaAsset.create({
+        data: { ownerId: user.id, kind: "PROFILE_PHOTO", url: foto },
+      });
+
+      const res = await http()
+        .delete(`/admin/users/${user.id}`)
+        .set("Authorization", auth(admin.token))
+        .expect(200);
+
+      expect(res.body.removed.mediaFiles).toBe(1);
+      expect(cloudinary.destroyed).toEqual(["freewheel/perfil"]);
+    });
+
+    it("cuenta lo que se llevó puesto: publicaciones, autos y reservas", async () => {
+      const admin = await createAdmin(app, prisma);
+      const owner = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      await createListing(app, owner.token, vehicle.id);
+
+      const res = await http()
+        .delete(`/admin/users/${owner.id}`)
+        .set("Authorization", auth(admin.token))
+        .expect(200);
+
+      expect(res.body.removed).toMatchObject({
+        listings: 1,
+        vehicles: 1,
+        bookings: 0,
+      });
     });
 
     it("borra también una cuenta con reservas, contrato y chat", async () => {

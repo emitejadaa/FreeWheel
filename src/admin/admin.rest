@@ -100,6 +100,16 @@ Authorization: Bearer {{accessToken}}
 ### existiendo, así que su email, su teléfono y su documento quedan tomados y
 ### nadie puede registrarse de nuevo con ellos.
 ###
+### TAMBIÉN DA DE BAJA SUS PUBLICACIONES (status DELETED): desaparecen del
+### buscador y del detalle, para que no se pueda reservar el auto de alguien que
+### no puede ni entrar. La respuesta trae listingsTakenDown con cuántas fueron.
+### Reactivar la cuenta NO las devuelve: un aviso dado de baja no se distingue
+### de uno que el dueño borró solo. El auto sigue estando: se publica de nuevo.
+###
+### NO toca las imágenes de Cloudinary (fotos ni documentos): la cuenta sigue
+### existiendo y sus documentos son la prueba de por qué se la suspendió.
+### Tampoco toca las reservas, los contratos ni los pagos de las otras personas.
+###
 ### No se puede usar sobre la propia cuenta: sería quedarse afuera del panel.
 PATCH {{baseUrl}}/admin/users/{{targetUserId}}/status
 Content-Type: {{contentType}}
@@ -133,9 +143,10 @@ Authorization: Bearer {{accessToken}}
 ### {{targetUserId}} si lo necesitás para los requests de abajo.
 ###
 ### Se lleva TODO lo suyo: autos, publicaciones, reservas, contratos, pagos,
-### chats y documentos. Y libera sus datos únicos (email, teléfono, DNI, CUIL)
-### para volver a usarlos — que es justamente para lo que existe: rearmar
-### cuentas de demostración con los mismos correos.
+### chats y documentos, MÁS los archivos de Cloudinary (foto de perfil, fotos de
+### los autos y de los avisos, y documentos de identidad). Y libera sus datos
+### únicos (email, teléfono, DNI, CUIL) para volver a usarlos — que es justamente
+### para lo que existe: rearmar cuentas de demostración con los mismos correos.
 ###
 ### ⚠️ SOLO FUERA DE PRODUCCIÓN. En el deploy contesta 403
 ### ACCOUNT_HARD_DELETE_DISABLED: ahí una cuenta se saca de circulación con el
@@ -143,8 +154,10 @@ Authorization: Bearer {{accessToken}}
 ### datos. Si se borrara, quien fue expulsado podría registrarse de nuevo con el
 ### mismo documento. Se puede forzar con ALLOW_ACCOUNT_HARD_DELETE=true.
 ###
-### Contesta { deleted, user, freed: { email, phone } }: "freed" son los datos
-### que quedaron libres.
+### Contesta { deleted, user, freed, removed }: "freed" son los datos que
+### quedaron libres (email, phone) y "removed" cuánto se borró (listings,
+### vehicles, bookings, mediaFiles y mediaFilesFailed — los archivos que
+### Cloudinary no pudo borrar y quedaron huérfanos).
 # DELETE {{baseUrl}}/admin/users/{{targetUserId}}
 # Authorization: Bearer {{accessToken}}
 

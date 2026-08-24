@@ -268,10 +268,19 @@ Admin:
 Son dos cosas distintas y la diferencia esta en que pasa con **los datos** de la
 cuenta (email, telefono, DNI, CUIL):
 
-| | Que hace | Los datos de la cuenta | Donde se puede |
-| --- | --- | --- | --- |
-| `PATCH /admin/users/:id/status` con `SUSPENDED` o `DELETED` | La cuenta no puede iniciar sesion, ni por email ni por Google, y los tokens que ya tenia dejan de valer | **Quedan tomados**: nadie puede registrarse de nuevo con ellos | Siempre |
-| `DELETE /admin/users/:id` | Borra la fila y todo lo que cuelga de ella (autos, publicaciones, reservas, contratos, chats, documentos) | **Quedan libres** para volver a usarse | Solo fuera de produccion |
+| | `PATCH /admin/users/:id/status` (SUSPENDED / DELETED) | `DELETE /admin/users/:id` |
+| --- | --- | --- |
+| **La cuenta** | No puede iniciar sesion, ni por email ni por Google; los tokens que ya tenia dejan de valer | Deja de existir |
+| **Sus datos unicos** (email, telefono, DNI, CUIL) | **Quedan tomados**: nadie puede registrarse de nuevo con ellos | **Quedan libres** para volver a usarse |
+| **Sus publicaciones** | Se dan de baja (status `DELETED`): fuera del buscador y del detalle | Se borran |
+| **Sus autos** | Se conservan | Se borran |
+| **Sus imagenes en Cloudinary** (fotos y documentos) | **Se conservan** — la cuenta sigue existiendo y los documentos son la prueba del caso | **Se borran** |
+| **Reservas, contratos y pagos** (que involucran a otras personas) | Se conservan | Se borran |
+| **Donde se puede** | Siempre | Solo fuera de produccion |
+
+Reactivar una cuenta suspendida **no devuelve sus publicaciones**: un aviso dado
+de baja no se distingue de uno que el dueno borro por su cuenta. El auto sigue
+estando, asi que se vuelve a publicar.
 
 En produccion `DELETE /admin/users/:id` contesta `403
 ACCOUNT_HARD_DELETE_DISABLED`. Es a proposito: si se borrara la cuenta de quien
