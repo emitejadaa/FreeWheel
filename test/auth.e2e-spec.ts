@@ -6,6 +6,7 @@ import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { FakeEmailService } from "./helpers/email.fake";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { AuthService } from "../src/auth/auth.service";
 import {
   registerUser,
   uniqueEmail,
@@ -469,6 +470,76 @@ describe("Auth", () => {
         .set("Authorization", `Bearer ${user.token}`)
         .send({ code: codigoDeVerificacion })
         .expect(201);
+    });
+  });
+
+  /**
+   * Entrar con Google.
+   *
+   * Se ejercita llamando al servicio y no por HTTP porque la ruta es un redirect
+   * de OAuth: el callback solo se alcanza viniendo de Google. Lo que hay que
+   * comprobar —quién entra y quién no— está entero acá adentro.
+   */
+  describe("entrar con Google", () => {
+    const perfilGoogle = (correo: string) => ({
+      googleId: `google-${correo}`,
+      email: correo,
+      firstName: "Goo",
+      lastName: "Gler",
+      profilePhotoUrl: null,
+    });
+
+    it("una cuenta suspendida NO puede volver a entrar con Google", async () => {
+      const user = await registerUser(app);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { status: "SUSPENDED" },
+      });
+
+      // Es el punto de suspender una cuenta: que no pueda usarse. Este camino
+      // no lo miraba y alcanzaba un botón para esquivar el baneo.
+      await expect(
+        app.get(AuthService).googleLogin(perfilGoogle(user.email)),
+      ).rejects.toThrow(/not active/i);
+    });
+
+    it("una cuenta dada de baja tampoco", async () => {
+      const user = await registerUser(app);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { status: "DELETED" },
+      });
+
+      await expect(
+        app.get(AuthService).googleLogin(perfilGoogle(user.email)),
+      ).rejects.toThrow(/not active/i);
+    });
+
+    it("una cuenta activa entra y queda vinculada", async () => {
+      const user = await registerUser(app);
+      const res = await app
+        .get(AuthService)
+        .googleLogin(perfilGoogle(user.email));
+
+      expect(res.user.id).toBe(user.id);
+      const row = await prisma.user.findUnique({ where: { id: user.id } });
+      expect(row?.googleId).toBe(`google-${user.email}`);
+    });
+
+    it("crea la cuenta con el email en minúsculas, no como lo mande Google", async () => {
+      const correo = uniqueEmail("google").toUpperCase();
+      const res = await app.get(AuthService).googleLogin(perfilGoogle(correo));
+
+      expect(res.user.email).toBe(correo.toLowerCase());
+    });
+
+    it("no abre una cuenta nueva por escribir el mismo email distinto", async () => {
+      const user = await registerUser(app);
+      await app
+        .get(AuthService)
+        .googleLogin(perfilGoogle(user.email.toUpperCase()));
+
+      expect(await prisma.user.count({ where: { email: user.email } })).toBe(1);
     });
   });
 });

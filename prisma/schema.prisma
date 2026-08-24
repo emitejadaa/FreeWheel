@@ -245,7 +245,13 @@ model User {
   firstName              String
   lastName               String
   displayName            String?
-  phone                  String?
+  /// El teléfono de contacto de la cuenta, en formato E.164 (+54911...). Único
+  /// como el email: es el número al que se manda el código de verificación y el
+  /// que ve la otra parte de una reserva, así que dos cuentas con el mismo
+  /// número son una sola persona haciéndose pasar por dos. La normalización a
+  /// E.164 (phone.validator.ts) es lo que hace que el índice sirva: sin ella
+  /// "+5491132895416" y "011 3289-5416" entrarían como dos números distintos.
+  phone                  String?             @unique
   dateOfBirth            DateTime?
   // Datos de identidad cargados a mano en el panel; la revisión documental
   // los cruza contra el DNI y la licencia. Quedan inmutables una vez que la

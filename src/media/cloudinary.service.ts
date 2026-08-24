@@ -37,6 +37,45 @@ export class CloudinaryService {
   }
 
   /**
+   * De una URL de Cloudinary ya guardada al `public_id` que hace falta para
+   * borrarla.
+   *
+   * POR QUÉ SE PARSEA LA URL Y NO SE USA storageKey
+   * `MediaAsset.storageKey` es opcional y lo manda el front al registrar el
+   * archivo: la mayoría de las filas lo tienen en null. La URL, en cambio, está
+   * siempre —es lo único que se necesita para mostrar la foto—, así que es el
+   * único dato con el que se puede llegar al archivo en todos los casos.
+   *
+   * FORMATO
+   *   https://res.cloudinary.com/<cloud>/<recurso>/<entrega>/[s--firma--/][v123/]<public_id>.<ext>
+   * `entrega` es `upload` para las fotos públicas (perfil, autos, avisos) y
+   * `authenticated` para los documentos de identidad, que es justamente el dato
+   * que hay que pasarle a destroy(): con el tipo equivocado Cloudinary no
+   * encuentra el archivo y no borra nada.
+   *
+   * DEVUELVE null ANTE CUALQUIER DUDA
+   * Si la URL no tiene exactamente esta forma —otra cuenta de Cloudinary, una
+   * URL con transformaciones, un link a otro servicio— se devuelve null y el
+   * archivo NO se toca. Dejar un archivo sin borrar es un desperdicio de
+   * espacio; borrar el archivo equivocado es borrarle la foto a otra persona.
+   */
+  parseAssetUrl(url: string): ParsedCloudinaryAsset | null {
+    return parseCloudinaryUrl(this.getCloudName(), url);
+  }
+
+  /**
+   * Borra el archivo al que apunta una URL guardada. Devuelve false si la URL
+   * no se pudo interpretar (ver parseAssetUrl) o si Cloudinary no lo encontró
+   * —que, para borrar, es el resultado buscado igual—.
+   */
+  async destroyByUrl(url: string): Promise<boolean> {
+    const asset = this.parseAssetUrl(url);
+    if (!asset) return false;
+
+    return this.destroy(asset.publicId, asset.deliveryType);
+  }
+
+  /**
    * Firma de subida multi-param: SHA1 sobre los pares k=v ordenados
    * alfabéticamente + secret. El cliente debe mandar a Cloudinary exactamente
    * estos params (más file y api_key) o la subida es rechazada.
@@ -178,4 +217,45 @@ export class CloudinaryService {
       mimeType: response.headers.get("content-type") ?? "image/jpeg",
     };
   }
+}
+
+export interface ParsedCloudinaryAsset {
+  publicId: string;
+  deliveryType: string;
+  format: string;
+}
+
+/**
+ * La implementación de CloudinaryService.parseAssetUrl, como función pura.
+ *
+ * Está afuera de la clase para que el doble de Cloudinary de los tests
+ * (test/helpers/cloudinary.fake.ts) use EXACTAMENTE esta y no una copia: si el
+ * fake parseara distinto, los tests estarían probando otro parser que el que
+ * corre en producción, que es la única parte de esto que puede borrar el
+ * archivo equivocado.
+ */
+export function parseCloudinaryUrl(
+  cloudName: string,
+  url: string,
+): ParsedCloudinaryAsset | null {
+  if (typeof url !== "string") return null;
+
+  const match = new RegExp(
+    `^https://res\\.cloudinary\\.com/${escapeRegex(cloudName)}` +
+      `/(?:image|video|raw)/(upload|authenticated|private)/` +
+      `(?:s--[A-Za-z0-9_-]+--/)?(?:v\\d+/)?` +
+      `([A-Za-z0-9_\\-./]+)\\.([A-Za-z0-9]+)$`,
+  ).exec(url);
+  if (!match) return null;
+
+  return {
+    deliveryType: match[1],
+    publicId: match[2],
+    format: match[3].toLowerCase(),
+  };
+}
+
+/** Escapa un texto para meterlo dentro de una expresión regular. */
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

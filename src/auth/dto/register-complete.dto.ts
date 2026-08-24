@@ -14,8 +14,12 @@ import {
   normalizePhone,
 } from "../../common/validators/phone.validator";
 import { IsAdultDate } from "../../common/validators/is-adult-date.validator";
+import { normalizeEmail } from "../../common/utils/email.util";
 
 export class RegisterCompleteDto {
+  // Tiene que quedar igual que en /auth/register/start: es la dirección con la
+  // que se guardó el código pendiente.
+  @Transform(({ value }: { value: unknown }) => normalizeEmail(value) ?? value)
   @IsEmail()
   @MaxLength(254)
   email!: string;

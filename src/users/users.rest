@@ -77,6 +77,11 @@ Authorization: Bearer {{accessToken}}
 ### dni/cuil/address quedan INMUTABLES una vez que la cuenta está VERIFIED
 ### (403 IDENTITY_FIELDS_LOCKED). cuil debe tener DNI embebido + checksum
 ### mod-11 válido (ver src/common/utils/cuil.util.ts).
+###
+### phone, dni y cuil identifican a UNA persona: si ya son de otra cuenta,
+### contesta 409 con code PHONE_ALREADY_REGISTERED / DNI_ALREADY_REGISTERED /
+### CUIL_ALREADY_REGISTERED. El teléfono se compara normalizado a E.164, así que
+### "+54 9 11 3289 5416" y "005491132895416" son el mismo número.
 PATCH {{baseUrl}}/users/me
 Content-Type: {{contentType}}
 Authorization: Bearer {{accessToken}}

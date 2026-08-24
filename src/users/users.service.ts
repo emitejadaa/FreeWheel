@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
 } from "@nestjs/common";
@@ -8,6 +7,12 @@ import { Prisma, User, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
 import { dniMatchesCuil, normalizeCuil } from "../common/utils/cuil.util";
+import { normalizeEmail } from "../common/utils/email.util";
+import {
+  identityConflict,
+  identityConflictFromPrisma,
+  UniqueIdentityField,
+} from "../common/utils/account-identity.util";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 
@@ -34,8 +39,17 @@ export class UsersService {
     private readonly documentVerification: DocumentVerificationService,
   ) {}
 
+  /**
+   * Busca por email SIEMPRE por la forma canónica (minúsculas, sin espacios al
+   * borde), que es la única que se guarda. Sin esto, escribir la dirección con
+   * una mayúscula al iniciar sesión o al recuperar la contraseña daba "no existe
+   * esa cuenta" sobre una cuenta que sí existe.
+   */
   async findByEmail(email: string) {
-    return this.prisma.user.findUnique({ where: { email } });
+    const normalized = normalizeEmail(email);
+    if (!normalized) return null;
+
+    return this.prisma.user.findUnique({ where: { email: normalized } });
   }
 
   async findById(id: string) {
@@ -167,46 +181,75 @@ export class UsersService {
 
     // Pre-chequeo de unicidad para responder un 409 claro; el índice único de
     // la DB sigue cerrando la ventana de carrera.
-    await this.assertIdentityUnique(userId, updateData);
+    //
+    // El teléfono entró acá junto con el DNI y el CUIL: hasta ahora cualquiera
+    // podía poner en su perfil el número de otra persona, y con ese número
+    // pedirse el código de verificación.
+    await this.assertIdentityUnique(
+      {
+        phone: updateData.phone as string | undefined,
+        dni: updateData.dni as string | undefined,
+        cuil: updateData.cuil as string | undefined,
+      },
+      userId,
+    );
 
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-    });
+    const user = await this.withIdentityConflicts(() =>
+      this.prisma.user.update({
+        where: { id: userId },
+        data: updateData,
+      }),
+    );
 
     return this.toSafeUser(user);
   }
 
-  private async assertIdentityUnique(
-    userId: string,
-    data: Prisma.UserUpdateInput,
+  /**
+   * Que ninguno de los datos que identifican a una persona quede repartido entre
+   * dos cuentas.
+   *
+   * Es un PRE-chequeo: existe para contestar un 409 que dice qué dato está
+   * repetido, no para garantizar la unicidad. La garantía la dan los índices
+   * únicos de la base —email (también sin mirar mayúsculas), phone, dni, cuil y
+   * googleId—, que son los que cierran la ventana entre esta consulta y la
+   * escritura si dos requests llegan a la vez. De ese caso se ocupa
+   * `identityConflictFromPrisma`, que traduce el choque al MISMO 409.
+   *
+   * `exceptUserId` es la cuenta que se está editando: sus propios valores no
+   * cuentan como repetidos.
+   */
+  async assertIdentityUnique(
+    values: Partial<Record<UniqueIdentityField, string | null | undefined>>,
+    exceptUserId?: string,
   ): Promise<void> {
-    if (typeof data.dni === "string") {
-      const clash = await this.prisma.user.findFirst({
-        where: { dni: data.dni, id: { not: userId } },
-        select: { id: true },
-      });
-      if (clash) {
-        throw new ConflictException({
-          statusCode: 409,
-          code: "DNI_ALREADY_REGISTERED",
-          message: "Ese DNI ya está asociado a otra cuenta",
-        });
-      }
-    }
+    for (const [field, value] of Object.entries(values) as [
+      UniqueIdentityField,
+      string | null | undefined,
+    ][]) {
+      if (typeof value !== "string" || value.length === 0) continue;
 
-    if (typeof data.cuil === "string") {
       const clash = await this.prisma.user.findFirst({
-        where: { cuil: data.cuil, id: { not: userId } },
+        where: {
+          [field]: value,
+          ...(exceptUserId ? { id: { not: exceptUserId } } : {}),
+        },
         select: { id: true },
       });
-      if (clash) {
-        throw new ConflictException({
-          statusCode: 409,
-          code: "CUIL_ALREADY_REGISTERED",
-          message: "Ese CUIL ya está asociado a otra cuenta",
-        });
-      }
+      if (clash) throw identityConflict(field);
+    }
+  }
+
+  /**
+   * Corre una escritura sobre User traduciendo el choque de un índice único al
+   * 409 que le corresponde al dato repetido. Cualquier otro error sale tal cual.
+   */
+  async withIdentityConflicts<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      const conflict = identityConflictFromPrisma(error);
+      if (conflict) throw conflict;
+      throw error;
     }
   }
 

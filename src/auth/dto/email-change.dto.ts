@@ -1,5 +1,6 @@
 import { Transform } from "class-transformer";
 import { IsEmail, IsString, Length, MaxLength } from "class-validator";
+import { normalizeEmail } from "../../common/utils/email.util";
 
 /**
  * La dirección NUEVA a la que se quiere pasar la cuenta.
@@ -15,9 +16,7 @@ import { IsEmail, IsString, Length, MaxLength } from "class-validator";
  * de datos en vez de un mensaje entendible.
  */
 export class RequestEmailChangeDto {
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === "string" ? value.trim().toLowerCase() : value,
-  )
+  @Transform(({ value }: { value: unknown }) => normalizeEmail(value) ?? value)
   @IsEmail({}, { message: "Escribí una dirección de email válida" })
   @MaxLength(254)
   newEmail!: string;

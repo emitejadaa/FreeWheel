@@ -13,6 +13,7 @@ export const TEST_ADDRESS = "Av. Siempre Viva 742, Springfield, CABA";
 
 let seq = 0;
 let dniSeq = 0;
+let phoneSeq = 0;
 
 /** Unique, valid email per call so tests never collide on the unique constraint. */
 export function uniqueEmail(prefix = "user"): string {
@@ -24,6 +25,20 @@ export function uniqueEmail(prefix = "user"): string {
 export function uniqueDni(): string {
   dniSeq += 1;
   return String(20000000 + dniSeq);
+}
+
+/**
+ * Unique Argentine mobile per call (User.phone has a unique index).
+ *
+ * Every seeded user used to get the same hardcoded number, which was fine while
+ * two accounts could share a phone. They no longer can — that is the point of
+ * the index — so the factory has to hand out a different one each time, exactly
+ * like it already does for the email and the DNI.
+ */
+export function uniquePhone(): string {
+  phoneSeq += 1;
+  // +54 9 11 + 8 digits: the strict Argentine rule the phone validator applies.
+  return `+54911${String(30000000 + phoneSeq)}`;
 }
 
 /**
@@ -102,6 +117,8 @@ export async function registerUser(
     firstName: string;
     lastName: string;
     dateOfBirth: string;
+    /** Teléfono a mandar en el registro. Sin esto se registra sin número. */
+    phone: string;
     verified: boolean;
   }> = {},
 ): Promise<AuthedUser> {
@@ -131,6 +148,7 @@ export async function registerUser(
       password,
       firstName: overrides.firstName ?? "Test",
       lastName: overrides.lastName ?? "User",
+      ...(overrides.phone ? { phone: overrides.phone } : {}),
       acceptedTerms: true,
       dateOfBirth: overrides.dateOfBirth ?? TEST_DATE_OF_BIRTH,
     })
@@ -139,7 +157,10 @@ export async function registerUser(
   const authed: AuthedUser = {
     token: res.body.accessToken,
     id: res.body.user.id,
-    email,
+    // La dirección que quedó GUARDADA, no la que se mandó: la API la canoniza
+    // (minúsculas, sin espacios), así que devolver el texto de entrada haría
+    // que un test comparara contra algo que no está en ninguna parte.
+    email: res.body.user.email,
     password,
   };
 
@@ -153,7 +174,7 @@ export async function registerUser(
     await prisma.user.update({
       where: { id: authed.id },
       data: {
-        phone: "+5491100000000",
+        phone: uniquePhone(),
         phoneVerifiedAt: new Date(),
         dni,
         cuil: cuilFor(dni),

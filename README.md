@@ -249,10 +249,12 @@ Usuario autenticado:
 
 Admin:
 
+- `GET /admin/settings`
 - `GET /admin/users`
 - `GET /admin/users/:id`
 - `PATCH /admin/users/:id/status`
 - `PATCH /admin/users/:id/role`
+- `DELETE /admin/users/:id` (borrado definitivo — deshabilitado en produccion)
 - `GET /admin/verifications`
 - `GET /admin/verifications/:id`
 - `GET /admin/verifications/:id/documents`
@@ -261,6 +263,36 @@ Admin:
 - `PATCH /admin/listings/:id/status`
 - `GET /admin/bookings`
 - `GET /admin/bookings/:id`
+
+### Sacar una cuenta de circulacion: borrarla o darla de baja
+
+Son dos cosas distintas y la diferencia esta en que pasa con **los datos** de la
+cuenta (email, telefono, DNI, CUIL):
+
+| | `PATCH /admin/users/:id/status` (SUSPENDED / DELETED) | `DELETE /admin/users/:id` |
+| --- | --- | --- |
+| **La cuenta** | No puede iniciar sesion, ni por email ni por Google; los tokens que ya tenia dejan de valer | Deja de existir |
+| **Sus datos unicos** (email, telefono, DNI, CUIL) | **Quedan tomados**: nadie puede registrarse de nuevo con ellos | **Quedan libres** para volver a usarse |
+| **Sus publicaciones** | Se dan de baja (status `DELETED`): fuera del buscador y del detalle | Se borran |
+| **Sus autos** | Se conservan | Se borran |
+| **Sus imagenes en Cloudinary** (fotos y documentos) | **Se conservan** — la cuenta sigue existiendo y los documentos son la prueba del caso | **Se borran** |
+| **Reservas, contratos y pagos** (que involucran a otras personas) | Se conservan | Se borran |
+| **Donde se puede** | Siempre | Solo fuera de produccion |
+
+Reactivar una cuenta suspendida **no devuelve sus publicaciones**: un aviso dado
+de baja no se distingue de uno que el dueno borro por su cuenta. El auto sigue
+estando, asi que se vuelve a publicar.
+
+En produccion `DELETE /admin/users/:id` contesta `403
+ACCOUNT_HARD_DELETE_DISABLED`. Es a proposito: si se borrara la cuenta de quien
+fue expulsado, esa persona podria volver a registrarse con el mismo mail, el
+mismo telefono y el mismo documento. El borrado existe para el desarrollo, donde
+hace falta reciclar los datos de las cuentas de demostracion. El panel se entera
+de si esta habilitado con `GET /admin/settings`.
+
+Se puede forzar en cualquiera de los dos sentidos con `ALLOW_ACCOUNT_HARD_DELETE`
+(`true` / `false`); sin esa variable, el borrado esta habilitado en todos lados
+menos en produccion.
 
 ## Probar La API (archivos `.rest`)
 
