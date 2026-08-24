@@ -28,6 +28,12 @@
 ### ────────────────────────────────────────────────────────────────────────
 ### Registro en dos pasos
 ### ────────────────────────────────────────────────────────────────────────
+###
+### El email se guarda SIEMPRE en minúsculas y sin espacios al borde, así que
+### "Ana@Gmail.com" y "ana@gmail.com" son la misma cuenta: la segunda contesta
+### 409, y para iniciar sesión da igual cómo se escriba.
+### El teléfono también es único: si ya es de otra cuenta, 409 con code
+### PHONE_ALREADY_REGISTERED.
 
 ### 1. Paso 1: solo el email — envía el código, NO crea el usuario todavía
 # @name registerStart

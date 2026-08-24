@@ -193,6 +193,31 @@ export class ReviewsService {
     }));
   }
 
+  /**
+   * Vuelve a calcular los promedios de estas personas y estas publicaciones.
+   *
+   * Los promedios están guardados (no se recorren las reseñas cada vez que se
+   * muestra un perfil), así que cualquier cosa que haga desaparecer reseñas
+   * tiene que avisar. El caso que trajo esto: borrar una cuenta se lleva por
+   * cascada las reseñas que esa persona escribió, y el promedio de QUIEN LAS
+   * RECIBIÓ quedaba contando reseñas que ya no existen — un perfil con "4,5 (2
+   * reseñas)" y una sola reseña a la vista.
+   *
+   * Las que ya no existan se ignoran: se borran junto con su dueño.
+   */
+  async recalculate(userIds: string[], listingIds: string[]) {
+    for (const userId of new Set(userIds)) {
+      const existe = await this.prisma.user.count({ where: { id: userId } });
+      if (existe) await this.recalculateUser(userId);
+    }
+    for (const listingId of new Set(listingIds)) {
+      const existe = await this.prisma.listing.count({
+        where: { id: listingId },
+      });
+      if (existe) await this.recalculateListing(listingId);
+    }
+  }
+
   /** Recalcula y guarda el promedio de una publicación. */
   private async recalculateListing(listingId: string) {
     const stats = await this.aggregate({ listingId });

@@ -187,6 +187,7 @@ que crear una cuenta de Stripe.
 | `REQUIRE_PHONE_VERIFICATION` | `false` | Si el teléfono confirmado es obligatorio para publicar y reservar. |
 | `VERIFICATION_CODE_IN_RESPONSE` | `false` | Solo para mostrar la app: con `true`, la pantalla muestra el código en vez de hacer esperar el mail. |
 | `PRICE_CHANGE_COOLDOWN_HOURS` | `24` | Cada cuánto se puede cambiar el precio de una publicación. |
+| `ALLOW_ACCOUNT_HARD_DELETE` | vacío | Si un admin puede **borrar** cuentas de verdad (`DELETE /admin/users/:id`) en vez de solo suspenderlas. Vacío = habilitado en todos lados **menos en producción**, así que en Vercel ya está apagado sin tocar nada. Ver abajo. |
 | `PLATFORM_FEE_PCT` | `0.10` | Comisión de la plataforma (fracción, no porcentaje). |
 | `INSURANCE_PCT` | `0.10` | Seguro. |
 | `SENA_PCT` | `0.30` | Qué parte se paga como seña. |
@@ -197,6 +198,27 @@ que crear una cuenta de Stripe.
 
 `CORS` no necesita ninguna variable: la API acepta cualquier origen a propósito,
 para que funcionen tanto el dominio principal como las vistas previas de Vercel.
+
+### Por qué en producción no se borran cuentas
+
+En el deploy, `DELETE /admin/users/:id` contesta `403` y no borra nada. No es un
+error: es a propósito.
+
+Borrar una cuenta libera sus datos únicos —el email, el teléfono, el DNI—. Si se
+borrara la cuenta de alguien a quien se expulsó por estafar, esa misma persona
+podría registrarse de nuevo al día siguiente con el mismo documento. Y de paso se
+llevaría puestas las reservas, los pagos y las reseñas de las otras personas que
+alquilaron con ella.
+
+Para sacar a alguien de circulación está **`PATCH /admin/users/:id/status`** con
+`SUSPENDED` (baneada) o `DELETED` (dada de baja): no puede iniciar sesión ni por
+email ni por Google, los tokens que ya tenía dejan de valer en el acto, y sus
+datos siguen tomados para que nadie los reutilice.
+
+El borrado existe para el desarrollo, donde hace falta rearmar las cuentas de
+demostración con los mismos correos. Si alguna vez se quiere un entorno de
+demostración con borrado habilitado corriendo en Vercel, se pone
+`ALLOW_ACCOUNT_HARD_DELETE="true"`.
 
 ---
 

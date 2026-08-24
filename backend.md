@@ -767,10 +767,12 @@ Query soportada en catalogo:
 
 | Metodo | Ruta | Auth | Descripcion |
 | --- | --- | --- | --- |
+| GET | `/admin/settings` | JWT ADMIN | Que puede hacer el panel en este servidor (hoy: si el borrado definitivo esta habilitado) |
 | GET | `/admin/users` | JWT ADMIN | Lista usuarios |
 | GET | `/admin/users/:id` | JWT ADMIN | Obtiene usuario |
-| PATCH | `/admin/users/:id/status` | JWT ADMIN | Cambia estado de usuario |
-| PATCH | `/admin/users/:id/role` | JWT ADMIN | Cambia rol de usuario |
+| PATCH | `/admin/users/:id/status` | JWT ADMIN | Cambia estado de usuario (SUSPENDED / DELETED la sacan de circulacion sin soltar sus datos) |
+| PATCH | `/admin/users/:id/role` | JWT ADMIN | Cambia rol de usuario (no el propio) |
+| DELETE | `/admin/users/:id` | JWT ADMIN | Borra la cuenta y todo lo suyo, y libera sus datos unicos. **403 en produccion** (ver `ALLOW_ACCOUNT_HARD_DELETE`) |
 | GET | `/admin/verifications` | JWT ADMIN | Lista verificaciones |
 | GET | `/admin/verifications/:id` | JWT ADMIN | Obtiene verificacion |
 | GET | `/admin/verifications/:id/documents` | JWT ADMIN | Documentos con URLs firmadas + extraccion y cruces (auditado) |
@@ -816,15 +818,35 @@ Generator:
 
 Cuenta principal del usuario.
 
+**Los datos que identifican a una persona son unicos: una identidad, una sola
+cuenta.** Tienen indice unico en la base `email`, `phone`, `dni`, `cuil`,
+`googleId`, `stripeCustomerId` y `stripeAccountId`. Ademas:
+
+- El email se guarda **siempre en minusculas y sin espacios al borde**. Lo
+  garantiza la base, no solo la API: un CHECK (`User_email_lowercase_check`)
+  rechaza cualquier otra forma, y un indice unico por expresion
+  (`User_email_lower_key`) cierra la unicidad sin mirar mayusculas. Los dos los
+  pone `prisma/premigrate/003_account_identity_unique.sql`, porque
+  `schema.prisma` no sabe expresarlos.
+- El telefono se normaliza a E.164 antes de guardarse
+  (`src/common/validators/phone.validator.ts`), que es lo que hace que su indice
+  unico sirva: sin eso `+5491132895416` y `011 3289-5416` entrarian como dos
+  numeros distintos.
+- Cuando un dato repetido choca, la API contesta **409** con un `code` que dice
+  cual (`EMAIL_ALREADY_REGISTERED`, `PHONE_ALREADY_REGISTERED`,
+  `DNI_ALREADY_REGISTERED`, `CUIL_ALREADY_REGISTERED`,
+  `GOOGLE_ACCOUNT_ALREADY_LINKED`). Ver
+  `src/common/utils/account-identity.util.ts`.
+
 Campos clave:
 
 - `id`
-- `email`
+- `email` (unico, siempre en minusculas)
 - `password`
 - `firstName`
 - `lastName`
 - `displayName`
-- `phone`
+- `phone` (unico, en E.164)
 - `profilePhotoUrl`
 - `role`
 - `status`

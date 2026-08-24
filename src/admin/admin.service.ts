@@ -13,6 +13,8 @@ import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 import { CloudinaryService } from "../media/cloudinary.service";
 import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
+import { AccountDeletionPolicy } from "./account-deletion.policy";
+import { ReviewsService } from "../reviews/reviews.service";
 
 @Injectable()
 export class AdminService {
@@ -22,6 +24,8 @@ export class AdminService {
     private readonly cloudinary: CloudinaryService,
     private readonly identityDocuments: IdentityDocumentsService,
     private readonly documentVerification: DocumentVerificationService,
+    private readonly deletionPolicy: AccountDeletionPolicy,
+    private readonly reviews: ReviewsService,
   ) {}
 
   listUsers() {
@@ -41,8 +45,24 @@ export class AdminService {
     return user;
   }
 
+  /**
+   * El estado de una cuenta. Es LA forma de sacar a alguien de circulación sin
+   * borrarlo: SUSPENDED (baneada) y DELETED (dada de baja) le cierran la puerta
+   * —no puede iniciar sesión ni por email ni por Google, y los tokens que ya
+   * tenía dejan de valer porque JwtStrategy relee el estado en cada request—
+   * pero la fila sigue existiendo, así que su email, su teléfono y su documento
+   * quedan tomados y nadie puede registrarse de nuevo con ellos.
+   */
   async updateUserStatus(actorId: string, id: string, status: UserStatus) {
     await this.getUser(id);
+
+    // Suspenderse a sí mismo es quedarse afuera del panel en el acto.
+    if (actorId === id && status !== UserStatus.ACTIVE) {
+      throw new BadRequestException(
+        "No podés cambiarle el estado a tu propia cuenta: te quedarías sin " +
+          "acceso al panel.",
+      );
+    }
     const user = await this.prisma.user.update({
       where: { id },
       data: { status },
@@ -59,8 +79,22 @@ export class AdminService {
     return user;
   }
 
+  /**
+   * El rol de una cuenta. Cambiarse el propio está prohibido: no hay alta de
+   * admin por API, así que un admin que se saca el rol a sí mismo se queda
+   * afuera del panel y hay que devolvérselo a mano en la base. Sacárselo a OTRO
+   * admin sí se puede — quien lo hace sigue siendo admin, así que nunca deja el
+   * panel sin nadie.
+   */
   async updateUserRole(actorId: string, id: string, role: UserRole) {
     await this.getUser(id);
+
+    if (actorId === id) {
+      throw new BadRequestException(
+        "No podés cambiarte el rol a vos mismo: si te sacás ADMIN te quedás " +
+          "sin acceso al panel y no hay forma de recuperarlo desde la API.",
+      );
+    }
     const user = await this.prisma.user.update({
       where: { id },
       data: { role },
@@ -220,6 +254,11 @@ export class AdminService {
       const bookingIds = bookings.map((b) => b.id);
 
       if (bookingIds.length > 0) {
+        // El contrato referencia a la reserva con Restrict: va primero, o el
+        // borrado corta con un error de clave foránea.
+        await tx.contract.deleteMany({
+          where: { bookingId: { in: bookingIds } },
+        });
         await tx.paymentRecord.deleteMany({
           where: { bookingId: { in: bookingIds } },
         });
@@ -286,23 +325,53 @@ export class AdminService {
     return booking;
   }
 
+  /**
+   * Borra una cuenta DE VERDAD: la fila y todo lo que cuelga de ella.
+   *
+   * ── Para qué existe ─────────────────────────────────────────────────────
+   * Para poder reciclar los datos de una cuenta de demostración —el mismo mail,
+   * el mismo teléfono, el mismo DNI— sin tener que inventar una dirección nueva
+   * cada vez. Es lo contrario de dar de baja: acá el objetivo es justamente
+   * SOLTAR los datos únicos.
+   *
+   * Por eso mismo está apagado en producción (ver AccountDeletionPolicy): ahí
+   * soltar los datos de una cuenta expulsada es dejarla volver a registrarse.
+   *
+   * ── Por qué hay que borrar tanto a mano ─────────────────────────────────
+   * Casi todas las relaciones son `onDelete: Restrict`, que es lo correcto para
+   * el día a día —nadie debería poder borrar un usuario y llevarse puestas las
+   * reservas de otro sin querer— pero obliga a vaciar en orden: lo que depende
+   * de algo va antes que ese algo. Las que son Cascade (favoritos, reseñas,
+   * reportes) se van solas y no aparecen acá.
+   */
   async deleteUserPermanently(actorId: string, id: string) {
+    this.deletionPolicy.assertAllowed();
+
+    // Borrarse a sí mismo deja el panel sin la cuenta desde la que se estaba
+    // trabajando. Y como el actor siempre es ADMIN, prohibirlo alcanza para que
+    // nunca quede el sistema sin ningún admin: borrar a OTRO admin deja al menos
+    // a quien lo borró.
+    if (actorId === id) {
+      throw new BadRequestException("You cannot delete yourself");
+    }
+
+    const user = await this.getUser(id);
+
+    // Se leen ANTES de la transacción porque después las filas ya no están.
     const identityDocumentUrls =
       await this.prisma.documentVerification.findMany({
         where: { userId: id },
         select: { frontUrl: true, backUrl: true },
       });
 
-    if (actorId === id) {
-      throw new BadRequestException("You cannot delete yourself");
-    }
+    // Las reseñas que escribió esta persona se van por cascada, y con ellas se
+    // mueve el promedio de quien las recibió. Hay que saber a quién antes de
+    // que desaparezcan.
+    const reviewsWritten = await this.prisma.review.findMany({
+      where: { authorId: id },
+      select: { targetUserId: true, listingId: true },
+    });
 
-    await this.getUser(id);
-
-    // FK relations use onDelete: Restrict, so every dependent row must be
-    // removed before the user. Order matters: messages and payment records
-    // first, then conversations/bookings/blocks, then the owned listings,
-    // vehicles, media, and verification rows, and finally the user itself.
     await this.prisma.$transaction(async (tx) => {
       const listings = await tx.listing.findMany({
         where: { ownerId: id },
@@ -351,6 +420,14 @@ export class AdminService {
         },
       });
 
+      // El contrato de una reserva la referencia con Restrict, así que va
+      // ANTES que la reserva. Faltaba: sin esto, borrar una cuenta que hubiera
+      // llegado a firmar un contrato fallaba con un error de clave foránea, que
+      // es justo el caso de una cuenta de demostración usada de punta a punta.
+      await tx.contract.deleteMany({
+        where: { bookingId: { in: bookingIds } },
+      });
+
       await tx.paymentRecord.deleteMany({
         where: {
           OR: [{ userId: id }, { bookingId: { in: bookingIds } }],
@@ -379,8 +456,39 @@ export class AdminService {
       await tx.verificationCode.deleteMany({ where: { userId: id } });
       await tx.documentVerification.deleteMany({ where: { userId: id } });
 
+      // No cuelga del usuario (no tiene FK: se guarda por email, antes de que
+      // exista la cuenta), pero si quedó una registración a medio hacer con esta
+      // dirección, el mail no está del todo libre. Y el punto de todo esto es
+      // que quede libre.
+      await tx.pendingRegistration.deleteMany({ where: { email: user.email } });
+
       return tx.user.delete({ where: { id } });
     });
+
+    // Va DESPUÉS de la transacción y sin targetUserId: el usuario ya no existe,
+    // y AuditLog lo referencia con Restrict. Es el único rastro que queda de que
+    // esta cuenta existió, así que los datos que se liberaron van en metadata.
+    await this.auditLog.create({
+      actorId,
+      action: "admin.user.delete.permanent",
+      entityType: "User",
+      entityId: id,
+      metadata: {
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        status: user.status,
+      },
+    });
+
+    // Los promedios de las personas y las publicaciones que esta cuenta había
+    // reseñado, ahora que esas reseñas ya no están.
+    await this.reviews.recalculate(
+      reviewsWritten.map((review) => review.targetUserId),
+      reviewsWritten
+        .map((review) => review.listingId)
+        .filter((listingId): listingId is string => listingId !== null),
+    );
 
     // Los documentos de identidad no deben quedar huérfanos en el storage:
     // se borran después de la transacción (best-effort, registrado en log).
@@ -388,6 +496,16 @@ export class AdminService {
       identityDocumentUrls.flatMap((row) => [row.frontUrl, row.backUrl]),
     );
 
-    return { deleted: true };
+    // Qué quedó libre para volver a usarse. Es el dato que se busca al borrar
+    // una cuenta de demostración, así que se contesta en vez de tener que ir a
+    // mirar la base.
+    return {
+      deleted: true,
+      user,
+      freed: {
+        email: user.email,
+        phone: user.phone,
+      },
+    };
   }
 }

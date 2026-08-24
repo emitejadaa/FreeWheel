@@ -29,6 +29,7 @@ import { EmailService } from "../email/email.service";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { GoogleProfilePayload } from "./strategies/google.strategy";
 import { assertFound } from "../common/utils/entity.util";
+import { normalizeEmail } from "../common/utils/email.util";
 import {
   consumeVerificationCode,
   generateNumericCode,
@@ -58,7 +59,13 @@ export class AuthService {
    * registerComplete. Re-calling rotates the code (doubles as "resend").
    */
   async registerStart(dto: RegisterStartDto) {
-    const existing = await this.usersService.findByEmail(dto.email);
+    // El email se canoniza acá y no solo en el DTO: la dirección con la que se
+    // guarda la registración pendiente tiene que ser LA MISMA con la que después
+    // la busca registerComplete, o el código no se encuentra nunca.
+    const email = normalizeEmail(dto.email);
+    if (!email) throw new BadRequestException("Email inválido");
+
+    const existing = await this.usersService.findByEmail(email);
     if (existing) throw new ConflictException("Email already registered");
 
     const code = generateNumericCode();
@@ -66,13 +73,13 @@ export class AuthService {
     const expiresAt = new Date(Date.now() + VERIFICATION_CODE_TTL_MS);
 
     await this.prisma.pendingRegistration.upsert({
-      where: { email: dto.email },
+      where: { email },
       update: { codeHash, expiresAt, attempts: 0, consumedAt: null },
-      create: { email: dto.email, codeHash, expiresAt },
+      create: { email, codeHash, expiresAt },
     });
 
-    await this.emailService.sendVerificationCode(dto.email, code);
-    this.logger.log(`Registration code sent to ${dto.email}`);
+    await this.emailService.sendVerificationCode(email, code);
+    this.logger.log(`Registration code sent to ${email}`);
 
     return { message: "Verification code sent", expiresAt };
   }
@@ -83,33 +90,43 @@ export class AuthService {
    * transaction that also deletes the pending registration.
    */
   async registerComplete(dto: RegisterCompleteDto) {
-    const existing = await this.usersService.findByEmail(dto.email);
+    const email = normalizeEmail(dto.email);
+    if (!email) throw new BadRequestException("Email inválido");
+
+    const existing = await this.usersService.findByEmail(email);
     if (existing) throw new ConflictException("Email already registered");
 
-    await this.consumePendingRegistrationCode(dto.email, dto.code);
+    // El teléfono también identifica a una cuenta, así que se mira ANTES de
+    // gastar el código: antes se podía registrar una cuenta nueva con el número
+    // de otra persona, que es con lo que se verifica la identidad.
+    await this.usersService.assertIdentityUnique({ phone: dto.phone });
+
+    await this.consumePendingRegistrationCode(email, dto.code);
 
     const password = await bcrypt.hash(dto.password, 10);
     const now = new Date();
 
-    const user = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.user.create({
-        data: {
-          email: dto.email,
-          password,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          displayName: dto.displayName,
-          phone: dto.phone,
-          dateOfBirth: parseBirthDate(dto.dateOfBirth),
-          acceptedTermsAt: now,
-          status: UserStatus.ACTIVE,
-          verificationStatus: VerificationStatus.EMAIL_VERIFIED,
-          emailVerifiedAt: now,
-        },
-      });
-      await tx.pendingRegistration.delete({ where: { email: dto.email } });
-      return created;
-    });
+    const user = await this.usersService.withIdentityConflicts(() =>
+      this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            password,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            displayName: dto.displayName,
+            phone: dto.phone,
+            dateOfBirth: parseBirthDate(dto.dateOfBirth),
+            acceptedTermsAt: now,
+            status: UserStatus.ACTIVE,
+            verificationStatus: VerificationStatus.EMAIL_VERIFIED,
+            emailVerifiedAt: now,
+          },
+        });
+        await tx.pendingRegistration.delete({ where: { email } });
+        return created;
+      }),
+    );
 
     this.logger.log(`User registered: ${user.email} (${user.id})`);
 
@@ -368,34 +385,58 @@ export class AuthService {
   }
 
   async googleLogin(googleUser: GoogleProfilePayload) {
-    let user = await this.usersService.findByEmail(googleUser.email);
+    const email = normalizeEmail(googleUser.email);
+    if (!email) throw new BadRequestException("Email inválido");
+
+    let user = await this.usersService.findByEmail(email);
+
+    // Una cuenta suspendida o dada de baja no entra por ningún lado.
+    //
+    // Esto FALTABA: `login` lo miraba y este camino no, así que a una cuenta
+    // baneada le alcanzaba con tocar "Entrar con Google" para volver a estar
+    // adentro. Una suspensión que se esquiva con un botón no es una suspensión.
+    if (
+      user &&
+      (user.status === UserStatus.SUSPENDED ||
+        user.status === UserStatus.DELETED)
+    ) {
+      this.logger.warn(
+        `Google login blocked (status ${user.status}): ${user.email}`,
+      );
+      throw new UnauthorizedException("Account is not active");
+    }
 
     if (!user) {
       const randomPassword = await bcrypt.hash(generateOpaqueToken(32), 10);
-      user = await this.prisma.user.create({
-        data: {
-          email: googleUser.email,
-          password: randomPassword,
-          firstName: googleUser.firstName,
-          lastName: googleUser.lastName,
-          googleId: googleUser.googleId,
-          profilePhotoUrl: googleUser.profilePhotoUrl ?? null,
-          verificationStatus: VerificationStatus.EMAIL_VERIFIED,
-          emailVerifiedAt: new Date(),
-        },
-      });
+      user = await this.usersService.withIdentityConflicts(() =>
+        this.prisma.user.create({
+          data: {
+            email,
+            password: randomPassword,
+            firstName: googleUser.firstName,
+            lastName: googleUser.lastName,
+            googleId: googleUser.googleId,
+            profilePhotoUrl: googleUser.profilePhotoUrl ?? null,
+            verificationStatus: VerificationStatus.EMAIL_VERIFIED,
+            emailVerifiedAt: new Date(),
+          },
+        }),
+      );
     } else if (!user.googleId) {
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          googleId: googleUser.googleId,
-          verificationStatus:
-            user.verificationStatus === VerificationStatus.UNVERIFIED
-              ? VerificationStatus.EMAIL_VERIFIED
-              : user.verificationStatus,
-          emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
-        },
-      });
+      const cuenta = user;
+      user = await this.usersService.withIdentityConflicts(() =>
+        this.prisma.user.update({
+          where: { id: cuenta.id },
+          data: {
+            googleId: googleUser.googleId,
+            verificationStatus:
+              cuenta.verificationStatus === VerificationStatus.UNVERIFIED
+                ? VerificationStatus.EMAIL_VERIFIED
+                : cuenta.verificationStatus,
+            emailVerifiedAt: cuenta.emailVerifiedAt ?? new Date(),
+          },
+        }),
+      );
     }
 
     this.logger.log(`Google login for ${user.email}`);
@@ -428,9 +469,12 @@ export class AuthService {
    * El email de la cuenta NO se toca acá: queda guardado en el código y se aplica
    * al confirmar.
    */
-  async requestEmailChange(userId: string, newEmail: string) {
+  async requestEmailChange(userId: string, newEmailRaw: string) {
+    const newEmail = normalizeEmail(newEmailRaw);
+    if (!newEmail) throw new BadRequestException("Email inválido");
+
     const user = await this.usersService.findById(userId);
-    if (user && user.email.toLowerCase() === newEmail.toLowerCase()) {
+    if (user && user.email === newEmail) {
       throw new BadRequestException(
         "Ese ya es el email de tu cuenta. Poné una dirección distinta.",
       );
@@ -503,7 +547,11 @@ export class AuthService {
       },
     });
 
-    const newEmail = record.targetValue;
+    // Se vuelve a canonizar aunque requestEmailChange ya lo hizo: un código
+    // pedido ANTES de este cambio tiene guardada la dirección tal cual la
+    // escribió la persona, y aplicarla así dejaría el email de la cuenta con
+    // mayúsculas —que es exactamente lo que la base ya no acepta—.
+    const newEmail = normalizeEmail(record.targetValue) ?? record.targetValue;
 
     // Se vuelve a chequear: entre el pedido y la confirmación pasan minutos y
     // alguien podría haber registrado esa dirección.
@@ -514,16 +562,18 @@ export class AuthService {
       );
     }
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        email: newEmail,
-        // Se acaba de comprobar que recibe el correo ahí, así que la dirección
-        // nueva queda verificada. Antes no se tocaba, y la cuenta se quedaba con
-        // la marca de verificación de la dirección ANTERIOR.
-        emailVerifiedAt: new Date(),
-      },
-    });
+    await this.usersService.withIdentityConflicts(() =>
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          email: newEmail,
+          // Se acaba de comprobar que recibe el correo ahí, así que la
+          // dirección nueva queda verificada. Antes no se tocaba, y la cuenta se
+          // quedaba con la marca de verificación de la dirección ANTERIOR.
+          emailVerifiedAt: new Date(),
+        },
+      }),
+    );
 
     this.logger.log(`Email changed for user ${userId}`);
     return { message: "Email updated successfully." };

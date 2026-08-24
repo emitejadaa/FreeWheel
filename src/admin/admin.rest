@@ -71,6 +71,15 @@ Content-Type: {{contentType}}
 @targetToken = {{targetRegisterComplete.response.body.$.accessToken}}
 
 ### ────────────────────────────────────────────────────────────────────────
+### Qué puede hacer el panel en este servidor
+### ────────────────────────────────────────────────────────────────────────
+
+### 0. Dice si el borrado definitivo de cuentas está habilitado. El panel lo usa
+### para no mostrar un botón que va a contestar 403 (en producción está apagado).
+GET {{baseUrl}}/admin/settings
+Authorization: Bearer {{accessToken}}
+
+### ────────────────────────────────────────────────────────────────────────
 ### Usuarios
 ### ────────────────────────────────────────────────────────────────────────
 
@@ -82,7 +91,16 @@ Authorization: Bearer {{accessToken}}
 GET {{baseUrl}}/admin/users/{{targetUserId}}
 Authorization: Bearer {{accessToken}}
 
-### 3. Cambia el estado de un usuario (ACTIVE, PENDING_VERIFICATION, SUSPENDED, DELETED).
+### 3. Cambia el estado de un usuario (ACTIVE, PENDING_VERIFICATION, SUSPENDED,
+### DELETED).
+###
+### ESTA es la forma de sacar una cuenta de circulación: SUSPENDED (baneada) y
+### DELETED (dada de baja) le cierran la puerta —no entra ni por email ni por
+### Google, y los tokens que ya tenía dejan de valer— PERO la fila sigue
+### existiendo, así que su email, su teléfono y su documento quedan tomados y
+### nadie puede registrarse de nuevo con ellos.
+###
+### No se puede usar sobre la propia cuenta: sería quedarse afuera del panel.
 PATCH {{baseUrl}}/admin/users/{{targetUserId}}/status
 Content-Type: {{contentType}}
 Authorization: Bearer {{accessToken}}
@@ -100,7 +118,9 @@ Authorization: Bearer {{accessToken}}
   "status": "ACTIVE"
 }
 
-### 5. Cambia el rol de un usuario (USER o ADMIN).
+### 5. Cambia el rol de un usuario (USER o ADMIN). Tampoco sobre la propia
+### cuenta: no hay alta de admin por API, así que sacarse ADMIN a uno mismo deja
+### el panel inaccesible.
 PATCH {{baseUrl}}/admin/users/{{targetUserId}}/role
 Content-Type: {{contentType}}
 Authorization: Bearer {{accessToken}}
@@ -109,8 +129,22 @@ Authorization: Bearer {{accessToken}}
   "role": "ADMIN"
 }
 
-### 6. Elimina un usuario permanentemente. ⚠️ Destructivo — no correr sobre
+### 6. BORRA un usuario definitivamente. ⚠️ Destructivo — no correr sobre
 ### {{targetUserId}} si lo necesitás para los requests de abajo.
+###
+### Se lleva TODO lo suyo: autos, publicaciones, reservas, contratos, pagos,
+### chats y documentos. Y libera sus datos únicos (email, teléfono, DNI, CUIL)
+### para volver a usarlos — que es justamente para lo que existe: rearmar
+### cuentas de demostración con los mismos correos.
+###
+### ⚠️ SOLO FUERA DE PRODUCCIÓN. En el deploy contesta 403
+### ACCOUNT_HARD_DELETE_DISABLED: ahí una cuenta se saca de circulación con el
+### request 3 (SUSPENDED / DELETED), que le cierra la puerta SIN soltar sus
+### datos. Si se borrara, quien fue expulsado podría registrarse de nuevo con el
+### mismo documento. Se puede forzar con ALLOW_ACCOUNT_HARD_DELETE=true.
+###
+### Contesta { deleted, user, freed: { email, phone } }: "freed" son los datos
+### que quedaron libres.
 # DELETE {{baseUrl}}/admin/users/{{targetUserId}}
 # Authorization: Bearer {{accessToken}}
 

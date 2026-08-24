@@ -10,7 +10,9 @@ import {
   cuilFor,
   futureDate,
   registerUser,
+  TEST_PASSWORD,
   uniqueDni,
+  uniquePhone,
 } from "./helpers/factory";
 
 describe("Users", () => {
@@ -295,6 +297,134 @@ describe("Users", () => {
       expect(res.body.owner.profilePhotoUrl).toBeNull();
       // Y el auto se sigue viendo entero: lo único que se tapa es la cara.
       expect(res.body.id).toBe(publicacion.id);
+    });
+  });
+
+  /**
+   * Un dato que identifica a una persona no puede estar repartido entre dos
+   * cuentas. Vale para el email, el teléfono, el DNI y el CUIL.
+   */
+  describe("una identidad, una sola cuenta", () => {
+    const http = () => request(app.getHttpServer());
+
+    it("no deja registrar el mismo email escrito con otras mayúsculas", async () => {
+      const user = await registerUser(app);
+
+      await http()
+        .post("/auth/register/start")
+        .send({ email: user.email.toUpperCase() })
+        .expect(409);
+    });
+
+    it("guarda el email en minúsculas y deja entrar escribiéndolo como sea", async () => {
+      const email = `MiXtO-${Date.now()}@Test.Local`;
+      const user = await registerUser(app, { email });
+
+      // Se guardó canonizado, no como vino.
+      expect(user.email).toBe(email.toLowerCase());
+      const row = await prisma.user.findUnique({ where: { id: user.id } });
+      expect(row?.email).toBe(email.toLowerCase());
+
+      // Y se puede entrar escribiéndolo de cualquiera de las dos formas.
+      for (const escrito of [email, email.toLowerCase(), email.toUpperCase()]) {
+        await http()
+          .post("/auth/login")
+          .send({ email: escrito, password: TEST_PASSWORD })
+          .expect(201);
+      }
+    });
+
+    it("la base rechaza un email con mayúsculas aunque se escriba directo", async () => {
+      // La garantía no depende de que todos los caminos de la API se acuerden
+      // de normalizar: si una dirección se guardara con mayúsculas, quien la
+      // usa no podría iniciar sesión (la búsqueda compara exacto).
+      const user = await registerUser(app);
+      await expect(
+        prisma.user.update({
+          where: { id: user.id },
+          data: { email: user.email.toUpperCase() },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it("no deja que dos cuentas tengan el mismo teléfono", async () => {
+      const phone = uniquePhone();
+      const primero = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(primero.token))
+        .send({ phone })
+        .expect(200);
+
+      // Ni desde el perfil de otra persona...
+      const segundo = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(segundo.token))
+        .send({ phone })
+        .expect(409)
+        .expect((res) =>
+          expect(res.body.code).toBe("PHONE_ALREADY_REGISTERED"),
+        );
+
+      // ...ni registrando una cuenta nueva con ese número.
+      await expect(registerUser(app, { phone })).rejects.toThrow();
+    });
+
+    it("acepta el mismo teléfono escrito distinto como lo que es: el mismo", async () => {
+      const primero = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(primero.token))
+        .send({ phone: "+54 9 11 3289 5416" })
+        .expect(200);
+
+      const segundo = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(segundo.token))
+        .send({ phone: "005491132895416" })
+        .expect(409);
+    });
+
+    it("dejar el propio teléfono como está no cuenta como repetido", async () => {
+      const phone = uniquePhone();
+      const user = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(user.token))
+        .send({ phone })
+        .expect(200);
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(user.token))
+        .send({ phone, firstName: "Ada" })
+        .expect(200);
+    });
+
+    it("no deja que dos cuentas compartan el documento", async () => {
+      const dni = uniqueDni();
+      const primero = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(primero.token))
+        .send({ dni, cuil: cuilFor(dni) })
+        .expect(200);
+
+      const segundo = await registerUser(app, { verified: false });
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(segundo.token))
+        .send({ dni })
+        .expect(409)
+        .expect((res) => expect(res.body.code).toBe("DNI_ALREADY_REGISTERED"));
+
+      await http()
+        .patch("/users/me")
+        .set("Authorization", bearer(segundo.token))
+        .send({ cuil: cuilFor(dni) })
+        .expect(409)
+        .expect((res) => expect(res.body.code).toBe("CUIL_ALREADY_REGISTERED"));
     });
   });
 });

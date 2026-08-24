@@ -16,8 +16,18 @@ export class FakeEmailService {
   private readonly resetTokens = new Map<string, string>();
   private readonly priceChangeCodes = new Map<string, string>();
 
+  /**
+   * La casilla se busca sin mirar mayúsculas, igual que un servidor de correo
+   * de verdad. Importa porque la API canoniza el email antes de mandar nada: un
+   * test que registra "MiXtO@Test.Local" busca el código por como lo escribió y
+   * lo encontró guardado como "mixto@test.local".
+   */
+  private static casilla(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
   sendVerificationCode(email: string, code: string): Promise<void> {
-    this.codes.set(email, code);
+    this.codes.set(FakeEmailService.casilla(email), code);
     return Promise.resolve();
   }
 
@@ -27,7 +37,7 @@ export class FakeEmailService {
     token: string,
     _userId: string,
   ): Promise<void> {
-    this.resetTokens.set(email, token);
+    this.resetTokens.set(FakeEmailService.casilla(email), token);
     return Promise.resolve();
   }
 
@@ -42,23 +52,23 @@ export class FakeEmailService {
     _newPrice: number,
     code: string,
   ): Promise<void> {
-    this.priceChangeCodes.set(email, code);
+    this.priceChangeCodes.set(FakeEmailService.casilla(email), code);
     return Promise.resolve();
   }
 
   /** The most recent price-change code emailed to this address. */
   lastPriceChangeCode(email: string): string | undefined {
-    return this.priceChangeCodes.get(email);
+    return this.priceChangeCodes.get(FakeEmailService.casilla(email));
   }
 
   /** The most recent verification code emailed to this address. */
   lastCode(email: string): string | undefined {
-    return this.codes.get(email);
+    return this.codes.get(FakeEmailService.casilla(email));
   }
 
   /** The most recent password-reset token emailed to this address. */
   lastResetToken(email: string): string | undefined {
-    return this.resetTokens.get(email);
+    return this.resetTokens.get(FakeEmailService.casilla(email));
   }
 
   // ── Avisos de una reserva ─────────────────────────────────────────────────

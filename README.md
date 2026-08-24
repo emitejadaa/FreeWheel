@@ -248,10 +248,12 @@ Usuario autenticado:
 
 Admin:
 
+- `GET /admin/settings`
 - `GET /admin/users`
 - `GET /admin/users/:id`
 - `PATCH /admin/users/:id/status`
 - `PATCH /admin/users/:id/role`
+- `DELETE /admin/users/:id` (borrado definitivo — deshabilitado en produccion)
 - `GET /admin/verifications`
 - `GET /admin/verifications/:id`
 - `GET /admin/verifications/:id/documents`
@@ -260,6 +262,27 @@ Admin:
 - `PATCH /admin/listings/:id/status`
 - `GET /admin/bookings`
 - `GET /admin/bookings/:id`
+
+### Sacar una cuenta de circulacion: borrarla o darla de baja
+
+Son dos cosas distintas y la diferencia esta en que pasa con **los datos** de la
+cuenta (email, telefono, DNI, CUIL):
+
+| | Que hace | Los datos de la cuenta | Donde se puede |
+| --- | --- | --- | --- |
+| `PATCH /admin/users/:id/status` con `SUSPENDED` o `DELETED` | La cuenta no puede iniciar sesion, ni por email ni por Google, y los tokens que ya tenia dejan de valer | **Quedan tomados**: nadie puede registrarse de nuevo con ellos | Siempre |
+| `DELETE /admin/users/:id` | Borra la fila y todo lo que cuelga de ella (autos, publicaciones, reservas, contratos, chats, documentos) | **Quedan libres** para volver a usarse | Solo fuera de produccion |
+
+En produccion `DELETE /admin/users/:id` contesta `403
+ACCOUNT_HARD_DELETE_DISABLED`. Es a proposito: si se borrara la cuenta de quien
+fue expulsado, esa persona podria volver a registrarse con el mismo mail, el
+mismo telefono y el mismo documento. El borrado existe para el desarrollo, donde
+hace falta reciclar los datos de las cuentas de demostracion. El panel se entera
+de si esta habilitado con `GET /admin/settings`.
+
+Se puede forzar en cualquiera de los dos sentidos con `ALLOW_ACCOUNT_HARD_DELETE`
+(`true` / `false`); sin esa variable, el borrado esta habilitado en todos lados
+menos en produccion.
 
 ## Probar La API (archivos `.rest`)
 
