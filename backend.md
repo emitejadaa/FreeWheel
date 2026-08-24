@@ -707,6 +707,7 @@ Query soportada en catalogo:
 | POST | `/verification/phone/confirm` | JWT | Confirma codigo phone |
 | GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`, `lastReview`) |
 | POST | `/verification/identity/upload-signature` | JWT | Firma la subida de UN documento (`document` + `side`) |
+| POST | `/verification/identity/inspect-url` | JWT | Diagnostica UNA url subida sin verificar nada (200 siempre) |
 | POST | `/verification/identity/:document/submit` | JWT | Envia las 2 fotos de un documento (`dni`\|`license`) y devuelve el veredicto |
 | POST | `/verification/identity/:document/request-review` | JWT | Pide que un admin revise a mano un documento en `FAILED` |
 | GET | `/verification/identity/me` | JWT | Solicitudes propias (sin URLs ni datos extraidos) |
@@ -1199,13 +1200,23 @@ Pasos:
    faltan: son contra los que se cruza lo que dicen los documentos.
 2. Por cada archivo pide una firma
    (`POST /verification/identity/upload-signature` con `document` + `side`).
-   El servidor devuelve `folder=identity/<userId>`,
-   `public_id=<documento>_<lado>_<epoch>_<nonce>` y `type=authenticated`.
-3. El cliente sube el archivo directo a Cloudinary con esos parametros.
+   El servidor devuelve `uploadUrl` y `params`: los campos EXACTOS que hay que
+   mandarle a Cloudinary (`public_id=identity/<userId>/<documento>_<lado>_<epoch>_<nonce>`,
+   `timestamp`, `type=authenticated`, `api_key`, `signature`), mas `file`.
+   **No se manda `folder`**: el `public_id` ya lo incluye, y mandando los dos
+   Cloudinary antepone la carpeta otra vez (`identity/<id>/identity/<id>/...`)
+   y el submit rechaza el archivo como de otro slot.
+3. El cliente sube el archivo directo a Cloudinary con esos parametros. Si
+   quiere, puede pedir un diagnostico de la URL resultante antes de verificar:
+   `POST /verification/identity/inspect-url` responde 200 con `ok` y, cuando
+   no sirve, con el chequeo que fallo.
 4. Envia las dos URLs de un documento
    (`POST /verification/identity/:document/submit`). El backend valida cloud,
    tipo de entrega, carpeta, slot y existencia de cada asset, y persiste la URL
-   canonica sin firma.
+   canonica sin firma. Si algo no cierra, el 400 dice cual de los chequeos
+   fallo (`problem`), en que etapa (`step`), en que campo (`field`) y que se
+   esperaba contra que llego (`details`); `errors` lista los dos archivos
+   cuando los dos estan mal.
 5. Descarga las dos fotos y se las pasa al **verificador Python**
    (`python-verifier/`), que corre como subproceso aislado y devuelve, por
    foto, un objeto por protocolo de lectura con SIEMPRE los mismos nombres de

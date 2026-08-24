@@ -5,6 +5,7 @@ import { ExpressAdapter } from "@nestjs/platform-express";
 import express from "express";
 import type { Express, Request, Response, NextFunction } from "express";
 import helmet from "helmet";
+import { join } from "path";
 
 import { AppModule } from "./app.module";
 import { createCorsOptions } from "./cors.config";
@@ -65,6 +66,23 @@ export function createServer(): Express {
       helmet({
         contentSecurityPolicy: false,
         crossOriginResourcePolicy: { policy: "cross-origin" },
+      }),
+    );
+
+    // Front de prueba de la verificación documental (public/demo). Servirlo
+    // desde el propio backend lo deja en el MISMO origen: sin CORS de por
+    // medio, un error de verificación es siempre del flujo y no del navegador.
+    // En Vercel esta carpeta ya la sirve el CDN antes de llegar a la función.
+    // Sin caché a propósito: es una consola de depuración que se edita a
+    // mano, y una copia vieja en el navegador firma la subida distinto que el
+    // backend — el síntoma es un "Invalid Signature" de Cloudinary imposible
+    // de atribuir. Que siempre se sirva la última versión del archivo.
+    cachedServer.use(
+      "/demo",
+      express.static(join(process.cwd(), "public", "demo"), {
+        etag: false,
+        lastModified: false,
+        setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
       }),
     );
 

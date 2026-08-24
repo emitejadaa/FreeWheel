@@ -95,6 +95,13 @@ Content-Type: {{contentType}}
 ### document: "dni" | "license" — side: "front" | "back".
 ### El servidor fija carpeta y public_id a partir del JWT: el cliente no puede
 ### subir a la carpeta de otra cuenta ni cruzar frente con dorso.
+###
+### La respuesta trae `params`: son EXACTAMENTE los campos que hay que mandarle
+### a Cloudinary (más `file`). Ni uno más. En particular NO se manda `folder`:
+### el public_id ya lo incluye, y mandando los dos Cloudinary antepone la
+### carpeta otra vez y el archivo termina en identity/<id>/identity/<id>/… —
+### que es lo que después el submit rechaza con DOCUMENT_SLOT_MISMATCH.
+### `expectedUrl` muestra cómo tiene que quedar la URL para el submit.
 # @name firmaDniFrente
 POST {{baseUrl}}/verification/identity/upload-signature
 Authorization: Bearer {{token}}
@@ -128,7 +135,7 @@ Content-Type: {{contentType}}
 
 ### ── #6 · Subida real a Cloudinary (los bytes NO pasan por el backend) ──────
 ### Reemplazá la ruta del archivo por una foto tuya. Hay que mandar
-### EXACTAMENTE los params firmados, más file y api_key.
+### EXACTAMENTE los params firmados, más file y api_key. Sin `folder`.
 POST https://api.cloudinary.com/v1_1/{{firmaDniFrente.response.body.cloudName}}/image/upload
 Content-Type: multipart/form-data; boundary=----Boundary
 
@@ -150,10 +157,6 @@ Content-Disposition: form-data; name="signature"
 
 {{firmaDniFrente.response.body.signature}}
 ------Boundary
-Content-Disposition: form-data; name="folder"
-
-{{firmaDniFrente.response.body.folder}}
-------Boundary
 Content-Disposition: form-data; name="public_id"
 
 {{firmaDniFrente.response.body.publicId}}
@@ -162,6 +165,20 @@ Content-Disposition: form-data; name="type"
 
 authenticated
 ------Boundary--
+
+### ── #6b · Diagnosticar UNA url antes de mandarla ──────────────────────────
+### Responde 200 siempre. `ok:true` = esa URL serviría para ese slot. Si no,
+### `error` trae el chequeo que falló (`problem`), qué se esperaba y qué llegó.
+### No consume los 5 intentos del submit. Límite: 30 cada 5 minutos.
+POST {{baseUrl}}/verification/identity/inspect-url
+Authorization: Bearer {{token}}
+Content-Type: {{contentType}}
+
+{
+  "document": "license",
+  "side": "front",
+  "url": "https://res.cloudinary.com/<cloud>/image/authenticated/identity/{{userId}}/license_front_1700000000_abcdef01.jpg"
+}
 
 ### ── #7 · Verificar el DNI (frente + dorso) ────────────────────────────────
 ### La respuesta YA trae el veredicto: status APPROVED o FAILED con sus
@@ -204,8 +221,32 @@ Authorization: Bearer {{token}}
 
 ### ── Errores esperables del submit ─────────────────────────────────────────
 ### 400 PERFIL_INCOMPLETO      → faltan dni/cuil/domicilio/fecha de nacimiento
+###                              (`missing` lista cuáles)
 ### 400 INVALID_DOCUMENT_URL   → la URL no la firmó este backend
 ### 400 DOCUMENT_SLOT_MISMATCH → el archivo es de otro slot o de otra cuenta
 ### 400 DOCUMENT_NOT_FOUND     → la URL es válida pero el archivo no existe
 ### 400 DOCUMENT_ALREADY_APPROVED → ese documento ya está verificado
 ### 400 REVIEW_IN_PROGRESS     → está esperando a un admin; no se puede reenviar
+###
+### Los tres errores de archivos traen, además del `code`, DÓNDE falló:
+### {
+###   "code": "DOCUMENT_SLOT_MISMATCH",
+###   "problem": "OTRO_SLOT",          // el chequeo puntual que falló
+###   "step": "pertenencia",           // parseo_de_url | pertenencia | existencia
+###   "field": "frontUrl",             // qué campo del body
+###   "slot": "license_front",         // qué documento/lado se esperaba ahí
+###   "message": "...", "hint": "qué hacer para arreglarlo",
+###   "details": { "slotEsperado": "...", "slotRecibido": "...", ... },
+###   "errors": [ ... ]                // TODOS los archivos con problemas
+### }
+###
+### Valores de `problem`:
+###   URL_NO_ES_DE_CLOUDINARY  la URL no es de res.cloudinary.com
+###   OTRO_CLOUD               el front sube a otra cuenta de Cloudinary
+###   NO_ES_AUTHENTICATED      se subió sin type=authenticated (/image/upload/)
+###   FORMATO_NO_PERMITIDO     no es jpg/jpeg/png/webp
+###   FUERA_DE_LA_CARPETA_DE_IDENTIDAD  el public_id no lo firmó este endpoint
+###   OTRA_CUENTA              el archivo es de la carpeta de otro usuario
+###   SUBCARPETA_INESPERADA    se le agregaron carpetas al public_id
+###   OTRO_SLOT                frente y dorso cruzados, o documento equivocado
+###   ARCHIVO_NO_EXISTE        la URL está bien pero Cloudinary no lo tiene
