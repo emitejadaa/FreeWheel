@@ -39,10 +39,12 @@ const OBLIGATORIAS: Grupo[] = [
 
 const OPCIONALES: Grupo[] = [
   {
-    feature: "revisión de fotos con IA",
+    // La verificación documental NO usa este modelo: la hace el verificador
+    // Python. Groq quedó para el chatbot y la revisión de fotos de vehículos.
+    feature: "chatbot y revisión de fotos de vehículos",
     vars: ["GROQ_API_KEY"],
     consecuencia:
-      "el DNI y la licencia quedan sin revisar y hay que aprobarlos a mano",
+      "el chatbot no contesta y las fotos de los autos no se revisan solas",
   },
   {
     feature: "emails (código de registro y recuperar la contraseña)",
@@ -50,14 +52,15 @@ const OPCIONALES: Grupo[] = [
     consecuencia: "no se puede terminar de registrarse ni recuperar la clave",
   },
   {
-    feature: "subida de fotos firmada",
+    feature: "documentos de identidad",
     vars: [
       "CLOUDINARY_CLOUD_NAME",
       "CLOUDINARY_API_KEY",
       "CLOUDINARY_API_SECRET",
     ],
     consecuencia:
-      "las fotos suben igual, pero por un camino abierto que cualquiera podría usar",
+      "no se puede verificar el DNI ni la licencia: ahí viven las fotos, y sin " +
+      "eso la verificación automática queda deshabilitada",
   },
   {
     feature: "links de los emails",

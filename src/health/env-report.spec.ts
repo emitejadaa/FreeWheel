@@ -55,8 +55,10 @@ describe("buildEnvReport", () => {
 
     const reporte = buildEnvReport();
 
-    expect(reporte.impact.join(" ")).toContain("sin revisar");
-    expect(reporte.features["revisión de fotos con IA"]).toBe(false);
+    expect(reporte.impact.join(" ")).toContain("el chatbot no contesta");
+    expect(reporte.features["chatbot y revisión de fotos de vehículos"]).toBe(
+      false,
+    );
     expect(reporte.features["base de datos"]).toBe(true);
   });
 
@@ -71,7 +73,7 @@ describe("buildEnvReport", () => {
 
     const reporte = buildEnvReport();
 
-    expect(reporte.features["subida de fotos firmada"]).toBe(false);
+    expect(reporte.features["documentos de identidad"]).toBe(false);
     expect(reporte.missing).toEqual(
       expect.arrayContaining(["CLOUDINARY_API_SECRET"]),
     );
