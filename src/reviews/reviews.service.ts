@@ -9,6 +9,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
 import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
 import { CreateReviewDto } from "./dto/create-review.dto";
+import { tagAppliesTo } from "./review-tags";
 
 /**
  * Estados de pago que cuentan como "el dinero se movió". Reseñar exige que la
@@ -72,6 +73,24 @@ export class ReviewsService {
     // El dueño reseña a quien alquiló y viceversa.
     const targetUserId = isRenter ? booking.ownerId : booking.renterId;
 
+    /*
+      Las características tienen que corresponder al PAPEL de quien las recibe.
+
+      El DTO ya rechazó cualquier código inventado, pero no puede saber a quién
+      se le está poniendo: eso lo sabe recién acá. Sin este control, quien
+      alquiló podría marcar al dueño con "devolvió el auto sucio" —que es una
+      característica del conductor— y el conteo del perfil terminaría diciendo
+      cualquier cosa.
+
+      Las que no corresponden se DESCARTAN en silencio en vez de rechazar la
+      reseña entera. Una reseña es algo que la persona ya se tomó el trabajo de
+      escribir: perderla por una casilla que este servidor no acepta sería lo
+      peor de los dos mundos. Y el caso normal en que esto pasa no es un ataque,
+      es un front viejo o uno nuevo contra un servidor viejo.
+    */
+    const target = isRenter ? "OWNER" : "RENTER";
+    const tags = (data.tags ?? []).filter((code) => tagAppliesTo(code, target));
+
     const review = await this.prisma.review.create({
       data: {
         bookingId,
@@ -82,6 +101,7 @@ export class ReviewsService {
         listingId: isRenter ? booking.listingId : null,
         rating: data.rating,
         comment: data.comment,
+        tags,
       },
       include: { author: { select: USER_PUBLIC_SELECT } },
     });
@@ -134,7 +154,7 @@ export class ReviewsService {
    * null (habla de la persona que condujo).
    */
   async reputationFor(userId: string) {
-    const [asDriver, asOwner] = await Promise.all([
+    const [asDriver, asOwner, tagRows, rentedOut, rented] = await Promise.all([
       // Recibidas del dueño → la persona actuó como conductor.
       this.prisma.review.aggregate({
         where: { targetUserId: userId, listingId: null },
@@ -147,10 +167,46 @@ export class ReviewsService {
         _avg: { rating: true },
         _count: { rating: true },
       }),
+      /*
+        Las características de TODAS las reseñas que recibió.
+
+        Se traen las listas y se cuentan acá en vez de pedirle el conteo a la
+        base: Postgres no agrupa por elemento de un array sin un unnest, que
+        Prisma no expresa, y la alternativa sería SQL crudo por un conteo sobre
+        como mucho unos cientos de filas. No vale la pena.
+      */
+      this.prisma.review.findMany({
+        where: { targetUserId: userId },
+        select: { tags: true },
+      }),
+      /*
+        Alquileres TERMINADOS, que es el número que dice si alguien tiene
+        recorrido de verdad.
+
+        No es lo mismo que la cantidad de reseñas: se puede terminar un alquiler
+        y que la otra parte nunca reseñe. Mostrar las reseñas como si fueran los
+        alquileres subestima a todo el mundo, y es justo el dato que alguien
+        mira antes de decidir si confía.
+      */
+      this.prisma.booking.count({
+        where: { ownerId: userId, status: BookingStatus.COMPLETED },
+      }),
+      this.prisma.booking.count({
+        where: { renterId: userId, status: BookingStatus.COMPLETED },
+      }),
     ]);
 
     const round = (value: number | null) =>
       value === null ? null : Math.round(value * 10) / 10;
+
+    // { RESPONDE_RAPIDO: 18, AUTO_SUCIO: 2, ... }. Solo las que aparecen: una
+    // característica en cero no es un dato, es ruido.
+    const tagCounts: Record<string, number> = {};
+    for (const row of tagRows) {
+      for (const code of row.tags) {
+        tagCounts[code] = (tagCounts[code] ?? 0) + 1;
+      }
+    }
 
     return {
       asDriver: {
@@ -161,6 +217,8 @@ export class ReviewsService {
         average: round(asOwner._avg.rating),
         count: asOwner._count.rating,
       },
+      tagCounts,
+      completed: { asOwner: rentedOut, asDriver: rented },
     };
   }
 

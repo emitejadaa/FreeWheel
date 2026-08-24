@@ -741,6 +741,13 @@ model Review {
   /// Puntuación de 1 a 5.
   rating       Int
   comment      String?
+  /// Características elegidas al reseñar: RESPONDE_RAPIDO, AUTO_SUCIO, etc.
+  /// (ver src/reviews/review-tags.ts). Se guarda el CÓDIGO y no la frase por dos
+  /// motivos: la misma reseña se lee en los cinco idiomas del front, y sobre
+  /// todo, un código se puede CONTAR. Es lo que convierte veinte reseñas en un
+  /// dato ("contesta rápido, 18 veces") en vez de veinte textos para leer uno
+  /// por uno. Vacío por defecto: elegirlas nunca es obligatorio.
+  tags         String[] @default([])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
