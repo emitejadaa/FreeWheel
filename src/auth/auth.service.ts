@@ -149,7 +149,15 @@ export class AuthService {
       user.status === UserStatus.DELETED
     ) {
       this.logger.warn(`Login blocked (status ${user.status}): ${user.email}`);
-      throw new UnauthorizedException("Account is not active");
+      throw new UnauthorizedException({
+        statusCode: 401,
+        // El front lo traduce y explica qué pasó. Sin el código tendría que
+        // reconocer la frase en inglés, que se rompe el día que alguien la
+        // reescribe: la persona veía "Account is not active" tal cual, en una
+        // app en castellano y sin ninguna pista de por qué no entra.
+        code: "ACCOUNT_NOT_ACTIVE",
+        message: "Account is not active",
+      });
     }
 
     const ok = await bcrypt.compare(loginDto.password, user.password);
@@ -403,7 +411,15 @@ export class AuthService {
       this.logger.warn(
         `Google login blocked (status ${user.status}): ${user.email}`,
       );
-      throw new UnauthorizedException("Account is not active");
+      throw new UnauthorizedException({
+        statusCode: 401,
+        // El front lo traduce y explica qué pasó. Sin el código tendría que
+        // reconocer la frase en inglés, que se rompe el día que alguien la
+        // reescribe: la persona veía "Account is not active" tal cual, en una
+        // app en castellano y sin ninguna pista de por qué no entra.
+        code: "ACCOUNT_NOT_ACTIVE",
+        message: "Account is not active",
+      });
     }
 
     if (!user) {
