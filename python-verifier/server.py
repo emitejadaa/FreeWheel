@@ -28,6 +28,8 @@ CONTRATO
 
     GET /health -> {"ok": true, "tesseract": "5.3.4", "version": "1.0"}
 
+    OPTIONS /analyze -> el preflight del navegador (solo con CORS prendido)
+
 Las fotos van en base64 en el cuerpo porque el que llama es otro servicio, sin
 disco compartido: no puede pasar una ruta.
 
@@ -43,10 +45,33 @@ Esto recibe documentos de identidad, así que:
   · hay un tope de tamaño por pedido: un cuerpo enorme no puede voltear el
     proceso.
 
+DESDE EL NAVEGADOR (CORS)
+-------------------------
+Quien llama en el deploy es el backend —servidor contra servidor, sin CORS de
+por medio—, así que por defecto NO se manda ninguna cabecera de CORS y un
+navegador no puede pegarle. Eso es a propósito: con CORS abierto, cualquier
+página que la persona visite podría mandarle documentos a este servidor (o
+gastarle el CPU) desde su navegador.
+
+Para probar en local hay un front que le habla directo, sin backend
+(public/demo/verificador-python.html). Para que ese front funcione hay que
+prender CORS explícitamente:
+
+    DOCVERIFY_CORS_ORIGIN='*'                       # cualquier origen
+    DOCVERIFY_CORS_ORIGIN='http://localhost:5500'   # solo ese
+    DOCVERIFY_CORS_ORIGIN='null'                    # el archivo abierto con file://
+
+Con '*' el token igual se sigue exigiendo; lo que cambia es solo quién puede
+hablarle desde un navegador. En un servidor expuesto: o se deja apagado, o se
+listan los orígenes uno por uno.
+
 CÓMO SE CORRE
 -------------
     DOCVERIFY_TOKEN=... .venv/bin/python server.py          # puerto 8000
     PORT=9000 DOCVERIFY_TOKEN=... .venv/bin/python server.py
+
+    # local, con el front demo que le habla directo:
+    DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py
 """
 
 from __future__ import annotations
@@ -77,6 +102,13 @@ def _token() -> str | None:
 
 def _anonimo_permitido() -> bool:
     return (os.environ.get("DOCVERIFY_ALLOW_ANONYMOUS") or "").lower() == "true"
+
+
+def _origenes_cors() -> list[str]:
+    """Orígenes de navegador habilitados. Lista vacía = CORS apagado, que es
+    lo que corresponde cuando el único que llama es el backend."""
+    crudo = (os.environ.get("DOCVERIFY_CORS_ORIGIN") or "").strip()
+    return [origen.strip() for origen in crudo.split(",") if origen.strip()]
 
 
 def _version_tesseract() -> str | None:
@@ -133,11 +165,34 @@ class Handler(BaseHTTPRequestHandler):
         # Al log solo el método, la ruta y el código: nunca el cuerpo.
         sys.stderr.write(f"[docverify] {self.address_string()} {formato % args}\n")
 
+    def _origen_permitido(self) -> str | None:
+        """Qué contestar en Access-Control-Allow-Origin, o None si este
+        pedido no lleva CORS (apagado, u origen fuera de la lista)."""
+        permitidos = _origenes_cors()
+        if not permitidos:
+            return None
+        origen = self.headers.get("Origin")
+        if "*" in permitidos:
+            # Se devuelve el origen tal cual y no un "*" literal: es lo que
+            # necesita un archivo abierto con file:// (manda Origin: null).
+            return origen or "*"
+        return origen if origen in permitidos else None
+
+    def _cabeceras_cors(self) -> None:
+        origen = self._origen_permitido()
+        if not origen:
+            return
+        self.send_header("Access-Control-Allow-Origin", origen)
+        # La respuesta depende del origen que la pidió: sin Vary, un proxy
+        # cachea la de un origen y se la sirve a otro.
+        self.send_header("Vary", "Origin")
+
     def _responder(self, codigo: int, cuerpo: dict) -> None:
         datos = json.dumps(cuerpo, ensure_ascii=False).encode("utf-8")
         self.send_response(codigo)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(datos)))
+        self._cabeceras_cors()
         self.end_headers()
         self.wfile.write(datos)
 
@@ -151,6 +206,32 @@ class Handler(BaseHTTPRequestHandler):
         recibido = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
         # compare_digest: comparar con == filtra el token por el tiempo que tarda.
         return hmac.compare_digest(recibido, esperado)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """El preflight que manda el navegador antes de un POST con
+        Authorization. El backend habla servidor a servidor y nunca pasa por
+        acá: esto existe solo para el front demo local."""
+        if self.path.rstrip("/") not in ("/analyze", "/health", ""):
+            self._error(404, "NO_ENCONTRADO", f"No existe {self.path}")
+            return
+
+        origen = self._origen_permitido()
+        if not origen:
+            # El navegador solo va a mostrar "CORS error", sin decir por qué.
+            # El motivo se escribe acá, que es donde se puede leer.
+            sys.stderr.write(
+                f"[docverify] preflight rechazado, origen {self.headers.get('Origin')!r}: "
+                "prendé CORS con DOCVERIFY_CORS_ORIGIN (ver el docstring).\n"
+            )
+
+        self.send_response(204)
+        self._cabeceras_cors()
+        if origen:
+            self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.rstrip("/") not in ("/health", ""):
@@ -251,8 +332,10 @@ def main() -> int:
     puerto = int(os.environ.get("PORT") or 8000)
     servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Handler)
     tesseract = _version_tesseract()
+    origenes = _origenes_cors()
     sys.stderr.write(
-        f"[docverify] escuchando en :{puerto} · tesseract: {tesseract or 'NO ESTÁ'}\n"
+        f"[docverify] escuchando en :{puerto} · tesseract: {tesseract or 'NO ESTÁ'}"
+        f" · cors: {', '.join(origenes) if origenes else 'apagado'}\n"
     )
     if not tesseract:
         sys.stderr.write(

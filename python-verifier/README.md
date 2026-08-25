@@ -10,7 +10,7 @@ Se puede invocar de **dos formas**, con el mismo contrato de entrada y salida:
 | | Cómo | Cuándo |
 |---|---|---|
 | **Subproceso** | `analyze.py`, JSON por stdin → JSON por stdout. No abre puertos ni escucha red. | Desarrollo local |
-| **HTTP** | `server.py`, `POST /analyze` con las fotos en base64 | El deploy (ver abajo) |
+| **HTTP** | `server.py`, `POST /analyze` con las fotos en base64 | El deploy (ver abajo) y el front demo local |
 
 ## Qué hace por foto
 
@@ -38,6 +38,37 @@ python3 -m venv .venv
 echo '{"documentos": {"dni_front": "testDocuments/dniFrente.jpeg"}}' \
     | .venv/bin/python analyze.py
 ```
+
+## Probarlo en el navegador, sin backend
+
+Hay un front que le habla **directo a este servidor**, sin NestJS, sin cuenta,
+sin Cloudinary y sin base de datos: subís las fotos y ves campo por campo lo
+que leyó cada protocolo. Sirve para probar la lectura mientras se decide dónde
+va a correr el Python.
+
+```bash
+# 1. levantar el verificador con CORS prendido
+DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py
+
+# 2. abrir el front (cualquiera de las dos)
+xdg-open ../public/demo/verificador-python.html          # el archivo, sin servidor
+python3 -m http.server 5500 -d ../public/demo            # http://localhost:5500/verificador-python.html
+```
+
+`DOCVERIFY_CORS_ORIGIN` **no es opcional para esto**: sin ella el navegador ni
+llega a mandar el pedido (el server contesta el preflight sin las cabeceras y
+loguea `preflight rechazado`). Acepta `*`, o los orígenes separados por coma
+(`http://localhost:5500`; el archivo abierto con `file://` manda `null`).
+
+Por defecto está **apagada**, que es lo que corresponde en el deploy: ahí el
+único que llama es el backend, servidor contra servidor, y con CORS abierto
+cualquier página que la persona visite podría mandarle documentos a este
+servidor desde su navegador.
+
+El front además **cruza** lo leído entre protocolos y contra los datos que le
+cargues, para ver de una si las fotos alcanzarían. Ese cruce es una réplica
+local y simplificada de `src/verification/matching/document-match.service.ts`:
+el veredicto de verdad lo sigue dando el backend.
 
 ## Tests
 

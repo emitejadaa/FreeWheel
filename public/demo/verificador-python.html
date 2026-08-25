@@ -1,0 +1,1139 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeWheel · verificador Python en directo</title>
+<!--
+  CONSOLA DEL VERIFICADOR PYTHON — SIN BACKEND DE POR MEDIO
+  ========================================================
+
+  Le habla DIRECTO a python-verifier/server.py: sube las fotos, las manda en
+  base64 a POST /analyze y muestra lo que el verificador leyó, campo por campo
+  y protocolo por protocolo.
+
+  No hay NestJS, ni cuenta, ni Cloudinary, ni base de datos: sirve para probar
+  la lectura de documentos sola, mientras se decide dónde hostear el Python.
+  El otro demo (verificacion.html) es el que prueba el flujo completo contra el
+  backend.
+
+  Para que el navegador pueda pegarle al verificador hace falta levantarlo con
+  CORS prendido (ver la sección 1 de la página, o el docstring de server.py).
+
+  El "cruce" de la sección 4 es una RÉPLICA LOCAL y simplificada de la política
+  de src/verification/matching/document-match.service.ts, solo para ver de una
+  si las fotos alcanzarían. El veredicto real lo da el backend.
+-->
+<style>
+  :root {
+    --bg: #0d1117; --bg-2: #151b23; --bg-3: #1c232c; --line: #2a333f;
+    --fg: #e6edf3; --fg-2: #9aa7b4; --fg-3: #6b7885;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --info: #58a6ff; --accent: #a371f7;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); }
+  code, pre, input, select, textarea, .mono { font-family: var(--mono); }
+
+  header {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header h1 span { color: var(--fg-3); font-weight: 400; }
+  header .grow { flex: 1; }
+
+  .app { display: grid; grid-template-columns: minmax(0,1fr) 430px; gap: 18px; padding: 18px; align-items: start; }
+  @media (max-width: 1180px) { .app { grid-template-columns: minmax(0,1fr); } .log-col { position: static !important; height: auto !important; } }
+
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
+  .card > summary, .card > .head {
+    padding: 11px 14px; background: var(--bg-3); border-bottom: 1px solid var(--line);
+    font-weight: 600; font-size: 13px; cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card > summary::before { content: "▸"; color: var(--fg-3); transition: transform .12s; }
+  .card[open] > summary::before { transform: rotate(90deg); }
+  .card > summary .n {
+    display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 5px;
+    background: var(--line); color: var(--fg-2); font: 600 11px var(--mono);
+  }
+  .card .body { padding: 14px; }
+
+  .hint { color: var(--fg-2); font-size: 12.5px; margin: 0 0 12px; }
+  .hint code, p code, li code { background: var(--bg-3); padding: 1px 5px; border-radius: 4px; color: var(--info); font-size: 12px; }
+
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--fg-3); margin-bottom: 4px; }
+  input, select { width: 100%; padding: 7px 9px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  input:focus, select:focus { outline: none; border-color: var(--info); }
+  .row { display: grid; gap: 10px; margin-bottom: 10px; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  .row.c3 { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 720px) { .row.c2, .row.c3 { grid-template-columns: 1fr; } }
+
+  button {
+    padding: 7px 13px; background: var(--bg-3); color: var(--fg); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; font: 500 13px var(--sans);
+  }
+  button:hover:not(:disabled) { border-color: var(--fg-3); background: #232b35; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #388bfd; }
+  button.ghost { background: transparent; }
+  button.sm { padding: 4px 9px; font-size: 12px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font: 600 11px var(--mono); letter-spacing: .3px; }
+  .b-ok   { background: rgba(63,185,80,.15);  color: var(--ok);   border: 1px solid rgba(63,185,80,.4); }
+  .b-err  { background: rgba(248,81,73,.15);  color: var(--err);  border: 1px solid rgba(248,81,73,.4); }
+  .b-warn { background: rgba(210,153,34,.15); color: var(--warn); border: 1px solid rgba(210,153,34,.4); }
+  .b-info { background: rgba(88,166,255,.15); color: var(--info); border: 1px solid rgba(88,166,255,.4); }
+  .b-mute { background: var(--bg-3); color: var(--fg-3); border: 1px solid var(--line); }
+
+  pre.json, pre.sh {
+    margin: 8px 0 0; padding: 10px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 11.5px; line-height: 1.55; overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  pre.json { max-height: 460px; }
+  pre.sh { color: var(--fg-2); position: relative; }
+  pre.sh b { color: var(--fg); font-weight: 400; }
+  pre.sh .c { color: var(--fg-3); }
+  .j-k { color: #7ee787; } .j-s { color: #a5d6ff; } .j-n { color: #79c0ff; }
+  .j-b { color: #ffa657; } .j-null { color: var(--fg-3); }
+
+  /* fotos */
+  .slots { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .slots { grid-template-columns: 1fr; } }
+  .slot { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow: hidden; }
+  .slot.drag { border-color: var(--info); background: rgba(88,166,255,.06); }
+  .slot.cargada { border-color: rgba(63,185,80,.45); }
+  .slot .st { padding: 9px 11px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); background: var(--bg-3); }
+  .slot .st b { font-size: 12.5px; }
+  .slot .st .id { font: 11px var(--mono); color: var(--fg-3); }
+  .slot .sb { padding: 11px; }
+  .slot .drop {
+    border: 1px dashed var(--line); border-radius: 6px; padding: 14px 10px; text-align: center;
+    color: var(--fg-3); font-size: 12px; cursor: pointer;
+  }
+  .slot .drop:hover { border-color: var(--info); color: var(--fg-2); }
+  .slot img.thumb { width: 100%; height: 130px; object-fit: contain; background: #000; border-radius: 6px; border: 1px solid var(--line); }
+  .slot .meta { font: 11px var(--mono); color: var(--fg-3); margin-top: 7px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .slot .proto { font-size: 11px; color: var(--fg-3); margin-top: 6px; }
+
+  /* resultados */
+  .res-slot { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; background: var(--bg); overflow: hidden; }
+  .res-slot > .h { padding: 9px 11px; background: var(--bg-3); border-bottom: 1px solid var(--line); display: flex; gap: 9px; align-items: center; font-size: 12.5px; font-weight: 600; }
+  .res-slot > .h .id { font: 11px var(--mono); color: var(--fg-3); font-weight: 400; }
+  .proto-box { padding: 11px; border-top: 1px solid var(--line); }
+  .proto-box:first-of-type { border-top: none; }
+  .proto-box > .t { display: flex; align-items: center; gap: 8px; font: 600 11px var(--mono); color: var(--fg-2); text-transform: uppercase; letter-spacing: .5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--fg-3); font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .5px; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; word-break: break-word; }
+  td.nulo { color: var(--fg-3); font-style: italic; }
+  tr.st-conflicto td { background: rgba(248,81,73,.07); }
+  tr.st-vacio td { background: rgba(210,153,34,.07); }
+  tr.st-ok td.v { color: var(--ok); }
+
+  .err-box { border-left: 3px solid var(--err); padding: 7px 10px; margin: 8px 0 0; background: rgba(248,81,73,.06); border-radius: 0 6px 6px 0; }
+  .err-box .c { font: 600 11px var(--mono); color: var(--err); }
+  .err-box .m { font-size: 12.5px; margin-top: 2px; color: var(--fg-2); }
+
+  .veredicto { border-radius: 8px; padding: 12px; border: 1px solid var(--line); background: var(--bg); margin-bottom: 12px; }
+  .veredicto.si { border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.06); }
+  .veredicto.no { border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.05); }
+  .veredicto .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .motivo { border-left: 3px solid var(--err); padding: 6px 10px; margin: 6px 0; background: var(--bg-3); border-radius: 0 6px 6px 0; font-size: 12.5px; }
+  .motivo .c { font: 600 11px var(--mono); color: var(--err); display: block; }
+
+  /* log */
+  .log-col { position: sticky; top: 62px; height: calc(100vh - 80px); display: flex; flex-direction: column; }
+  .log-col .card { display: flex; flex-direction: column; flex: 1; min-height: 0; margin: 0; }
+  #log { overflow: auto; flex: 1; padding: 8px; }
+  .entry { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; background: var(--bg); }
+  .entry > summary { padding: 7px 9px; cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center; font: 12px var(--mono); }
+  .entry > summary::-webkit-details-marker { display: none; }
+  .entry .path { flex: 1; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry .ms { color: var(--fg-3); font-size: 11px; }
+  .entry .inner { padding: 0 9px 9px; }
+  .entry .inner h5 { margin: 8px 0 0; font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .5px; color: var(--fg-3); }
+
+  .note { font-size: 12px; color: var(--warn); background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.25); padding: 8px 10px; border-radius: 6px; margin: 10px 0; }
+  .note.info { color: var(--info); background: rgba(88,166,255,.07); border-color: rgba(88,166,255,.25); }
+  .muted { color: var(--fg-3); font-size: 12px; }
+  .sep { height: 1px; background: var(--line); margin: 14px 0; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--info); border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -1px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  ol.pasos { margin: 0 0 10px; padding-left: 20px; font-size: 13px; }
+  ol.pasos li { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FreeWheel <span>· verificador Python, directo</span></h1>
+  <span id="version" class="badge b-mute"></span>
+  <div style="min-width:230px"><input id="baseUrl" placeholder="http://localhost:8000"></div>
+  <div style="min-width:180px"><input id="token" class="mono" placeholder="DOCVERIFY_TOKEN (si tiene)"></div>
+  <button class="sm" onclick="probarSalud(this)">Probar /health</button>
+  <span id="conn" class="badge b-mute">sin probar</span>
+  <span id="tess" class="badge b-mute">tesseract ?</span>
+  <div class="grow"></div>
+  <button class="sm ghost" onclick="if(confirm('¿Borrar la configuración guardada?')){try{localStorage.clear()}catch(e){};location.reload()}">Reset</button>
+</header>
+
+<div class="app">
+<div>
+
+  <!-- ══ 1 · LEVANTAR EL VERIFICADOR ══ -->
+  <details class="card" open id="card1">
+    <summary><span class="n">1</span> Levantar el verificador en tu máquina <span class="muted">— una sola vez</span></summary>
+    <div class="body">
+      <p class="hint">Esta página <b>no pasa por el backend NestJS</b>: le habla directo a <code>python-verifier/server.py</code>. No hace falta tener el backend levantado, ni cuenta, ni Cloudinary, ni base de datos.</p>
+      <ol class="pasos">
+        <li>
+          Instalar el binario de <b>tesseract con español</b> (es del sistema operativo, no viene con pip):
+<pre class="sh"><span class="c"># Ubuntu/Debian</span>
+<b>sudo apt install tesseract-ocr tesseract-ocr-spa</b>
+<span class="c"># macOS</span>
+<b>brew install tesseract tesseract-lang</b>
+<span class="c"># Arch</span>
+<b>sudo pacman -S tesseract tesseract-data-spa tesseract-data-eng</b></pre>
+        </li>
+        <li>
+          Instalar las dependencias de Python en un entorno propio:
+<pre class="sh"><b>cd python-verifier
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt</b></pre>
+        </li>
+        <li>
+          Levantar el servidor <b>con CORS prendido</b> (sin eso el navegador no lo puede llamar):
+<pre class="sh"><b>DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py</b>
+<span class="c"># escuchando en :8000 · tesseract: tesseract 5.3.4 · cors: *</span></pre>
+          <span class="muted">Con token, que es como va a correr en el server de verdad:
+          <code>DOCVERIFY_TOKEN=loquesea DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py</code> y el mismo valor arriba, en el campo del token.</span>
+        </li>
+        <li>Probar <code>/health</code> con el botón de arriba. Si dice <b>tesseract: NO ESTÁ</b>, el OCR no corre y todas las fotos van a fallar: falta el paso 1.</li>
+      </ol>
+      <div class="note">Con <code>DOCVERIFY_ALLOW_ANONYMOUS=true</code> el verificador queda abierto a cualquiera que llegue al puerto, y con <code>DOCVERIFY_CORS_ORIGIN='*'</code>, a cualquier página que abras en el navegador. Es solo para <b>localhost</b>: en un servidor expuesto va con token y con los orígenes listados uno por uno.</div>
+      <div id="salud"></div>
+    </div>
+  </details>
+
+  <!-- ══ 2 · FOTOS ══ -->
+  <details class="card" open>
+    <summary><span class="n">2</span> Fotos <span class="muted">— las mismas que subiría la persona</span></summary>
+    <div class="body">
+      <p class="hint">Arrastrá una foto a su casillero o tocá para elegirla. Las fotos <b>no salen de tu máquina</b>: van del navegador al Python de tu localhost, en base64, y el server las borra apenas termina.</p>
+      <div class="slots" id="slots"></div>
+
+      <div class="sep"></div>
+      <div class="row c2">
+        <div>
+          <label>Reducir el lado mayor antes de mandar</label>
+          <select id="reducir">
+            <option value="0">Sin reducir (recomendado)</option>
+            <option value="2400">2400 px</option>
+            <option value="1600">1600 px</option>
+          </select>
+        </div>
+        <div>
+          <label>Peso del pedido</label>
+          <div id="peso" class="mono muted" style="padding-top:7px">sin fotos</div>
+        </div>
+      </div>
+      <p class="muted" style="margin:0 0 12px">Reducir achica el pedido, pero le saca definición al PDF417 y al MRZ: si una foto anda sin reducir y falla reducida, es eso. El tope del server es 32 MB por pedido.</p>
+
+      <div class="btns">
+        <button class="primary" onclick="analizar(['dni_front','dni_back','license_front','license_back'],this)">Analizar todo</button>
+        <button onclick="analizar(['dni_front','dni_back'],this)">Solo DNI</button>
+        <button onclick="analizar(['license_front','license_back'],this)">Solo licencia</button>
+        <button class="ghost" onclick="limpiarFotos()">Quitar fotos</button>
+        <span id="progreso" class="muted"></span>
+      </div>
+      <div class="note info" style="margin-bottom:0">Leer las dos fotos de un documento tarda <b>30–60 s</b> en una máquina normal: el análisis endereza la tarjeta, corre OCR por zonas y decodifica el código. La primera vez suele tardar más.</div>
+    </div>
+  </details>
+
+  <!-- ══ 3 · DATOS DE LA CUENTA ══ -->
+  <details class="card" id="cardCuenta">
+    <summary><span class="n">3</span> Datos de la cuenta <span class="muted">— opcional, para cruzarlos contra lo leído</span></summary>
+    <div class="body">
+      <p class="hint">El verificador Python <b>no compara nada</b>: solo lee y devuelve. Estos campos son para que <i>esta página</i> haga el cruce y te muestre si el documento alcanzaría. Vacíos, el cruce igual corre entre protocolos (código vs. MRZ vs. OCR).</p>
+      <div class="row c3">
+        <div><label>Nombre</label><input id="cNombre" placeholder="Ana"></div>
+        <div><label>Apellido</label><input id="cApellido" placeholder="Gomez"></div>
+        <div><label>Nacimiento (AAAA-MM-DD)</label><input id="cNacimiento" placeholder="1990-01-01"></div>
+      </div>
+      <div class="row c3">
+        <div><label>DNI</label><input id="cDni" placeholder="20123456"></div>
+        <div><label>CUIL</label><input id="cCuil" placeholder="20-20123456-6"></div>
+        <div><label>Domicilio</label><input id="cDomicilio" placeholder="Av. Siempre Viva 742, CABA"></div>
+      </div>
+    </div>
+  </details>
+
+  <!-- ══ 4 · RESULTADO ══ -->
+  <details class="card" open>
+    <summary><span class="n">4</span> Lo que leyó el verificador</summary>
+    <div class="body">
+      <div id="resultado" class="muted">Todavía no se analizó nada.</div>
+    </div>
+  </details>
+
+  <!-- ══ 5 · JSON CRUDO ══ -->
+  <details class="card" id="cardJson">
+    <summary><span class="n">5</span> JSON crudo <span class="muted">— lo que recibe el backend, tal cual</span></summary>
+    <div class="body">
+      <p class="hint">Esta es exactamente la respuesta que el backend recibiría del verificador (mismo contrato por HTTP que por subproceso). Sirve para pegarla en un issue o en un test.</p>
+      <div class="btns">
+        <button class="sm" onclick="copiarJson(this)">Copiar</button>
+        <button class="sm" onclick="bajarJson()">Descargar .json</button>
+      </div>
+      <pre class="json" id="json">—</pre>
+    </div>
+  </details>
+
+</div>
+
+<!-- ══ LOG ══ -->
+<div class="log-col">
+  <div class="card">
+    <div class="head">
+      Log de requests
+      <span id="logCount" class="badge b-mute">0</span>
+      <div style="flex:1"></div>
+      <button class="sm ghost" onclick="document.getElementById('log').innerHTML='';logN=0;document.getElementById('logCount').textContent='0'">Limpiar</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════
+//  Estado y utilidades
+// ══════════════════════════════════════════════════════════════════════════
+/** Sube cuando cambie el contrato o el flujo, para saber si el navegador
+ *  está corriendo este archivo o una copia cacheada (Ctrl+Shift+R). */
+const VERSION = "local-v1 · directo al Python";
+
+const $ = (id) => document.getElementById(id);
+const val = (id) => ($(id).value || "").trim();
+$("version").textContent = VERSION;
+
+const PERSIST = ["baseUrl", "token", "reducir",
+                 "cNombre", "cApellido", "cNacimiento", "cDni", "cCuil", "cDomicilio"];
+// Abierta con file:// algunos navegadores prohíben localStorage y tirar acá
+// dejaría la página en blanco. Se guarda si se puede; si no, no se guarda.
+const leer = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const escribir = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin persistencia */ } };
+
+PERSIST.forEach((k) => {
+  const el = $(k); if (!el) return;
+  const guardado = leer("fwpy." + k);
+  if (guardado !== null) el.value = guardado;
+  const persistir = () => escribir("fwpy." + k, el.value);
+  el.addEventListener("input", persistir);
+  el.addEventListener("change", persistir);
+});
+if (!val("baseUrl")) $("baseUrl").value = "http://localhost:8000";
+
+/** Definición de las cuatro fotos: la misma de contrato.py. */
+const SLOTS = [
+  { id: "dni_front",     titulo: "DNI · frente",       protos: "ocr posicional + PDF417 (RENAPER)" },
+  { id: "dni_back",      titulo: "DNI · dorso",        protos: "ocr (domicilio y CUIL) + MRZ TD1" },
+  { id: "license_front", titulo: "Licencia · frente",  protos: "ocr posicional" },
+  { id: "license_back",  titulo: "Licencia · dorso",   protos: "ocr (CUIL y principiante)" },
+];
+
+/** Archivo elegido por slot. No se persiste: se vuelven a elegir al recargar. */
+const fotos = {};
+/** Última respuesta del verificador, para el JSON crudo y el cruce. */
+let ultimaRespuesta = null;
+
+// ── JSON coloreado ────────────────────────────────────────────────────────
+function pintarJson(valor) {
+  const texto = JSON.stringify(valor, null, 2) ?? "undefined";
+  return texto
+    .replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])
+    .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+      (m) => {
+        let cls = "j-n";
+        if (/^"/.test(m)) cls = /:$/.test(m) ? "j-k" : "j-s";
+        else if (/true|false/.test(m)) cls = "j-b";
+        else if (/null/.test(m)) cls = "j-null";
+        return '<span class="' + cls + '">' + m + "</span>";
+      });
+}
+
+const escapar = (v) => String(v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const mb = (bytes) => (bytes / 1048576).toFixed(2) + " MB";
+
+// ── Log ───────────────────────────────────────────────────────────────────
+let logN = 0;
+function registrar({ method, url, status, ms, body, data, error }) {
+  logN++; $("logCount").textContent = logN;
+  const ok = status >= 200 && status < 300;
+  const clase = error ? "b-err" : ok ? "b-ok" : status >= 500 ? "b-err" : "b-warn";
+  const d = document.createElement("details");
+  d.className = "entry";
+  d.innerHTML =
+    '<summary><span class="badge ' + clase + '">' + (error ? "ERR" : status) + "</span>" +
+    '<b style="color:var(--info)">' + method + "</b>" +
+    '<span class="path">' + escapar(url.replace(/^https?:\/\/[^/]+/, "")) + "</span>" +
+    '<span class="ms">' + ms + " ms</span></summary>" +
+    '<div class="inner">' +
+    (body ? "<h5>Request</h5><pre class='json'>" + pintarJson(body) + "</pre>" : "") +
+    "<h5>Response</h5><pre class='json'>" + pintarJson(error || data) + "</pre></div>";
+  $("log").prepend(d);
+  if (logN <= 2) d.open = true;
+}
+
+/**
+ * Por qué falló, dicho en criollo. Del navegador solo llega "Failed to fetch"
+ * para tres causas muy distintas, y sin esto se pierde media hora adivinando.
+ */
+function pista(e) {
+  return [
+    "El navegador no pudo ni conectarse. Suele ser una de estas tres:",
+    "1· El verificador no está levantado, o está en otro puerto (revisá la URL de arriba).",
+    "2· Está levantado pero SIN CORS: relanzalo con DOCVERIFY_CORS_ORIGIN='*' (paso 3 de la sección 1). En la consola del server vas a ver 'preflight rechazado'.",
+    "3· La página está en https y el verificador en http: el navegador bloquea la mezcla. Abrí esta página como archivo local o por http.",
+  ].join("\n");
+}
+
+// ── Cliente HTTP ──────────────────────────────────────────────────────────
+/** Toda llamada al verificador pasa por acá: mide, loguea y nunca tira. */
+async function llamar(method, path, body, { bodyLog } = {}) {
+  const url = val("baseUrl").replace(/\/$/, "") + path;
+  const token = val("token");
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const ms = Math.round(performance.now() - t0);
+    const texto = await res.text();
+    let data; try { data = texto ? JSON.parse(texto) : null; } catch { data = texto; }
+    registrar({ method, url, status: res.status, ms, body: bodyLog, data });
+    return { ok: res.ok, status: res.status, data, ms };
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    registrar({ method, url, status: 0, ms, body: bodyLog, error: { error: String(e), pista: pista(e) } });
+    return { ok: false, status: 0, data: null, ms, fallo: String(e) };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Salud del verificador
+// ══════════════════════════════════════════════════════════════════════════
+async function probarSalud(boton) {
+  ocupado(boton, true);
+  const r = await llamar("GET", "/health");
+  ocupado(boton, false);
+
+  const s = r.data || {};
+  $("conn").className = "badge " + (r.ok ? "b-ok" : "b-err");
+  $("conn").textContent = r.ok ? "conectado" : r.status ? "HTTP " + r.status : "sin conexión";
+  $("tess").className = "badge " + (s.tesseract ? "b-ok" : "b-err");
+  $("tess").textContent = s.tesseract ? s.tesseract.replace(/^tesseract\s*/i, "tesseract ") : "tesseract ?";
+
+  if (!r.status) {
+    $("salud").innerHTML = '<div class="err-box"><div class="c">NO_CONECTA</div><div class="m">' +
+      escapar(pista()).replace(/\n/g, "<br>") + "</div></div>";
+    return;
+  }
+  if (r.status === 401) {
+    $("salud").innerHTML = '<div class="err-box"><div class="c">401 NO_AUTORIZADO</div>' +
+      '<div class="m">El verificador arrancó con DOCVERIFY_TOKEN y el de arriba no coincide. Pegá el mismo valor, o levantalo con DOCVERIFY_ALLOW_ANONYMOUS=true.</div></div>';
+    return;
+  }
+  $("salud").innerHTML =
+    '<div class="' + (s.tesseract ? "note info" : "note") + '" style="margin-bottom:0">' +
+    (s.tesseract
+      ? "Listo para analizar. Verificador <b>v" + escapar(s.version) + "</b>, " + escapar(s.tesseract) +
+        ", slots: <code>" + (s.slots || []).join("</code> <code>") + "</code>."
+      : "El verificador está levantado pero <b>sin el binario de tesseract</b>: el OCR no corre y toda foto va a fallar. Instalalo (paso 1) y relanzalo.") +
+    "</div>";
+}
+
+function ocupado(boton, on) {
+  if (!boton) return;
+  boton.disabled = on;
+  if (on) { boton.dataset.txt = boton.innerHTML; boton.innerHTML = '<span class="spin"></span> ' + boton.dataset.txt; }
+  else if (boton.dataset.txt) boton.innerHTML = boton.dataset.txt;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Fotos
+// ══════════════════════════════════════════════════════════════════════════
+$("slots").innerHTML = SLOTS.map((s) => (
+  '<div class="slot" id="slot-' + s.id + '">' +
+    '<div class="st"><b>' + s.titulo + '</b><span class="id">' + s.id + '</span>' +
+      '<div style="flex:1"></div>' +
+      '<button class="sm ghost" onclick="analizar([\'' + s.id + '\'],this)" title="Analizar solo esta foto">Analizar</button>' +
+    "</div>" +
+    '<div class="sb">' +
+      '<div class="drop" id="drop-' + s.id + '">Arrastrá la foto acá o tocá para elegirla</div>' +
+      '<input type="file" accept="image/*" id="file-' + s.id + '" style="display:none">' +
+      '<div id="prev-' + s.id + '"></div>' +
+      '<div class="proto">' + s.protos + "</div>" +
+    "</div>" +
+  "</div>"
+)).join("");
+
+SLOTS.forEach((s) => {
+  const drop = $("drop-" + s.id), input = $("file-" + s.id), slot = $("slot-" + s.id);
+  drop.onclick = () => input.click();
+  input.onchange = () => input.files[0] && ponerFoto(s.id, input.files[0]);
+  ["dragenter", "dragover"].forEach((ev) => slot.addEventListener(ev, (e) => {
+    e.preventDefault(); slot.classList.add("drag");
+  }));
+  ["dragleave", "drop"].forEach((ev) => slot.addEventListener(ev, (e) => {
+    e.preventDefault(); if (ev === "dragleave" && slot.contains(e.relatedTarget)) return;
+    slot.classList.remove("drag");
+  }));
+  slot.addEventListener("drop", (e) => {
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith("image/")) ponerFoto(s.id, f);
+  });
+});
+
+function ponerFoto(slot, file) {
+  fotos[slot] = file;
+  $("slot-" + slot).classList.add("cargada");
+  $("drop-" + slot).style.display = "none";
+  $("prev-" + slot).innerHTML =
+    '<img class="thumb" src="' + URL.createObjectURL(file) + '">' +
+    '<div class="meta"><span>' + mb(file.size) + "</span><span>" + escapar(file.name) + "</span>" +
+    '<div style="flex:1"></div><button class="sm ghost" onclick="quitarFoto(\'' + slot + '\')">Quitar</button></div>';
+  actualizarPeso();
+}
+
+function quitarFoto(slot) {
+  delete fotos[slot];
+  $("slot-" + slot).classList.remove("cargada");
+  $("drop-" + slot).style.display = "";
+  $("prev-" + slot).innerHTML = "";
+  $("file-" + slot).value = "";
+  actualizarPeso();
+}
+
+function limpiarFotos() { SLOTS.forEach((s) => quitarFoto(s.id)); }
+
+function actualizarPeso() {
+  const files = Object.values(fotos);
+  if (!files.length) { $("peso").textContent = "sin fotos"; $("peso").className = "mono muted"; return; }
+  const crudo = files.reduce((a, f) => a + f.size, 0);
+  const enviado = crudo * 4 / 3;                       // base64 crece un tercio
+  const reduce = Number(val("reducir")) > 0;
+  const pasado = enviado > 32 * 1048576 && !reduce;
+  $("peso").className = "mono " + (pasado ? "" : "muted");
+  $("peso").style.color = pasado ? "var(--err)" : "";
+  $("peso").textContent = files.length + " foto(s) · " + mb(crudo) + " → ~" + mb(enviado) +
+    (reduce ? " antes de reducir" : "") + (pasado ? " · pasa el tope de 32 MB" : "");
+}
+$("reducir").addEventListener("change", actualizarPeso);
+
+// ── Foto → base64 ─────────────────────────────────────────────────────────
+/** El archivo tal cual, en base64 y sin el prefijo `data:`. */
+function aBase64(file) {
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => resolve(String(lector.result).split(",")[1]);
+    lector.onerror = () => reject(new Error("No se pudo leer " + file.name));
+    lector.readAsDataURL(file);
+  });
+}
+
+/** Reduce el lado mayor a `maximo` px. Solo si se pidió: reducir le saca
+ *  definición al PDF417 y al MRZ, que es justo lo que hay que leer. */
+function reducirBase64(file, maximo) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const escala = Math.min(1, maximo / Math.max(img.width, img.height));
+      if (escala === 1) return aBase64(file).then(resolve, reject);
+      const lienzo = document.createElement("canvas");
+      lienzo.width = Math.round(img.width * escala);
+      lienzo.height = Math.round(img.height * escala);
+      lienzo.getContext("2d").drawImage(img, 0, 0, lienzo.width, lienzo.height);
+      resolve(lienzo.toDataURL("image/jpeg", 0.92).split(",")[1]);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("No se pudo abrir " + file.name)); };
+    img.src = url;
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Analizar
+// ══════════════════════════════════════════════════════════════════════════
+let analizando = false;
+
+async function analizar(slots, boton) {
+  if (analizando) return;
+  const pedidos = slots.filter((s) => fotos[s]);
+  if (!pedidos.length) {
+    $("resultado").innerHTML = '<div class="note" style="margin:0">No hay ninguna foto cargada para ' +
+      escapar(slots.join(", ")) + ". Elegilas en la sección 2.</div>";
+    return;
+  }
+
+  analizando = true;
+  ocupado(boton, true);
+  const maximo = Number(val("reducir"));
+  const t0 = performance.now();
+  const tic = setInterval(() => {
+    $("progreso").textContent = "analizando " + pedidos.join(", ") + "… " +
+      Math.round((performance.now() - t0) / 1000) + " s";
+  }, 250);
+
+  try {
+    const documentos = {};
+    const pesos = {};
+    for (const slot of pedidos) {
+      const b64 = maximo ? await reducirBase64(fotos[slot], maximo) : await aBase64(fotos[slot]);
+      documentos[slot] = b64;
+      pesos[slot] = "<base64 " + mb(b64.length) + ">";     // al log nunca la foto entera
+    }
+
+    const r = await llamar("POST", "/analyze", { documentos }, { bodyLog: { documentos: pesos } });
+    ultimaRespuesta = r.data;
+    $("json").innerHTML = r.data ? pintarJson(r.data) : "—";
+    pintarResultado(r, pedidos);
+  } finally {
+    clearInterval(tic);
+    $("progreso").textContent = "";
+    ocupado(boton, false);
+    analizando = false;
+  }
+}
+
+function copiarJson(boton) {
+  if (!ultimaRespuesta) return;
+  const texto = JSON.stringify(ultimaRespuesta, null, 2);
+  const avisar = (msg) => {
+    const antes = boton.textContent; boton.textContent = msg;
+    setTimeout(() => (boton.textContent = antes), 1400);
+  };
+  // navigator.clipboard no existe en todo contexto (file://, http sin TLS):
+  // si no está, se copia con el textarea de toda la vida.
+  const alPortapapeles = navigator.clipboard
+    ? navigator.clipboard.writeText(texto)
+    : Promise.reject(new Error("sin clipboard"));
+  alPortapapeles.then(() => avisar("copiado")).catch(() => {
+    const area = document.createElement("textarea");
+    area.value = texto;
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand && document.execCommand("copy");
+    area.remove();
+    avisar(ok ? "copiado" : "usá Descargar");
+  });
+}
+
+function bajarJson() {
+  if (!ultimaRespuesta) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(ultimaRespuesta, null, 2)], { type: "application/json" }));
+  a.download = "verificador-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Resultado: qué leyó cada protocolo
+// ══════════════════════════════════════════════════════════════════════════
+function pintarResultado(r, pedidos) {
+  if (!r.status) {
+    $("resultado").innerHTML = '<div class="err-box"><div class="c">NO_CONECTA · ' + r.ms + ' ms</div>' +
+      '<div class="m">' + escapar(pista()).replace(/\n/g, "<br>") + "</div></div>";
+    return;
+  }
+  if (!r.ok || !r.data || r.data.ok === false) {
+    const e = (r.data && r.data.error) || {};
+    $("resultado").innerHTML = '<div class="err-box"><div class="c">' + r.status + " " + escapar(e.code || "ERROR") + "</div>" +
+      '<div class="m">' + escapar(e.message || "El verificador contestó un error.") + "</div>" +
+      (r.status === 401 ? '<div class="m">Poné el mismo DOCVERIFY_TOKEN con el que arrancó el server, arriba a la derecha.</div>' : "") +
+      (r.status === 413 ? '<div class="m">El pedido pasó los 32 MB: mandá un documento por vez o reducí el lado mayor a 2400 px.</div>' : "") +
+      "</div>";
+    return;
+  }
+
+  const docs = r.data.documentos || {};
+  let html = '<div class="btns" style="margin-bottom:12px"><span class="badge b-ok">200</span>' +
+    '<span class="muted">verificador v' + escapar(r.data.version) + " · " +
+    (r.ms / 1000).toFixed(1) + " s · " + pedidos.length + " foto(s)</span></div>";
+
+  html += pintarCruce(docs);
+
+  for (const slot of pedidos) {
+    const meta = SLOTS.find((s) => s.id === slot);
+    const doc = docs[slot];
+    html += '<div class="res-slot"><div class="h">' + meta.titulo +
+      '<span class="id">' + slot + "</span></div>";
+    if (!doc) {
+      html += '<div class="proto-box"><div class="err-box"><div class="c">SIN_RESPUESTA</div>' +
+        '<div class="m">El verificador no devolvió nada para esta foto.</div></div></div></div>';
+      continue;
+    }
+    if (doc.error) {
+      html += '<div class="proto-box"><div class="err-box"><div class="c">' + escapar(doc.error.code) + "</div>" +
+        '<div class="m">' + escapar(doc.error.message) + "</div></div></div>";
+    }
+    for (const [proto, obj] of Object.entries(doc)) {
+      if (proto === "error" || !obj || typeof obj !== "object") continue;
+      html += pintarProtocolo(proto, obj);
+    }
+    html += "</div>";
+  }
+  $("resultado").innerHTML = html;
+}
+
+function pintarProtocolo(proto, obj) {
+  const campos = Object.entries(obj).filter(([k]) => k !== "title" && k !== "error");
+  const leidos = campos.filter(([, v]) => v !== null && v !== undefined).length;
+  const clase = obj.error ? "b-err" : leidos === campos.length ? "b-ok" : leidos ? "b-warn" : "b-mute";
+
+  let html = '<div class="proto-box"><div class="t">' + escapar(obj.title || proto) +
+    '<span class="badge ' + clase + '">' + leidos + "/" + campos.length + " campos</span></div>";
+  if (obj.error) {
+    html += '<div class="err-box"><div class="c">' + escapar(obj.error.code) + "</div>" +
+      '<div class="m">' + escapar(obj.error.message) + "</div></div>";
+  }
+  html += "<table><tr><th>Campo</th><th>Valor leído</th></tr>" +
+    campos.map(([k, v]) => {
+      const vacio = v === null || v === undefined;
+      return '<tr class="' + (vacio ? "st-vacio" : "st-ok") + '"><td>' + escapar(k) + "</td>" +
+        '<td class="mono v ' + (vacio ? "nulo" : "") + '">' + (vacio ? "null" : escapar(v)) + "</td></tr>";
+    }).join("") + "</table></div>";
+  return html;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Cruce — RÉPLICA LOCAL de la política del backend
+// ══════════════════════════════════════════════════════════════════════════
+/**
+ * El verificador Python solo LEE: no compara ni decide. Quien decide es
+ * src/verification/matching/document-match.service.ts, en el backend.
+ *
+ * Lo de acá abajo es un port reducido de esa política (y de normalize.util.ts
+ * y cuil.util.ts) para ver, sin levantar el backend, si estas fotos
+ * alcanzarían. No es el veredicto real: si la política cambia allá, esto
+ * queda viejo. Sirve para saber si la FOTO sirve, no para aprobar a nadie.
+ */
+const MIN_SIMILITUD_DOMICILIO = 0.5;
+const EDAD_MINIMA = 18;
+
+const N = {
+  texto: (v) => (v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                  .toUpperCase().replace(/[^A-Z0-9\s]/g, " ").replace(/\s+/g, " ").trim(),
+  tokens: (v) => { const t = N.texto(v); return t ? t.split(" ") : []; },
+  dni: (v) => { const d = (v || "").replace(/\D/g, "").replace(/^0+/, ""); return /^\d{7,8}$/.test(d) ? d : null; },
+  sexo: (v) => { const t = N.texto(v); return t.startsWith("M") ? "M" : t.startsWith("F") ? "F" : null; },
+  cuil: (v) => { const d = (v || "").replace(/[-\s]/g, ""); return /^\d{11}$/.test(d) ? d : null; },
+  /** DD/MM/AAAA (impreso y PDF417), AAAA-MM-DD (cuenta) y AAMMDD (MRZ) → ISO. */
+  fecha: (v) => {
+    const t = String(v || "").trim();
+    let a, m, d;
+    const barra = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(t);
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+    const mrz = /^(\d{2})(\d{2})(\d{2})$/.exec(t);
+    if (barra) { d = +barra[1]; m = +barra[2]; a = +barra[3]; }
+    else if (iso) { a = +iso[1]; m = +iso[2]; d = +iso[3]; }
+    else if (mrz) {
+      // Ventana ICAO de 2 dígitos: más de 20 años en el futuro es 19xx.
+      const dos = +mrz[1], hoy = new Date().getUTCFullYear() % 100;
+      a = dos > hoy + 20 ? 1900 + dos : 2000 + dos; m = +mrz[2]; d = +mrz[3];
+    } else return null;
+    const f = new Date(Date.UTC(a, m - 1, d));
+    if (f.getUTCFullYear() !== a || f.getUTCMonth() !== m - 1 || f.getUTCDate() !== d) return null;
+    return f.toISOString().slice(0, 10);
+  },
+};
+
+const hoyIso = () => new Date().toISOString().slice(0, 10);
+
+function edadEn(nacimientoIso) {
+  const hoy = new Date(), n = new Date(nacimientoIso + "T00:00:00.000Z");
+  let edad = hoy.getUTCFullYear() - n.getUTCFullYear();
+  const dm = hoy.getUTCMonth() - n.getUTCMonth();
+  if (dm < 0 || (dm === 0 && hoy.getUTCDate() < n.getUTCDate())) edad -= 1;
+  return edad;
+}
+
+/** Distancia de edición acotada a 2: alcanza para "el mismo con un error de OCR". */
+function distancia(a, b) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let previa = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const actual = [i]; let minFila = i;
+    for (let j = 1; j <= b.length; j++) {
+      actual[j] = Math.min(previa[j] + 1, actual[j - 1] + 1, previa[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      minFila = Math.min(minFila, actual[j]);
+    }
+    if (minFila > 2) return 3;
+    previa = actual;
+  }
+  return previa[b.length];
+}
+/** ¿El mismo token, tolerando UN caracter mal leído? Solo en tokens de 4+. */
+const mismoTokenTolerante = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && distancia(a, b) <= 1);
+
+/** Tolerante al orden y a segundos nombres: los tokens de la cuenta tienen
+ *  que estar en el documento. `tolerante` = fuente óptica (OCR, MRZ). */
+function compararNombres(cuenta, documento, tolerante) {
+  const a = N.tokens(cuenta), d = N.tokens(documento);
+  if (!a.length || !d.length) return "mismatch";
+  if (a.join(" ") === d.join(" ")) return "match";
+  const igual = tolerante ? (x, y) => mismoTokenTolerante(x, y) : (x, y) => x === y;
+  const compartidos = a.filter((t) => d.some((c) => igual(t, c)));
+  // El primer nombre/apellido de la cuenta identifica a la persona.
+  if (!d.some((c) => igual(a[0], c))) return "mismatch";
+  return compartidos.length === a.length ? "partial" : "mismatch";
+}
+
+const VACIAS_DOMICILIO = new Set(["AV","AVDA","AVENIDA","CALLE","PISO","DPTO","DEPTO","DEPARTAMENTO","N","NRO","NUMERO","BIS","DE","DEL","LA","LAS","LOS","EL"]);
+function similitudDomicilio(a, b) {
+  const utiles = (v) => N.tokens(v).filter((t) => !VACIAS_DOMICILIO.has(t));
+  const izq = utiles(a), der = new Set(utiles(b));
+  if (!izq.length || !der.size) return 0;
+  return izq.filter((t) => der.has(t)).length / izq.length;
+}
+
+const PESOS_CUIL = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+function cuilChecksumOk(cuil) {
+  if (!/^\d{11}$/.test(cuil)) return false;
+  const suma = PESOS_CUIL.reduce((acc, p, i) => acc + p * +cuil[i], 0);
+  const resto = 11 - (suma % 11);
+  const esperado = resto === 11 ? 0 : resto;
+  return esperado !== 10 && +cuil[10] === esperado;
+}
+const cuilContieneDni = (dni, cuil) => cuil.slice(2, 10) === dni.padStart(8, "0");
+const cuilSexo = (cuil) => (cuil.slice(0, 2) === "20" ? "M" : cuil.slice(0, 2) === "27" ? "F" : null);
+
+// ── Piezas del cruce ──────────────────────────────────────────────────────
+function datosCuenta() {
+  return {
+    nombre: val("cNombre"), apellido: val("cApellido"),
+    nacimiento: N.fecha(val("cNacimiento")),
+    dni: N.dni(val("cDni")), cuil: N.cuil(val("cCuil")), domicilio: val("cDomicilio"),
+  };
+}
+
+/** Todas las lecturas del mismo dato tienen que coincidir entre sí y con la cuenta. */
+function filaIgualdad(filas, motivos, { campo, cuenta, lecturas }) {
+  const fila = { campo, lecturas: {}, estado: "ok" };
+  if (cuenta !== undefined && cuenta !== null && cuenta !== "") fila.lecturas["cuenta"] = cuenta;
+  lecturas.forEach((l) => (fila.lecturas[l.fuente] = l.valor));
+  filas.push(fila);
+
+  const con = lecturas.filter((l) => l.valor !== null && l.valor !== undefined && l.valor !== "");
+  if (!con.length) {
+    fila.estado = "vacio";
+    motivos.push({ code: "CAMPO_ILEGIBLE", texto: "No se pudo leer " + campo + " en ninguna fuente." });
+    return null;
+  }
+  if (new Set(con.map((l) => String(l.valor))).size > 1) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_NO_COINCIDE", texto: "Las lecturas de " + campo + " no coinciden entre sí." });
+    return null;
+  }
+  const acordado = con[0].valor;
+  if (cuenta && String(cuenta) !== String(acordado)) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_NO_COINCIDE", texto: campo + ': el documento dice "' + acordado + '" y la cuenta "' + cuenta + '".' });
+  }
+  return acordado;
+}
+
+/** Nombres: la cuenta contra cada lectura. Las ópticas toleran un caracter. */
+function filaNombre(filas, motivos, campo, cuenta, lecturas) {
+  const fila = { campo, lecturas: { cuenta: cuenta || null }, estado: "ok" };
+  lecturas.forEach((l) => (fila.lecturas[l.fuente] = l.valor));
+  filas.push(fila);
+
+  const con = lecturas.filter((l) => l.valor);
+  if (!con.length) {
+    fila.estado = "vacio";
+    motivos.push({ code: "CAMPO_ILEGIBLE", texto: "No se pudo leer " + campo + " en ninguna fuente." });
+    return;
+  }
+  if (!cuenta) { fila.estado = "sincuenta"; return; }
+  if (con.some((l) => compararNombres(cuenta, l.valor, l.tolerante) === "mismatch")) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_NO_COINCIDE", texto: campo + ": lo que dice el documento y lo que dice la cuenta no son la misma persona." });
+  }
+}
+
+function filaCuil(filas, motivos, cuenta, leido, fuente, { dniAcordado, sexoAcordado }) {
+  const cuilLeido = leido ? N.cuil(leido) : null;
+  const fila = { campo: "cuil", lecturas: { cuenta: cuenta.cuil, [fuente]: cuilLeido || leido || null }, estado: "ok" };
+  filas.push(fila);
+
+  if (!cuilLeido) {
+    fila.estado = "vacio";
+    motivos.push({ code: "CAMPO_ILEGIBLE", texto: "No se pudo leer el CUIL del documento." });
+    return;
+  }
+  if (!cuilChecksumOk(cuilLeido)) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_ILEGIBLE", texto: "El CUIL leído no pasa el dígito verificador: se leyó mal algún número." });
+    return;
+  }
+  if (cuenta.cuil && cuilLeido !== cuenta.cuil) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_NO_COINCIDE", texto: "El CUIL del documento y el de la cuenta no son el mismo." });
+    return;
+  }
+  if (dniAcordado && !cuilContieneDni(dniAcordado, cuilLeido)) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CUIL_NO_CORRESPONDE_AL_DNI", texto: "El CUIL no contiene el número de documento leído." });
+    return;
+  }
+  const sexoCuil = cuilSexo(cuilLeido);
+  if (sexoCuil && sexoAcordado && sexoCuil !== sexoAcordado) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "CAMPO_NO_COINCIDE", texto: "El prefijo del CUIL y el sexo del documento no coinciden." });
+  }
+}
+
+function filaDomicilio(filas, motivos, cuenta, leido, fuente) {
+  const fila = { campo: "domicilio", lecturas: { cuenta: cuenta.domicilio || null, [fuente]: leido }, estado: "ok" };
+  filas.push(fila);
+  if (!leido) {
+    fila.estado = "vacio";
+    motivos.push({ code: "DOMICILIO_ILEGIBLE", texto: "No se pudo leer el domicilio impreso." });
+    return;
+  }
+  if (!cuenta.domicilio) { fila.estado = "sincuenta"; return; }
+  const sim = similitudDomicilio(cuenta.domicilio, leido);
+  fila.lecturas["similitud"] = Math.round(sim * 100) + "%";
+  if (sim < MIN_SIMILITUD_DOMICILIO) {
+    fila.estado = "conflicto";
+    motivos.push({ code: "DOMICILIO_NO_COINCIDE", texto: "El domicilio del documento y el de la cuenta se parecen poco (" + Math.round(sim * 100) + "%)." });
+  }
+}
+
+function chequearEdad(motivos, nacimiento) {
+  if (!nacimiento) return;
+  const edad = edadEn(nacimiento);
+  if (edad < EDAD_MINIMA) motivos.push({ code: "MENOR_DE_EDAD", texto: "Según el documento la persona tiene " + edad + " años." });
+}
+
+function chequearVencimiento(motivos, code, fecha) {
+  if (!fecha) return;
+  if (fecha < hoyIso()) motivos.push({ code, texto: "El documento venció el " + fecha + "." });
+}
+
+// ── El cruce del DNI ──────────────────────────────────────────────────────
+function cruceDni(front, back, cuenta) {
+  const filas = [], motivos = [];
+
+  if (front.error) motivos.push({ code: "FOTO_NO_PROCESABLE", texto: "dni_front: " + front.error.message });
+  if (back.error) motivos.push({ code: "FOTO_NO_PROCESABLE", texto: "dni_back: " + back.error.message });
+
+  // Los dos protocolos ancla son los únicos verificables mecánicamente
+  // (separador del RENAPER en el PDF417, dígitos verificadores ICAO en el MRZ).
+  if (!front.error && (front.codigo.error || !front.codigo.nDocumento)) {
+    motivos.push({ code: "CODIGO_NO_LEIDO", texto: "No se pudo decodificar el PDF417 del frente: es obligatorio." });
+  }
+  if (!back.error && (back.mrz.error || !back.mrz.nDocumento)) {
+    motivos.push({ code: "MRZ_NO_LEIDO", texto: "No se pudo leer el MRZ del dorso: es obligatorio." });
+  }
+
+  filaNombre(filas, motivos, "apellido", cuenta.apellido, [
+    { fuente: "ocr dni_front", valor: front.ocr.apellido, tolerante: true },
+    { fuente: "codigo", valor: front.codigo.apellido, tolerante: false },
+    { fuente: "mrz", valor: back.mrz.apellido, tolerante: true },
+  ]);
+  filaNombre(filas, motivos, "nombre", cuenta.nombre, [
+    { fuente: "ocr dni_front", valor: front.ocr.nombre, tolerante: true },
+    { fuente: "codigo", valor: front.codigo.nombre, tolerante: false },
+    { fuente: "mrz", valor: back.mrz.nombre, tolerante: true },
+  ]);
+
+  const sexo = filaIgualdad(filas, motivos, {
+    campo: "sexo", cuenta: null,
+    lecturas: [
+      { fuente: "ocr dni_front", valor: N.sexo(front.ocr.sexo) },
+      { fuente: "codigo", valor: N.sexo(front.codigo.sexo) },
+      { fuente: "mrz", valor: N.sexo(back.mrz.sexo) },
+    ],
+  });
+
+  const dni = filaIgualdad(filas, motivos, {
+    campo: "nDocumento", cuenta: cuenta.dni,
+    lecturas: [
+      { fuente: "ocr dni_front", valor: N.dni(front.ocr.nDocumento) },
+      { fuente: "codigo", valor: N.dni(front.codigo.nDocumento) },
+      { fuente: "mrz", valor: N.dni(back.mrz.nDocumento) },
+    ],
+  });
+
+  const nacimiento = filaIgualdad(filas, motivos, {
+    campo: "fechaNacimiento", cuenta: cuenta.nacimiento,
+    lecturas: [
+      { fuente: "ocr dni_front", valor: N.fecha(front.ocr.fechaNacimiento) },
+      { fuente: "codigo", valor: N.fecha(front.codigo.fechaNacimiento) },
+      { fuente: "mrz", valor: N.fecha(back.mrz.fechaNacimiento) },
+    ],
+  });
+  chequearEdad(motivos, nacimiento);
+
+  filaIgualdad(filas, motivos, {
+    campo: "fechaEmision", cuenta: null,
+    lecturas: [
+      { fuente: "ocr dni_front", valor: N.fecha(front.ocr.fechaEmision) },
+      { fuente: "codigo", valor: N.fecha(front.codigo.fechaEmision) },
+    ],
+  });
+
+  const vence = filaIgualdad(filas, motivos, {
+    campo: "fechaVencimiento", cuenta: null,
+    lecturas: [
+      { fuente: "ocr dni_front", valor: N.fecha(front.ocr.fechaVencimiento) },
+      { fuente: "mrz", valor: N.fecha(back.mrz.fechaVencimiento) },
+    ],
+  });
+  chequearVencimiento(motivos, "DNI_VENCIDO", vence);
+
+  filaCuil(filas, motivos, cuenta, back.ocr.cuil, "ocr dni_back", { dniAcordado: dni, sexoAcordado: sexo });
+  filaDomicilio(filas, motivos, cuenta, back.ocr.domicilio, "ocr dni_back");
+
+  return { titulo: "Cruce del DNI", filas, motivos };
+}
+
+// ── El cruce de la licencia ───────────────────────────────────────────────
+function cruceLicencia(front, back, cuenta) {
+  const filas = [], motivos = [];
+
+  if (front.error) motivos.push({ code: "FOTO_NO_PROCESABLE", texto: "license_front: " + front.error.message });
+  if (back.error) motivos.push({ code: "FOTO_NO_PROCESABLE", texto: "license_back: " + back.error.message });
+
+  // En la Licencia Nacional el número es el DNI del titular.
+  const numero = N.dni(front.ocr.numLicencia);
+  filas.push({
+    campo: "numLicencia",
+    lecturas: { cuenta: cuenta.dni, "ocr license_front": numero },
+    estado: !numero ? "vacio" : !cuenta.dni ? "sincuenta" : numero === cuenta.dni ? "ok" : "conflicto",
+  });
+  if (!numero) motivos.push({ code: "CAMPO_ILEGIBLE", texto: "No se pudo leer el número de licencia." });
+  else if (cuenta.dni && numero !== cuenta.dni) {
+    motivos.push({ code: "LICENCIA_NO_CORRESPONDE_AL_DNI", texto: "El número de la licencia no es el DNI de la cuenta." });
+  }
+
+  filaNombre(filas, motivos, "apellido", cuenta.apellido, [
+    { fuente: "ocr license_front", valor: front.ocr.apellido, tolerante: true },
+  ]);
+  filaNombre(filas, motivos, "nombre", cuenta.nombre, [
+    { fuente: "ocr license_front", valor: front.ocr.nombre, tolerante: true },
+  ]);
+
+  const nacimiento = filaIgualdad(filas, motivos, {
+    campo: "fechaNacimiento", cuenta: cuenta.nacimiento,
+    lecturas: [{ fuente: "ocr license_front", valor: N.fecha(front.ocr.fechaNacimiento) }],
+  });
+  chequearEdad(motivos, nacimiento);
+
+  const vence = filaIgualdad(filas, motivos, {
+    campo: "fechaVencimiento", cuenta: null,
+    lecturas: [{ fuente: "ocr license_front", valor: N.fecha(front.ocr.fechaVencimiento) }],
+  });
+  chequearVencimiento(motivos, "LICENCIA_VENCIDA", vence);
+
+  filaCuil(filas, motivos, cuenta, back.ocr.cuil, "ocr license_back", { dniAcordado: cuenta.dni, sexoAcordado: null });
+
+  // Principiante: tiene que estar determinado y el período ya cumplido.
+  const es = back.ocr.esPrincipiante;
+  const fin = N.fecha(back.ocr.finPrincipiante);
+  filas.push({
+    campo: "esPrincipiante",
+    lecturas: { "ocr license_back": es, finPrincipiante: fin },
+    estado: es === null || es === undefined ? "vacio" : es && (!fin || fin > hoyIso()) ? "conflicto" : "ok",
+  });
+  if (es === null || es === undefined) {
+    motivos.push({ code: "CAMPO_ILEGIBLE", texto: "No se pudo determinar si la licencia es de principiante." });
+  } else if (es && !fin) {
+    motivos.push({ code: "PRINCIPIANTE_NO_DETERMINADO", texto: "Dice principiante pero no se leyó hasta cuándo." });
+  } else if (es && fin > hoyIso()) {
+    motivos.push({ code: "PRINCIPIANTE_VIGENTE", texto: "El período de principiante corre hasta el " + fin + "." });
+  }
+
+  filaDomicilio(filas, motivos, cuenta, front.ocr.domicilio, "ocr license_front");
+
+  return { titulo: "Cruce de la licencia", filas, motivos };
+}
+
+// ── Render del cruce ──────────────────────────────────────────────────────
+function pintarCruce(docs) {
+  const cuenta = datosCuenta();
+  const cruces = [];
+  if (docs.dni_front && docs.dni_back) cruces.push(cruceDni(docs.dni_front, docs.dni_back, cuenta));
+  if (docs.license_front && docs.license_back) cruces.push(cruceLicencia(docs.license_front, docs.license_back, cuenta));
+
+  let html = "";
+  const sueltas = ["dni", "license"].filter((d) => Boolean(docs[d + "_front"]) !== Boolean(docs[d + "_back"]));
+  if (sueltas.length) {
+    html += '<div class="note info">El cruce necesita las <b>dos</b> fotos de un documento: sin la otra mitad no hay contra qué comparar. ' +
+      "Abajo está igual lo que se leyó de la que mandaste.</div>";
+  }
+  if (!cruces.length) return html;
+
+  const faltan = Object.entries({
+    nombre: cuenta.nombre, apellido: cuenta.apellido, nacimiento: cuenta.nacimiento,
+    dni: cuenta.dni, cuil: cuenta.cuil, domicilio: cuenta.domicilio,
+  }).filter(([, v]) => !v).map(([k]) => k);
+
+  for (const cruce of cruces) {
+    const pasa = cruce.motivos.length === 0;
+    const concluyente = pasa && !faltan.length;
+    html += '<div class="veredicto ' + (pasa ? "si" : "no") + '">' +
+      '<div class="top"><b>' + cruce.titulo + "</b>" +
+      '<span class="badge ' + (concluyente ? "b-ok" : pasa ? "b-warn" : "b-err") + '">' +
+      (concluyente ? "aprobaría" : pasa ? "sin datos de cuenta no se puede decir" : cruce.motivos.length + " motivo(s) para no aprobar") +
+      "</span>" +
+      '<span class="muted">réplica local de la política del backend</span></div>';
+
+    if (faltan.length) {
+      html += '<div class="muted" style="margin-bottom:6px">Sin ' + faltan.join(", ") +
+        " en la sección 3, esos campos no se cruzan contra la cuenta (sí entre protocolos).</div>";
+    }
+    html += cruce.motivos.map((m) => '<div class="motivo"><span class="c">' + escapar(m.code) + "</span>" + escapar(m.texto) + "</div>").join("");
+
+    html += "<table><tr><th>Campo</th><th>Lecturas</th><th>Estado</th></tr>" +
+      cruce.filas.map((f) => {
+        const lecturas = Object.entries(f.lecturas)
+          .map(([fuente, v]) => '<span class="muted">' + escapar(fuente) + ":</span> " +
+            (v === null || v === undefined || v === "" ? '<span class="nulo">—</span>' : escapar(v)))
+          .join("<br>");
+        const badge = { ok: "b-ok", vacio: "b-warn", conflicto: "b-err", sincuenta: "b-mute" }[f.estado];
+        const texto = { ok: "ok", vacio: "no se leyó", conflicto: "conflicto", sincuenta: "sin cuenta" }[f.estado];
+        return '<tr class="st-' + f.estado + '"><td>' + escapar(f.campo) + '</td><td class="mono">' + lecturas +
+          '</td><td><span class="badge ' + badge + '">' + texto + "</span></td></tr>";
+      }).join("") + "</table></div>";
+  }
+  return html;
+}
+
+// Arranque: si ya hay URL guardada, probar solo la conexión.
+probarSalud();
+</script>
+</body>
+</html>
