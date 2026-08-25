@@ -261,6 +261,19 @@ model User {
   cuil                   String?             @unique
   address                String?
   profilePhotoUrl        String?
+  /// La foto de perfil SIN RECORTAR, tal como se subió.
+  ///
+  /// `profilePhotoUrl` guarda el RECORTE, que es lo que se muestra en todos
+  /// lados. Con solo eso, volver a encuadrar la foto significaba recortar sobre
+  /// el recorte anterior: cada vuelta achicaba la imagen un poco más y no había
+  /// forma de volver atrás, porque lo que quedaba afuera ya no existía en
+  /// ninguna parte.
+  ///
+  /// Guardando también la original, el editor siempre reencuadra sobre la foto
+  /// entera y el zoom se puede deshacer. No la ve nadie más que su dueño: no va
+  /// en los selects públicos, porque es la foto sin el encuadre que la persona
+  /// eligió mostrar.
+  profilePhotoOriginalUrl String?
   /// Quién ve la foto de arriba. Se elige en el perfil y se puede cambiar cuando
   /// se quiera. Por defecto la ve todo el mundo: si alguien se tomó el trabajo de
   /// subir una foto es para que se vea, y quien prefiera lo contrario lo cambia

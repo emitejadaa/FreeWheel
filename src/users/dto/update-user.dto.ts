@@ -70,6 +70,19 @@ export class UpdateUserDto {
   profilePhotoUrl?: string;
 
   /**
+   * La misma foto SIN RECORTAR, para poder volver a encuadrarla.
+   *
+   * Va junto con `profilePhotoUrl` en el mismo PATCH: el recorte es lo que se
+   * muestra y la original es con lo que se vuelve a encuadrar, y guardar una sin
+   * la otra deja el par inconsistente. Sin esto, reencuadrar recortaba sobre el
+   * recorte anterior y la foto se iba achicando sin vuelta atrás.
+   */
+  @IsOptional()
+  @IsUrl({ require_protocol: true })
+  @MaxLength(2048)
+  profilePhotoOriginalUrl?: string;
+
+  /**
    * Quién ve la foto de perfil: EVERYONE (cualquiera con la sesión abierta) o
    * BOOKED (solo con quien haya una reserva en común). Se elige en el perfil.
    */

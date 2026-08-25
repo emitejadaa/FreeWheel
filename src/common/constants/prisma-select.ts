@@ -48,6 +48,15 @@ export const USER_SAFE_SELECT = {
   phone: true,
   dateOfBirth: true,
   profilePhotoUrl: true,
+  /*
+    La foto sin recortar viaja SOLO acá, que es la proyección de la propia
+    cuenta y la del panel de administración. NO va en USER_PUBLIC_SELECT ni en
+    USER_CONTACT_SELECT a propósito: lo que la persona eligió mostrarle a los
+    demás es el recorte, y la original es justamente lo que quedó afuera de esa
+    decisión. La necesita el editor de encuadre, y el editor solo lo abre el
+    dueño de la foto.
+  */
+  profilePhotoOriginalUrl: true,
   profilePhotoVisibility: true,
   role: true,
   status: true,

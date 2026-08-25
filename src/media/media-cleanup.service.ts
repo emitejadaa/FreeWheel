@@ -49,7 +49,11 @@ export class MediaCleanupService {
       }),
       this.prisma.user.findUnique({
         where: { id: userId },
-        select: { profilePhotoUrl: true },
+        // La original va además del recorte: son DOS archivos distintos en
+        // Cloudinary. Borrando solo el recorte, la foto entera —la que la
+        // persona subió antes de encuadrarla— quedaba en el storage para
+        // siempre después de borrar la cuenta.
+        select: { profilePhotoUrl: true, profilePhotoOriginalUrl: true },
       }),
       this.prisma.documentVerification.findMany({
         where: { userId },
@@ -60,6 +64,7 @@ export class MediaCleanupService {
     const urls = [
       ...assets.map((asset) => asset.url),
       user?.profilePhotoUrl ?? null,
+      user?.profilePhotoOriginalUrl ?? null,
       ...verifications.flatMap((row) => [row.frontUrl, row.backUrl]),
     ].filter((url): url is string => typeof url === "string" && url.length > 0);
 
