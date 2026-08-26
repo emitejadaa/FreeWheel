@@ -407,13 +407,38 @@ function pista(e) {
     "1· El verificador no está levantado, o está en otro puerto (revisá la URL de arriba).",
     "2· Está levantado pero SIN CORS: relanzalo con DOCVERIFY_CORS_ORIGIN='*' (paso 3 de la sección 1). En la consola del server vas a ver 'preflight rechazado'.",
     "3· La página está en https y el verificador en http: el navegador bloquea la mezcla. Abrí esta página como archivo local o por http.",
+    "Si el error dice 'CORS request not http' y nombra una URL file://, es que el campo de la URL quedó vacío o sin http://.",
   ].join("\n");
 }
 
 // ── Cliente HTTP ──────────────────────────────────────────────────────────
+/**
+ * La URL del verificador, normalizada, o null si el campo quedó vacío.
+ *
+ * Sin esto, un campo vacío o un "localhost:8000" sin esquema arman una URL
+ * RELATIVA: abierta con file:// el pedido sale a file:///health y el navegador
+ * lo tapa con "CORS request not http", que no dice una palabra de lo que pasó.
+ */
+function base() {
+  let url = val("baseUrl").replace(/\/+$/, "");
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) url = "http://" + url;
+  try { new URL(url); } catch { return null; }
+  // Se devuelve al campo ya normalizada: que se vea a dónde está pegando.
+  if (url !== val("baseUrl")) { $("baseUrl").value = url; escribir("fwpy.baseUrl", url); }
+  return url;
+}
+
 /** Toda llamada al verificador pasa por acá: mide, loguea y nunca tira. */
 async function llamar(method, path, body, { bodyLog } = {}) {
-  const url = val("baseUrl").replace(/\/$/, "") + path;
+  const raiz = base();
+  if (!raiz) {
+    registrar({ method, url: path, status: 0, ms: 0, body: bodyLog,
+      error: { error: "Falta la URL del verificador",
+               pista: "El campo de arriba está vacío. Poné http://localhost:8000 (o el puerto con el que lo levantaste)." } });
+    return { ok: false, status: 0, data: null, ms: 0, sinUrl: true };
+  }
+  const url = raiz + path;
   const token = val("token");
   const t0 = performance.now();
   try {
@@ -451,6 +476,12 @@ async function probarSalud(boton) {
   $("tess").className = "badge " + (s.tesseract ? "b-ok" : "b-err");
   $("tess").textContent = s.tesseract ? s.tesseract.replace(/^tesseract\s*/i, "tesseract ") : "tesseract ?";
 
+  if (r.sinUrl) {
+    $("conn").textContent = "sin URL";
+    $("salud").innerHTML = '<div class="err-box"><div class="c">FALTA_LA_URL</div>' +
+      '<div class="m">El campo de arriba está vacío: escribí <b>http://localhost:8000</b>, o el puerto con el que lo levantaste.</div></div>';
+    return;
+  }
   if (!r.status) {
     $("salud").innerHTML = '<div class="err-box"><div class="c">NO_CONECTA</div><div class="m">' +
       escapar(pista()).replace(/\n/g, "<br>") + "</div></div>";
@@ -660,6 +691,11 @@ function bajarJson() {
 //  Resultado: qué leyó cada protocolo
 // ══════════════════════════════════════════════════════════════════════════
 function pintarResultado(r, pedidos) {
+  if (r.sinUrl) {
+    $("resultado").innerHTML = '<div class="err-box"><div class="c">FALTA_LA_URL</div>' +
+      '<div class="m">El campo de arriba está vacío: escribí <b>http://localhost:8000</b>, o el puerto con el que lo levantaste.</div></div>';
+    return;
+  }
   if (!r.status) {
     $("resultado").innerHTML = '<div class="err-box"><div class="c">NO_CONECTA · ' + r.ms + ' ms</div>' +
       '<div class="m">' + escapar(pista()).replace(/\n/g, "<br>") + "</div></div>";
