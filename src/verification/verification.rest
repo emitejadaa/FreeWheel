@@ -6,12 +6,13 @@
 ### se aprueba por su cuenta. La cuenta queda VERIFIED cuando los DOS están
 ### aprobados (más el email, y el teléfono si REQUIRE_PHONE_VERIFICATION=true).
 ###
-### La extracción de datos la hace el subproyecto Python (python-verifier/):
-### PDF417 del DNI, MRZ del dorso, OCR posicional, CUIL y leyenda de
-### principiante. La comparación y el veredicto los hace este backend.
+### La extracción de datos la hace un verificador externo (DOCVERIFY_URL),
+### todavía sin implementar: PDF417 del DNI, MRZ del dorso, OCR posicional,
+### CUIL y leyenda de principiante. La comparación y el veredicto los hace
+### este backend (contrato en src/verification/docverify/docverify.types.ts).
 ###
 ### Con DOCVERIFY_MODE=auto_approve (.env — solo desarrollo) el submit aprueba
-### directo sin ejecutar Python. Igual necesita que los archivos EXISTAN en
+### directo sin llamar al verificador. Igual necesita que los archivos EXISTAN en
 ### Cloudinary (el submit valida existencia real vía la Admin API), así que
 ### hace falta CLOUDINARY_* configurado y subir algo (requests #7-#10).
 ###
@@ -239,13 +240,13 @@ Authorization: Bearer {{token}}
 ### efectivo, por qué degradó si degradó, y si el verificador contesta.
 ###
 ###   "mode": "auto"        → verifica solo
-###   "mode": "unavailable" → NO puede: falta Python o falta DOCVERIFY_URL.
+###   "mode": "unavailable" → NO puede: falta DOCVERIFY_URL.
 ###                           Los documentos van a quedar FAILED con ese motivo.
 ###   "mode": "manual"      → alguien lo configuró así a propósito
 ###
-### En Vercel serverless NO hay Python: para que "auto" funcione hay que
-### desplegar python-verifier/ aparte y cargar DOCVERIFY_URL + DOCVERIFY_TOKEN
-### (ver python-verifier/README.md).
+### Hoy no hay ningún verificador implementado: "auto" va a quedar en
+### "unavailable" hasta que se cargue DOCVERIFY_URL apuntando a uno que cumpla
+### el contrato de src/verification/docverify/docverify.types.ts.
 GET {{baseUrl}}/verification/identity/diagnostics
 Authorization: Bearer {{token}}
 

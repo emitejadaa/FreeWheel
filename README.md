@@ -33,7 +33,6 @@ src/vehicles                     CRUD de vehiculos con ownership
 src/listings                     CRUD/catalogo publico de publicaciones
 src/availability                 Disponibilidad y bloqueos manuales por listing
 src/verification                 Codigos email/phone y verificacion documental
-python-verifier                  Subproyecto Python: extrae datos de las fotos
 src/bookings                     Reservas y tokens de pickup/return
 src/admin                        Operaciones protegidas por rol ADMIN
 src/media                        Registro de assets externos por metadata
@@ -172,7 +171,7 @@ No usar migraciones destructivas ni `db push` contra produccion sin confirmacion
 - `UsersModule`: lectura y actualizacion de perfil propio.
 - `VehiclesModule`: alta, lectura, edicion y baja de vehiculos propios.
 - `ListingsModule`: publicaciones propias y catalogo publico activo.
-- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) y documental (DNI y licencia en flujos separados). La extraccion de datos la hace el subproyecto Python `python-verifier/`; la comparacion y el veredicto, este backend. Deja la cuenta `VERIFIED` para habilitar acciones sensibles.
+- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) y documental (DNI y licencia en flujos separados). La extraccion de datos la hace un verificador externo (`DOCVERIFY_URL`), todavia sin implementar; la comparacion y el veredicto, este backend. Deja la cuenta `VERIFIED` para habilitar acciones sensibles.
 - `SmsModule`: envio de codigos por SMS con interfaz de proveedor (`SMS_PROVIDER`, solo `mock` implementado).
 - `BookingsModule`: solicitudes, aceptacion/rechazo/cancelacion y confirmaciones por token.
 - `AdminModule`: gestion protegida por `ADMIN` de usuarios, verificaciones, listings y bookings.
@@ -391,15 +390,16 @@ pasos reales — firma, subida a Cloudinary y verificación — y muestra en cu�
 ellos falla, con lo que se esperaba y lo que llegó.
 
 Ese mismo front es **un HTML suelto**: se abre con doble clic, sin servidor ni
-puerto. Y tiene una sección para probar **sólo la lectura de los documentos**,
-sin backend de por medio: manda las fotos ya cargadas directo al verificador
-Python de tu máquina (`python-verifier/server.py` levantado con
-`DOCVERIFY_CORS_ORIGIN`) y muestra campo por campo lo que leyó cada protocolo.
-Los pasos exactos están en `python-verifier/README.md`.
+puerto. Tiene una sección para probar **sólo la lectura de los documentos**,
+sin backend de por medio, pegándole directo a un verificador en
+`DOCVERIFY_URL` — hoy no hay ninguno implementado, así que esa sección queda
+sin backend que la conteste hasta que exista uno.
 
-La extracción la hace el subproyecto Python `python-verifier/`, que corre como
-subproceso aislado (JSON por stdin → JSON por stdout, sin red ni credenciales)
-y devuelve, por foto, un objeto por protocolo de lectura:
+La extracción todavía no está implementada. El plan es que un verificador
+externo (apuntado por `DOCVERIFY_URL`, ver
+`src/verification/docverify/python-docverify.service.ts`) reciba las fotos en
+base64 por HTTP y devuelva, por foto, un objeto por protocolo de lectura —el
+contrato completo está en `src/verification/docverify/docverify.types.ts`:
 
 - **DNI frente**: `codigo` (PDF417 del RENAPER, decodificado con `zxing-cpp`) y
   `ocr` (lectura posicional tras corregir bordes, perspectiva y orientación).
@@ -428,8 +428,8 @@ firmadas efímeras y auditoría de acceso), nunca el usuario ni los logs. Un
 mismo documento no puede verificar dos cuentas, y los campos que respaldan la
 identidad quedan inmutables una vez verificada.
 
-Modos (`DOCVERIFY_MODE`): `auto` (producción; exige `CLOUDINARY_*` y el
-verificador Python instalado, si no degrada a `manual` avisando), `manual`
+Modos (`DOCVERIFY_MODE`): `auto` (producción; exige `CLOUDINARY_*` y
+`DOCVERIFY_URL` configurada, si no degrada a `manual` avisando), `manual`
 (decide siempre un admin) y `auto_approve` (aprueba todo; **sólo** desarrollo
 y tests).
 

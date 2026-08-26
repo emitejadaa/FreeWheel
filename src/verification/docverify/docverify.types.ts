@@ -1,11 +1,13 @@
 /**
- * EL CONTRATO CON EL VERIFICADOR PYTHON
+ * EL CONTRATO CON EL VERIFICADOR DE DOCUMENTOS
  *
- * Espejo exacto de python-verifier/contrato.py: cada foto devuelve un objeto
- * por protocolo de extracción, con `title` y SIEMPRE todos los atributos
- * extraíbles de ese caso (null cuando no se detectaron). El vocabulario de
- * nombres es único, así `nombre` se compara contra `nombre` sin importar de
- * qué documento ni protocolo salió.
+ * Cada foto devuelve un objeto por protocolo de extracción (OCR, PDF417, MRZ,
+ * según el caso), con `title` y SIEMPRE todos los atributos extraíbles de ese
+ * caso (null cuando no se detectaron). El vocabulario de nombres es único,
+ * así `nombre` se compara contra `nombre` sin importar de qué documento ni
+ * protocolo salió. El verificador que implemente este contrato (ver
+ * PythonDocverifyService) todavía no existe; este archivo es la especificación
+ * de lo que tiene que devolver cuando exista.
  */
 
 export const DOCUMENT_SLOTS = [

@@ -430,11 +430,10 @@ Archivos:
 - `src/verification/identity/identity-documents.service.ts` (firma, valida y borra archivos)
 - `src/verification/identity/document-verification.service.ts` (el flujo completo)
 - `src/verification/docverify/docverify.types.ts` (contrato con el verificador)
-- `src/verification/docverify/python-docverify.service.ts` (ejecuta el subproceso)
+- `src/verification/docverify/python-docverify.service.ts` (llama al verificador via HTTP)
 - `src/verification/matching/document-match.service.ts` (toda la politica de decision)
 - `src/verification/matching/normalize.util.ts`
 - `src/verification/errors/verification-reasons.ts` (catalogo de motivos)
-- `python-verifier/` (subproyecto Python: extraccion de datos de las fotos)
 
 Responsabilidades:
 
@@ -1239,10 +1238,10 @@ Pasos:
    fallo (`problem`), en que etapa (`step`), en que campo (`field`) y que se
    esperaba contra que llego (`details`); `errors` lista los dos archivos
    cuando los dos estan mal.
-5. Descarga las dos fotos y se las pasa al **verificador Python**
-   (`python-verifier/`), que corre como subproceso aislado y devuelve, por
-   foto, un objeto por protocolo de lectura con SIEMPRE los mismos nombres de
-   campo:
+5. Descarga las dos fotos y se las pasa a un **verificador externo**
+   (`DOCVERIFY_URL`, ver `python-docverify.service.ts`), todavia sin
+   implementar, que deberia devolver, por foto, un objeto por protocolo de
+   lectura con SIEMPRE los mismos nombres de campo:
 
    | Foto | Protocolos | Campos |
    | --- | --- | --- |
@@ -1577,11 +1576,10 @@ ONBOARDING_JWT_EXPIRES_IN="30m"
 CORS_STRICT=""
 # Verificacion documental: auto (produccion) | manual | auto_approve
 DOCVERIFY_MODE="auto_approve"
-# Donde vive el subproyecto Python y con que interprete corre (por defecto
-# ./python-verifier y su propio venv). Necesita el binario `tesseract` con el
-# idioma espanol instalado en el sistema.
-DOCVERIFY_DIR=""
-DOCVERIFY_PYTHON=""
+# URL de un verificador externo que cumpla el contrato de docverify.types.ts.
+# Todavia no hay ninguno implementado; sin esto "auto" degrada a "manual".
+DOCVERIFY_URL=""
+DOCVERIFY_TOKEN=""
 DOCVERIFY_TIMEOUT_MS=120000
 # Requeridas por DOCVERIFY_MODE=auto (falla al arrancar sin ellas)
 CLOUDINARY_CLOUD_NAME=""
