@@ -967,12 +967,29 @@ const SLOTS_PY = {
   license_back:  { titulo: "Licencia · dorso",  protos: "ocr (CUIL y principiante)" },
 };
 
-const PISTA_PYTHON = [
-  "El navegador no pudo ni conectarse al verificador Python. Suele ser una de estas:",
-  "1· No está levantado, o está en otro puerto (revisá la URL de la cabecera).",
-  "2· Está levantado pero SIN CORS: relanzalo con DOCVERIFY_CORS_ORIGIN='*'. En su consola vas a ver 'preflight rechazado'.",
-  "3· Esta página está en https y el verificador en http: el navegador bloquea la mezcla.",
-].join(" ");
+/**
+ * El navegador informa lo MISMO —"NetworkError"— cuando no hay nadie
+ * escuchando y cuando sí hay pero bloqueó la respuesta por CORS. Distinguirlas
+ * a ojo es media hora perdida, así que se pregunta: un pedido en modo
+ * `no-cors` no puede leer la respuesta (queda opaca), pero solo resuelve si
+ * del otro lado ALGUIEN contestó. Eso separa las dos causas sin ambigüedad.
+ */
+async function diagnosticarPython(raiz) {
+  try {
+    await fetch(raiz + "/health", { mode: "no-cors", cache: "no-store" });
+    return {
+      code: "SIN_CORS",
+      pista: "El verificador CONTESTÓ, así que está levantado y la URL es correcta: lo que falló es el permiso del navegador. " +
+             "Cortalo y relanzalo con DOCVERIFY_CORS_ORIGIN='*' — el arranque tiene que decir «cors: *», no «cors: apagado».",
+    };
+  } catch {
+    return {
+      code: "NO_ESCUCHA",
+      pista: "No hay nadie escuchando en esa dirección: no está levantado, está en otro puerto, o quedó en una terminal que cerraste. " +
+             "Si lo levantaste y aun así da esto, probá con http://127.0.0.1:<puerto> en vez de localhost.",
+    };
+  }
+}
 
 /** Llamada al verificador Python. Mismo log que el backend, otro servidor. */
 async function apiPython(method, path, body, bodyLog) {
@@ -1002,8 +1019,10 @@ async function apiPython(method, path, body, bodyLog) {
     return { ok: res.ok, status: res.status, data, ms };
   } catch (e) {
     const ms = Math.round(performance.now() - t0);
-    registrar({ method, url, status: 0, ms, body: bodyLog, error: { error: String(e), pista: PISTA_PYTHON } });
-    return { ok: false, status: 0, data: null, ms };
+    const causa = await diagnosticarPython(raiz);
+    registrar({ method, url, status: 0, ms, body: bodyLog,
+      error: { error: String(e), causa: causa.code, pista: causa.pista } });
+    return { ok: false, status: 0, data: null, ms, causa };
   }
 }
 
@@ -1014,13 +1033,14 @@ async function probarPython(boton) {
 
   const salud = r.data || {};
   $("pyConn").className = "badge " + (r.ok ? "b-ok" : "b-err");
-  $("pyConn").textContent = r.ok ? "python ok" : r.sinUrl ? "sin URL" : r.status ? "python " + r.status : "python off";
+  $("pyConn").textContent = r.ok ? "python ok" : r.sinUrl ? "sin URL"
+    : r.status ? "python " + r.status : r.causa.code === "SIN_CORS" ? "sin CORS" : "no escucha";
   $("pyTess").className = "badge " + (salud.tesseract ? "b-ok" : "b-err");
   $("pyTess").textContent = salud.tesseract || "tesseract ?";
 
   if (r.sinUrl) return;
   if (!r.status) {
-    $("pySalud").innerHTML = '<div class="diag"><div class="p">NO_CONECTA</div><div class="m">' + PISTA_PYTHON + "</div></div>";
+    $("pySalud").innerHTML = '<div class="diag"><div class="p">' + r.causa.code + '</div><div class="m">' + r.causa.pista + "</div></div>";
     return;
   }
   if (r.status === 401) {
@@ -1083,7 +1103,7 @@ function pintarLecturaPython(kind, r, slots) {
     return;
   }
   if (!r.status) {
-    caja.innerHTML = '<div class="diag"><div class="p">NO_CONECTA</div><div class="m">' + PISTA_PYTHON + "</div></div>";
+    caja.innerHTML = '<div class="diag"><div class="p">' + r.causa.code + '</div><div class="m">' + r.causa.pista + "</div></div>";
     return;
   }
   if (!r.ok || !r.data || r.data.ok === false) {

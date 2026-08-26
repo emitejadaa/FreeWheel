@@ -83,6 +83,7 @@ import hmac
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -95,6 +96,9 @@ from contrato import SLOTS
 # Tope del cuerpo del pedido. Cuatro fotos de documento con holgura; en base64
 # el tamaño crece un tercio, así que 32 MB de cuerpo son ~24 MB de imágenes.
 MAX_BODY_BYTES = 32 * 1024 * 1024
+
+# El aviso de CORS apagado se da una vez y no en cada pedido.
+_AVISO_CORS_DADO = False
 
 
 def _token() -> str | None:
@@ -154,6 +158,36 @@ def analizar_documentos(documentos: dict[str, str]) -> dict:
 
 
 
+class ServidorDobleStack(ThreadingHTTPServer):
+    """Escucha en IPv6 y en IPv4 a la vez.
+
+    Atado solo a 0.0.0.0 el servidor queda SOLO en IPv4, y ahí "localhost" es
+    una lotería: el navegador puede resolverlo a ::1 primero, no encontrar a
+    nadie y fallar con un error de red idéntico al de "no está levantado" —
+    sin dejar una sola línea en el log de acá, porque el pedido nunca llegó.
+    Con "::" y IPV6_V6ONLY apagado, la misma escucha atiende las dos.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError):
+            pass  # sin dual-stack en este sistema: queda IPv6 a secas
+        super().server_bind()
+
+
+def crear_servidor(puerto: int) -> ThreadingHTTPServer:
+    """Dual-stack donde se pueda; IPv4 a secas en una máquina sin IPv6."""
+    try:
+        return ServidorDobleStack(("::", puerto), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            raise
+        return ThreadingHTTPServer(("0.0.0.0", puerto), Handler)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"docverify/{VERSION}"
 
@@ -174,9 +208,28 @@ class Handler(BaseHTTPRequestHandler):
             return origen or "*"
         return origen if origen in permitidos else None
 
+    def _avisar_cors_apagado(self) -> None:
+        """Un pedido de navegador que el navegador va a descartar.
+
+        Acá se contesta 200 y en el log parece que salió todo bien: el que ve
+        el error es el otro lado, y no dice por qué. Se avisa una sola vez por
+        proceso para no llenar el log."""
+        global _AVISO_CORS_DADO
+        origen = self.headers.get("Origin")
+        if _AVISO_CORS_DADO or not origen:
+            return
+        _AVISO_CORS_DADO = True
+        sys.stderr.write(
+            f"[docverify] un navegador (origen {origen!r}) pidió {self.path} y CORS está "
+            "apagado: se le contesta, pero él va a descartar la respuesta y solo va a\n"
+            "  decir 'NetworkError'. Si es el front demo, relanzá con "
+            "DOCVERIFY_CORS_ORIGIN='*'.\n"
+        )
+
     def _cabeceras_cors(self) -> None:
         origen = self._origen_permitido()
         if not origen:
+            self._avisar_cors_apagado()
             return
         self.send_header("Access-Control-Allow-Origin", origen)
         # La respuesta depende del origen que la pidió: sin Vary, un proxy
@@ -212,14 +265,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         origen = self._origen_permitido()
-        if not origen:
-            # El navegador solo va a mostrar "CORS error", sin decir por qué.
-            # El motivo se escribe acá, que es donde se puede leer.
-            sys.stderr.write(
-                f"[docverify] preflight rechazado, origen {self.headers.get('Origin')!r}: "
-                "prendé CORS con DOCVERIFY_CORS_ORIGIN (ver el docstring).\n"
-            )
-
         self.send_response(204)
         self._cabeceras_cors()
         if origen:
@@ -315,7 +360,7 @@ def main() -> int:
 
     puerto = int(os.environ.get("PORT") or 8000)
     try:
-        servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Handler)
+        servidor = crear_servidor(puerto)
     except OSError as exc:
         if exc.errno != errno.EADDRINUSE:
             raise
@@ -333,8 +378,12 @@ def main() -> int:
         return 1
     tesseract = _version_tesseract()
     origenes = _origenes_cors()
+    # Lo que se bindeó DE VERDAD: si la máquina no tiene IPv6 el mensaje no
+    # puede prometer que "localhost" va a resolver a alguien por ese lado.
+    familias = "IPv4 e IPv6" if servidor.address_family == socket.AF_INET6 else "solo IPv4"
     sys.stderr.write(
-        f"[docverify] escuchando en :{puerto} · tesseract: {tesseract or 'NO ESTÁ'}"
+        f"[docverify] escuchando en localhost:{puerto} ({familias})"
+        f" · tesseract: {tesseract or 'NO ESTÁ'}"
         f" · cors: {', '.join(origenes) if origenes else 'apagado'}\n"
     )
     if not tesseract:

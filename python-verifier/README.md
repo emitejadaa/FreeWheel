@@ -55,10 +55,17 @@ DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server
 xdg-open ../public/demo/verificacion.html
 ```
 
-`DOCVERIFY_CORS_ORIGIN` **no es opcional para esto**: sin ella el navegador ni
-llega a mandar el pedido (el server contesta el preflight sin las cabeceras y
-loguea `preflight rechazado`). Acepta `*`, o los orígenes separados por coma
-(el archivo abierto con `file://` manda `null`).
+`DOCVERIFY_CORS_ORIGIN` **no es opcional para esto**: sin ella el navegador
+descarta la respuesta y el front solo puede decir "NetworkError". El server lo
+avisa una vez en su propia consola (`un navegador (origen 'null') pidió … y
+CORS está apagado`), y el front lo diagnostica solo: distingue "no hay nadie
+escuchando" de "contestó pero le falta CORS". Acepta `*`, o los orígenes
+separados por coma (el archivo abierto con `file://` manda `null`).
+
+El servidor escucha en **IPv4 e IPv6** donde la máquina tenga las dos: si
+quedara solo en IPv4, un navegador que resuelva `localhost` a `::1` fallaría
+con un error de red idéntico al de "no está levantado". El arranque dice cuál
+de las dos consiguió.
 
 Por defecto está **apagada**, que es lo que corresponde en el deploy: ahí el
 único que llama es el backend, servidor contra servidor, y con CORS abierto
