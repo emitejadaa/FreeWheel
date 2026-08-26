@@ -390,12 +390,12 @@ Para probar el flujo entero a mano hay un front mínimo en
 pasos reales — firma, subida a Cloudinary y verificación — y muestra en cuál de
 ellos falla, con lo que se esperaba y lo que llegó.
 
-Y para probar **sólo la lectura de los documentos**, sin backend de por medio,
-está `public/demo/verificador-python.html`: le habla directo al verificador
-Python corriendo en tu máquina (`python-verifier/server.py` con
-`DOCVERIFY_CORS_ORIGIN`), muestra campo por campo lo que leyó cada protocolo y
-cruza el resultado con una réplica local de la política de aprobación. Los
-pasos exactos están en `python-verifier/README.md`.
+Ese mismo front es **un HTML suelto**: se abre con doble clic, sin servidor ni
+puerto. Y tiene una sección para probar **sólo la lectura de los documentos**,
+sin backend de por medio: manda las fotos ya cargadas directo al verificador
+Python de tu máquina (`python-verifier/server.py` levantado con
+`DOCVERIFY_CORS_ORIGIN`) y muestra campo por campo lo que leyó cada protocolo.
+Los pasos exactos están en `python-verifier/README.md`.
 
 La extracción la hace el subproyecto Python `python-verifier/`, que corre como
 subproceso aislado (JSON por stdin → JSON por stdout, sin red ni credenciales)

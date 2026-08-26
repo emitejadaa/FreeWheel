@@ -1,13 +1,27 @@
 """
-Convierte una foto libre (cualquier ángulo, distancia y rotación) en un
-rectángulo derecho con la proporción real de una tarjeta ID-1 (85.6×54mm),
-para que las zonas porcentuales de zonas_documento.py signifiquen lo mismo
+LA FOTO, ANTES DE LEERLA
+========================
+
+Abrir el archivo y convertir una foto libre (cualquier ángulo, distancia y
+rotación) en un rectángulo derecho con la proporción real de una tarjeta ID-1
+(85.6×54mm), para que las zonas porcentuales de campos.py signifiquen lo mismo
 sin importar cómo se sacó la foto.
+
+Acá vive también `mejor_rotacion`, el probador de rotaciones que usan los tres
+lugares donde hay que decidir para qué lado va la tarjeta.
 """
 
 from __future__ import annotations
 
+import io
+import math
+from pathlib import Path
 from typing import Any
+
+from contrato import desde_excepcion, error, ok
+
+# Tope de la foto aceptada. Una foto de celular ronda los 3-5 MB.
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
 
 # Proporción ISO/IEC 7810 ID-1, en píxeles del rectángulo de salida.
 ANCHO_RECTIFICADO = 1600
@@ -16,6 +30,70 @@ ALTO_RECTIFICADO = 1010
 # El contorno tiene que cubrir al menos esta fracción del área de la foto
 # para considerarse "el documento" y no ruido de fondo.
 AREA_MINIMA_FRACCION = 0.10
+
+# Puntaje que corta la búsqueda de rotación: "es esta, no busques más".
+SEGURO = math.inf
+
+
+def abrir_imagen_desde_archivo(ruta: str) -> dict:
+    """Ruta → imagen Pillow, o el motivo por el que no se pudo."""
+    archivo = Path(ruta)
+    if not archivo.is_file():
+        return error("ARCHIVO_INEXISTENTE", f"No existe el archivo {ruta}.")
+
+    datos = archivo.read_bytes()
+    if not datos:
+        return error("IMAGEN_VACIA", "La imagen llegó con cero bytes.")
+    if len(datos) > MAX_IMAGE_BYTES:
+        return error(
+            "IMAGEN_MUY_GRANDE",
+            f"La foto pesa {len(datos) // 1024} KB y el tope es "
+            f"{MAX_IMAGE_BYTES // 1024} KB.",
+        )
+
+    from PIL import Image
+
+    try:
+        imagen = Image.open(io.BytesIO(datos))
+        imagen.load()
+    except BaseException as exc:  # noqa: BLE001 - Pillow tira de todo
+        return desde_excepcion("NO_ES_UNA_IMAGEN", exc)
+
+    if imagen.mode not in ("RGB", "L"):
+        imagen = imagen.convert("RGB")
+    imagen.format = "PNG"
+
+    return ok(imagen=imagen)
+
+
+def mejor_rotacion(imagen_pil: Any, evaluar: Any) -> tuple[Any, int, Any]:
+    """Prueba la foto en las 4 rotaciones múltiplo de 90° y se queda con la
+    mejor según `evaluar`.
+
+    `evaluar(candidata)` devuelve `(puntaje, dato)`, o None si esa rotación
+    no sirve. Gana el puntaje más alto; un puntaje `SEGURO` corta la búsqueda
+    ahí mismo — es lo que devuelven las señales que se validan solas (el MRZ
+    y el CUIL tienen dígitos verificadores: si cierran, esa ES la orientación
+    y probar las otras tres es tiempo de OCR tirado).
+
+    Devuelve (imagen elegida, grados aplicados, dato de la evaluación); si
+    ninguna rotación sirvió, la original con 0 grados y dato None.
+    """
+    mejor = (imagen_pil, 0, None)
+    mejor_puntaje = -math.inf
+
+    for grados in (0, 90, 180, 270):
+        candidata = imagen_pil.rotate(-grados, expand=True) if grados else imagen_pil
+        evaluacion = evaluar(candidata)
+        if evaluacion is None:
+            continue
+        puntaje, dato = evaluacion
+        if puntaje > mejor_puntaje:
+            mejor_puntaje, mejor = puntaje, (candidata, grados, dato)
+        if puntaje == SEGURO:
+            break
+
+    return mejor
 
 
 def _a_cv(imagen_pil: Any):
@@ -205,26 +283,23 @@ def corregir_orientacion(imagen_pil: Any) -> tuple[Any, int]:
 
 
 def _mejor_rotacion_por_confianza(imagen_pil: Any) -> tuple[Any, int]:
-    """Prueba las 4 rotaciones múltiplo de 90° y devuelve la que Tesseract
-    lee con mayor confianza promedio de palabra. Usado cuando el OSD no
-    reporta script "Latin" (señal de que su propia decisión de rotación
-    tampoco es confiable en este documento)."""
+    """La rotación que Tesseract lee con mayor confianza promedio de palabra.
+    Se usa cuando el OSD no reporta script "Latin" (señal de que su propia
+    decisión de rotación tampoco es confiable en este documento)."""
     import pytesseract
 
-    mejor_imagen, mejor_grados, mejor_confianza = imagen_pil, 0, -1.0
-    for grados in (0, 90, 180, 270):
-        candidata = imagen_pil.rotate(-grados, expand=True) if grados else imagen_pil
+    def confianza(candidata: Any):
         try:
-            datos = pytesseract.image_to_data(candidata, lang="eng", output_type=pytesseract.Output.DICT)
-            confianzas = [float(c) for c in datos.get("conf", []) if str(c).strip() not in ("", "-1")]
-            promedio = sum(confianzas) / len(confianzas) if confianzas else -1.0
+            datos = pytesseract.image_to_data(
+                candidata, lang="eng", output_type=pytesseract.Output.DICT
+            )
         except Exception:
-            promedio = -1.0
-        if promedio > mejor_confianza:
-            mejor_confianza = promedio
-            mejor_imagen, mejor_grados = candidata, grados
+            return None
+        confianzas = [float(c) for c in datos.get("conf", []) if str(c).strip() not in ("", "-1")]
+        return (sum(confianzas) / len(confianzas), None) if confianzas else None
 
-    return mejor_imagen, mejor_grados
+    elegida, grados, _ = mejor_rotacion(imagen_pil, confianza)
+    return elegida, grados
 
 
 def rectificar_documento(imagen_pil: Any) -> dict:
@@ -232,8 +307,6 @@ def rectificar_documento(imagen_pil: Any) -> dict:
     Punto de entrada: foto libre → imagen derecha con proporción ID-1, o el
     motivo por el que no se pudo.
     """
-    from resultado import desde_excepcion, error, ok
-
     try:
         import cv2  # noqa: F401
     except ImportError:

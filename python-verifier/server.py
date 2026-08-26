@@ -89,7 +89,7 @@ import tempfile
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from analyze import VERSION, analizar_slot
+from analyze import VERSION, analizar, validar_pedido
 from contrato import SLOTS
 
 # Tope del cuerpo del pedido. Cuatro fotos de documento con holgura; en base64
@@ -129,7 +129,12 @@ def _version_tesseract() -> str | None:
 
 
 def analizar_documentos(documentos: dict[str, str]) -> dict:
-    """Las fotos en base64 → el JSON de contrato, igual que analyze.py."""
+    """Las fotos en base64 → el JSON de contrato, igual que por stdin.
+
+    Lo único propio de este transporte es el temporal: el que llama está en
+    otro servidor y manda bytes, no rutas. El análisis es exactamente el
+    mismo `analizar()` que corre el subproceso.
+    """
     carpeta = tempfile.mkdtemp(prefix="docverify-")
     try:
         rutas: dict[str, str] = {}
@@ -142,21 +147,11 @@ def analizar_documentos(documentos: dict[str, str]) -> dict:
                 archivo.write(base64.b64decode(contenido, validate=True))
             rutas[slot] = ruta
 
-        salida = {"ok": True, "version": VERSION, "documentos": {}}
-        for slot, ruta in rutas.items():
-            try:
-                salida["documentos"][slot] = analizar_slot(slot, ruta)
-            except BaseException as exc:  # noqa: BLE001 - una foto no corta a las demás
-                salida["documentos"][slot] = {
-                    "error": {
-                        "code": "EXCEPCION_INESPERADA",
-                        "message": f"{type(exc).__name__}: {exc}",
-                    }
-                }
-        return salida
+        return analizar(rutas)
     finally:
         # Los documentos de identidad no se quedan en el disco de nadie.
         shutil.rmtree(carpeta, ignore_errors=True)
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -289,21 +284,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         documentos = pedido.get("documentos") if isinstance(pedido, dict) else None
-        if not isinstance(documentos, dict) or not documentos:
-            self._error(
-                400,
-                "PEDIDO_INVALIDO",
-                'El pedido debe traer {"documentos": {"<slot>": "<base64>"}}.',
-            )
-            return
-
-        desconocidos = [slot for slot in documentos if slot not in SLOTS]
-        if desconocidos:
-            self._error(
-                400,
-                "SLOT_DESCONOCIDO",
-                f"Slots desconocidos: {', '.join(desconocidos)}. Válidos: {', '.join(SLOTS)}.",
-            )
+        fallo = validar_pedido(documentos)
+        if fallo:
+            self._error(400, fallo["error"]["code"], fallo["error"]["message"])
             return
 
         try:

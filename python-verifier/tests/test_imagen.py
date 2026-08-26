@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from document_geometry import encontrar_contorno_documento, rectificar_documento
+from imagen import encontrar_contorno_documento, rectificar_documento
 
 TEST_DOCS = Path(__file__).resolve().parent.parent / "testDocuments"
 
@@ -28,6 +28,10 @@ def test_no_encuentra_contorno_en_foto_sin_documento():
     assert encontrar_contorno_documento(imagen) is None
 
 
+@pytest.mark.skipif(
+    not TEST_DOCS.is_dir(),
+    reason="testDocuments/ no está: son documentos reales y no se versionan",
+)
 @pytest.mark.parametrize(
     "archivo",
     ["dniFrente.jpeg", "dniDorso.jpeg", "licenciaFrente.jpeg", "licenciaDorso.jpeg"],

@@ -1,4 +1,4 @@
-from normalizadores_campos import (
+from normalizadores import (
     limpiar_cuil,
     limpiar_domicilio,
     limpiar_nombre,

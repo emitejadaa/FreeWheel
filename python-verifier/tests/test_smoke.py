@@ -1,5 +1,11 @@
-def test_analyze_importa_sin_explotar():
+def test_los_modulos_importan_sin_explotar():
     import analyze  # noqa: F401
+    import campos  # noqa: F401
+    import codigos  # noqa: F401
+    import contrato  # noqa: F401
+    import imagen  # noqa: F401
+    import normalizadores  # noqa: F401
+    import server  # noqa: F401
 
 
 def test_dependencias_instaladas():

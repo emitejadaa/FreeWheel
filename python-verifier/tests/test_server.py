@@ -1,11 +1,11 @@
-"""CORS: lo que decide si el front demo local puede hablarle al verificador.
+"""El transporte HTTP: cómo se niega a arrancar y a quién le contesta.
 
-Apagado por defecto —en el deploy el único que llama es el backend, servidor
-contra servidor— y prendido a mano con DOCVERIFY_CORS_ORIGIN. Que un cambio no
-lo deje abierto sin querer, ni roto para probar en local.
+El análisis en sí no se prueba acá — es el mismo `analizar()` que corre por
+stdin, y se prueba en su propio nivel.
 """
 
 import http.client
+import socket
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -13,6 +13,38 @@ import pytest
 
 import server
 
+
+# ── Arranque ──────────────────────────────────────────────────────────────
+
+def test_sin_token_no_arranca(monkeypatch, capsys):
+    monkeypatch.delenv("DOCVERIFY_TOKEN", raising=False)
+    monkeypatch.delenv("DOCVERIFY_ALLOW_ANONYMOUS", raising=False)
+
+    assert server.main() == 1
+    salida = capsys.readouterr().err
+    assert "DOCVERIFY_TOKEN" in salida
+    # Recibe documentos de identidad: abierto a cualquiera no va.
+    assert "DOCVERIFY_ALLOW_ANONYMOUS" in salida
+
+
+def test_con_el_puerto_ocupado_avisa_en_vez_de_explotar(monkeypatch, capsys):
+    ocupante = socket.socket()
+    ocupante.bind(("127.0.0.1", 0))
+    ocupante.listen(1)
+    puerto = ocupante.getsockname()[1]
+    try:
+        monkeypatch.setenv("DOCVERIFY_ALLOW_ANONYMOUS", "true")
+        monkeypatch.setenv("PORT", str(puerto))
+
+        assert server.main() == 1
+        salida = capsys.readouterr().err
+        assert str(puerto) in salida
+        assert "ocupado" in salida
+    finally:
+        ocupante.close()
+
+
+# ── CORS ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def verificador(monkeypatch):

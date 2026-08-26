@@ -4,12 +4,25 @@ convertir texto de imagen en datos con nombre. Nada de esto decide si un
 campo "está bien" comparado con otra fuente — eso vive fuera de este
 programa. Acá solo se normaliza forma: si no se puede interpretar, se
 devuelve None y quien llama decide qué hacer con eso.
+
+No importa ningún otro módulo del verificador a propósito: lo usan tanto la
+lectura de códigos como la de OCR, y así ninguna de las dos depende de la otra.
 """
 
 from __future__ import annotations
 
 import datetime
 import re
+import unicodedata
+
+
+def sin_acentos(texto: str) -> str:
+    """Sin diacríticos, para comparar contra etiquetas impresas sin que un
+    acento mal leído por el OCR rompa la coincidencia."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn"
+    )
+
 
 MESES = {
     "ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6,

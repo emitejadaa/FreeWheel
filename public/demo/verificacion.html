@@ -176,12 +176,14 @@
 <header>
   <h1>FreeWheel <span>· consola de verificación documental</span></h1>
   <span id="version" class="badge b-mute" title="Versión del archivo que está corriendo el navegador. Si no coincide con la del disco, recargá con Ctrl+Shift+R."></span>
-  <div style="min-width:280px"><input id="baseUrl" placeholder="http://localhost:3000"></div>
+  <div style="min-width:210px"><input id="baseUrl" placeholder="backend · http://localhost:3000"></div>
   <button class="sm" onclick="probarConexion()">Probar conexión</button>
   <span id="conn" class="badge b-mute">sin probar</span>
   <span id="modo" class="badge b-mute">DOCVERIFY_MODE ?</span>
+  <div style="min-width:190px"><input id="pyUrl" placeholder="python · http://localhost:8000"></div>
+  <span id="pyConn" class="badge b-mute">python ?</span>
   <div class="grow"></div>
-  <button class="sm ghost" onclick="if(confirm('¿Borrar sesiones, URLs y log guardados?')){localStorage.clear();location.reload()}">Reset</button>
+  <button class="sm ghost" onclick="if(confirm('¿Borrar sesiones, URLs y log guardados?')){try{localStorage.clear()}catch(e){};location.reload()}">Reset</button>
 </header>
 
 <div id="preflight"></div>
@@ -286,6 +288,34 @@
     </div>
   </details>
 
+  <!-- ══ 3.5 · VERIFICADOR PYTHON EN LOCAL ══ -->
+  <details class="card" id="cardPython">
+    <summary><span class="n">P</span> Verificador Python en tu máquina <span class="muted">— leer las fotos sin pasar por el backend</span></summary>
+    <div class="body">
+      <p class="hint">El backend no lee los documentos: se los da a <code>python-verifier/</code>, que es el que hace OCR y decodifica el PDF417 y el MRZ. Levantándolo acá podés probar <b>solo la lectura</b> —sin cuenta, sin Cloudinary, sin base de datos— y ver campo por campo qué sacó de cada foto. Las mismas fotos que cargues abajo.</p>
+      <ol style="margin:0 0 12px;padding-left:20px;font-size:13px">
+        <li style="margin-bottom:8px">El binario de <b>tesseract con español</b> (es del sistema, no viene con pip):
+<pre class="json" style="max-height:none">sudo apt install tesseract-ocr tesseract-ocr-spa    <span class="j-null"># macOS: brew install tesseract tesseract-lang</span></pre></li>
+        <li style="margin-bottom:8px">Las dependencias de Python:
+<pre class="json" style="max-height:none">cd python-verifier
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt</pre></li>
+        <li style="margin-bottom:8px">Levantarlo <b>con CORS prendido</b>, que es lo que le permite al navegador llamarlo:
+<pre class="json" style="max-height:none">DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py
+<span class="j-null">[docverify] escuchando en :8000 · tesseract: tesseract 5.3.4 · cors: *</span></pre></li>
+      </ol>
+      <div class="row c2">
+        <div><label>Token del verificador (solo si lo levantaste con DOCVERIFY_TOKEN)</label><input id="pyToken" class="mono" placeholder="vacío con DOCVERIFY_ALLOW_ANONYMOUS=true"></div>
+        <div style="display:flex;align-items:flex-end;gap:8px">
+          <button onclick="probarPython(this)">Probar /health</button>
+          <span id="pyTess" class="badge b-mute">tesseract ?</span>
+        </div>
+      </div>
+      <div id="pySalud"></div>
+      <div class="note" style="margin-bottom:0">Con <code>DOCVERIFY_ALLOW_ANONYMOUS=true</code> queda abierto a cualquiera que llegue al puerto, y con <code>DOCVERIFY_CORS_ORIGIN='*'</code> a cualquier página que abras. Es <b>solo para localhost</b>: en un servidor va con token y con los orígenes listados uno por uno.</div>
+    </div>
+  </details>
+
   <!-- ══ 4 · DOCUMENTOS ══ -->
   <details class="card" open>
     <summary><span class="n">4</span> Verificar documentos <span class="muted">— DNI y licencia por separado</span></summary>
@@ -377,30 +407,37 @@ const VERSION = "v3 · params sin folder + inspect-url";
 const $ = (id) => document.getElementById(id);
 const val = (id) => $(id).value.trim();
 $("version").textContent = VERSION;
-const PERSIST = ["baseUrl","email","password","firstName","lastName","dateOfBirth","phone",
+const PERSIST = ["baseUrl","pyUrl","pyToken","email","password","firstName","lastName","dateOfBirth","phone",
                  "token","adminToken","adminEmail","adminPassword","dni","cuil","address"];
+
+// Esta página está pensada para abrirse TAMBIÉN como archivo suelto (doble
+// clic, sin servidor). Ahí algunos navegadores prohíben localStorage, y tirar
+// acá dejaría la página en blanco: se guarda si se puede, y si no, no se guarda.
+const leer = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const escribir = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin persistencia */ } };
 
 PERSIST.forEach((k) => {
   const el = $(k); if (!el) return;
-  const saved = localStorage.getItem("fw." + k);
-  if (saved !== null) el.value = saved;
-  el.addEventListener("input", () => localStorage.setItem("fw." + k, el.value));
+  const guardado = leer("fw." + k);
+  if (guardado !== null) el.value = guardado;
+  el.addEventListener("input", () => escribir("fw." + k, el.value));
 });
 // Servida por el propio backend (public/demo) el origen ya es el correcto y
 // no hay CORS de por medio; abierta como archivo suelto, el server local.
 if (!val("baseUrl")) {
   $("baseUrl").value = location.origin.startsWith("http") ? location.origin : "http://localhost:3000";
 }
+if (!val("pyUrl")) $("pyUrl").value = "http://localhost:8000";
 if (!val("email")) nuevoEmail();
 
 function nuevoEmail() {
   $("email").value = "verif-" + Date.now() + "@test.local";
-  localStorage.setItem("fw.email", $("email").value);
+  escribir("fw.email", $("email").value);
 }
 
 /** URLs subidas, por slot. Se guardan para poder recargar sin volver a subir. */
-let urls = JSON.parse(localStorage.getItem("fw.urls") || "{}");
-const guardarUrls = () => localStorage.setItem("fw.urls", JSON.stringify(urls));
+let urls = JSON.parse(leer("fw.urls") || "{}");
+const guardarUrls = () => escribir("fw.urls", JSON.stringify(urls));
 
 // ── JSON coloreado ────────────────────────────────────────────────────────
 function pintarJson(valor) {
@@ -442,9 +479,33 @@ function registrar({ method, url, status, ms, body, data, error }) {
  * Toda llamada al backend pasa por acá: mide, loguea y nunca tira.
  * opts.token → cuál usar (por defecto el del usuario); null = sin Authorization.
  */
+/**
+ * La URL de un servidor, normalizada, o null si el campo quedó vacío.
+ *
+ * Sin esto, un campo vacío o un "localhost:3000" sin esquema arman una URL
+ * RELATIVA: abierta como archivo el pedido sale contra file:///... y el
+ * navegador lo tapa con "CORS request not http", que no dice una palabra de
+ * lo que pasó.
+ */
+function base(campo) {
+  let url = val(campo).replace(/\/+$/, "");
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) url = "http://" + url;
+  try { new URL(url); } catch { return null; }
+  if (url !== val(campo)) { $(campo).value = url; escribir("fw." + campo, url); }
+  return url;
+}
+
 async function api(method, path, body, opts = {}) {
   const token = "token" in opts ? opts.token : val("token");
-  const url = val("baseUrl").replace(/\/$/, "") + path;
+  const raiz = base(opts.servidor || "baseUrl");
+  if (!raiz) {
+    registrar({ method, url: path, status: 0, ms: 0, body,
+      error: { error: "Falta la URL del servidor",
+               pista: 'El campo de arriba está vacío. Poné http://localhost:3000 para el backend, o http://localhost:8000 para el verificador Python.' } });
+    return { ok: false, status: 0, data: null, ms: 0, sinUrl: true };
+  }
+  const url = raiz + path;
   const t0 = performance.now();
   try {
     const res = await fetch(url, {
@@ -576,7 +637,7 @@ async function loginAdmin() {
 
 function guardarToken(campo, token) {
   $(campo).value = token;
-  localStorage.setItem("fw." + campo, token);
+  escribir("fw." + campo, token);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -593,7 +654,7 @@ function generarCuil() {
     const verificador = (11 - (suma % 11)) % 11;
     if (verificador !== 10) {
       $("cuil").value = prefijo + "-" + dni.padStart(8, "0") + "-" + verificador;
-      localStorage.setItem("fw.cuil", $("cuil").value);
+      escribir("fw.cuil", $("cuil").value);
       return;
     }
   }
@@ -650,8 +711,10 @@ $("docs").innerHTML = DOCUMENTOS.map((d) => `
       <button onclick="diagnosticar('${d.kind}', this)" title="POST /verification/identity/inspect-url — no gasta intentos del submit">Diagnosticar las URLs</button>
       <button class="primary" onclick="enviar('${d.kind}', this)">Verificar ${d.titulo}</button>
       <button onclick="pedirRevision('${d.kind}', this)">Pedir revisión manual</button>
+      <button onclick="leerConPython('${d.kind}', this)" title="Manda estas mismas fotos al verificador Python de tu máquina, sin pasar por el backend">Leer con el Python local</button>
     </div>
     <div id="v-${d.kind}"></div>
+    <div id="py-${d.kind}"></div>
   </div>`).join("");
 
 function previsualizar(kind, side) {
@@ -886,6 +949,213 @@ function pintarVeredicto(kind, r) {
     <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Respuesta completa</summary>
       <pre class="json">${pintarJson(d)}</pre></details>
   </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Verificador Python en local — las mismas fotos, sin pasar por el backend
+//
+//  El Python solo LEE: devuelve, por foto, un objeto por protocolo con lo que
+//  sacó de cada campo. No compara ni decide — de eso se encarga el backend, y
+//  el veredicto real es el de "Verificar DNI/Licencia" de acá arriba.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Qué protocolos usa cada foto, para explicarlo en la tabla. */
+const SLOTS_PY = {
+  dni_front:     { titulo: "DNI · frente",      protos: "ocr posicional + PDF417 (RENAPER)" },
+  dni_back:      { titulo: "DNI · dorso",       protos: "ocr (domicilio y CUIL) + MRZ TD1" },
+  license_front: { titulo: "Licencia · frente", protos: "ocr posicional" },
+  license_back:  { titulo: "Licencia · dorso",  protos: "ocr (CUIL y principiante)" },
+};
+
+const PISTA_PYTHON = [
+  "El navegador no pudo ni conectarse al verificador Python. Suele ser una de estas:",
+  "1· No está levantado, o está en otro puerto (revisá la URL de la cabecera).",
+  "2· Está levantado pero SIN CORS: relanzalo con DOCVERIFY_CORS_ORIGIN='*'. En su consola vas a ver 'preflight rechazado'.",
+  "3· Esta página está en https y el verificador en http: el navegador bloquea la mezcla.",
+].join(" ");
+
+/** Llamada al verificador Python. Mismo log que el backend, otro servidor. */
+async function apiPython(method, path, body, bodyLog) {
+  const raiz = base("pyUrl");
+  if (!raiz) {
+    registrar({ method, url: path, status: 0, ms: 0, body: bodyLog,
+      error: { error: "Falta la URL del verificador Python",
+               pista: "El campo de la cabecera está vacío: poné http://localhost:8000." } });
+    return { ok: false, status: 0, data: null, ms: 0, sinUrl: true };
+  }
+  const token = val("pyToken");
+  const url = raiz + path;
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const ms = Math.round(performance.now() - t0);
+    const texto = await res.text();
+    let data; try { data = texto ? JSON.parse(texto) : null; } catch { data = texto; }
+    registrar({ method, url, status: res.status, ms, body: bodyLog, data });
+    return { ok: res.ok, status: res.status, data, ms };
+  } catch (e) {
+    const ms = Math.round(performance.now() - t0);
+    registrar({ method, url, status: 0, ms, body: bodyLog, error: { error: String(e), pista: PISTA_PYTHON } });
+    return { ok: false, status: 0, data: null, ms };
+  }
+}
+
+async function probarPython(boton) {
+  ocupado(boton, true);
+  const r = await apiPython("GET", "/health");
+  ocupado(boton, false);
+
+  const salud = r.data || {};
+  $("pyConn").className = "badge " + (r.ok ? "b-ok" : "b-err");
+  $("pyConn").textContent = r.ok ? "python ok" : r.sinUrl ? "sin URL" : r.status ? "python " + r.status : "python off";
+  $("pyTess").className = "badge " + (salud.tesseract ? "b-ok" : "b-err");
+  $("pyTess").textContent = salud.tesseract || "tesseract ?";
+
+  if (r.sinUrl) return;
+  if (!r.status) {
+    $("pySalud").innerHTML = '<div class="diag"><div class="p">NO_CONECTA</div><div class="m">' + PISTA_PYTHON + "</div></div>";
+    return;
+  }
+  if (r.status === 401) {
+    $("pySalud").innerHTML = '<div class="diag"><div class="p">401 NO_AUTORIZADO</div><div class="m">Lo levantaste con DOCVERIFY_TOKEN: pegá el mismo valor acá arriba.</div></div>';
+    return;
+  }
+  $("pySalud").innerHTML = salud.tesseract
+    ? '<div class="diag ok"><div class="p">LISTO</div><div class="m">Verificador v' + salud.version + ", " + salud.tesseract +
+      ". Ya podés usar <b>Leer con el Python local</b> en cada documento.</div></div>"
+    : '<div class="diag"><div class="p">SIN_TESSERACT</div><div class="m">El servidor está levantado pero le falta el binario de tesseract: el OCR no corre y toda foto va a fallar.</div></div>';
+}
+
+/** El archivo tal cual, en base64 y sin el prefijo `data:`. */
+function aBase64(archivo) {
+  return new Promise((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => resolve(String(lector.result).split(",")[1]);
+    lector.onerror = () => reject(new Error("No se pudo leer " + archivo.name));
+    lector.readAsDataURL(archivo);
+  });
+}
+
+/**
+ * Manda al Python las dos fotos YA elegidas para este documento. No pasa por
+ * Cloudinary ni por el backend: van del navegador al localhost, en base64, y
+ * el verificador las borra apenas termina.
+ */
+async function leerConPython(kind, boton) {
+  const slots = kind === "dni"
+    ? { dni_front: $("f-dni-front").files[0], dni_back: $("f-dni-back").files[0] }
+    : { license_front: $("f-license-front").files[0], license_back: $("f-license-back").files[0] };
+
+  const cargadas = Object.entries(slots).filter(([, archivo]) => archivo);
+  if (!cargadas.length) {
+    $("py-" + kind).innerHTML = '<div class="note">Elegí las fotos de arriba primero: el Python lee esos mismos archivos, sin subirlos a ningún lado.</div>';
+    return;
+  }
+
+  ocupado(boton, true);
+  $("py-" + kind).innerHTML = '<div class="muted" style="margin-top:10px"><span class="spin"></span> Leyendo… puede tardar 30-60 s por documento.</div>';
+  try {
+    const documentos = {};
+    const pesos = {};
+    for (const [slot, archivo] of cargadas) {
+      documentos[slot] = await aBase64(archivo);
+      // Al log el tamaño, nunca la foto entera.
+      pesos[slot] = "<base64 " + (documentos[slot].length / 1048576).toFixed(2) + " MB>";
+    }
+    const r = await apiPython("POST", "/analyze", { documentos }, { documentos: pesos });
+    pintarLecturaPython(kind, r, Object.keys(documentos));
+  } finally {
+    ocupado(boton, false);
+  }
+}
+
+function pintarLecturaPython(kind, r, slots) {
+  const caja = $("py-" + kind);
+  if (r.sinUrl) {
+    caja.innerHTML = '<div class="diag"><div class="p">FALTA_LA_URL</div><div class="m">Poné la URL del verificador Python en la cabecera (http://localhost:8000).</div></div>';
+    return;
+  }
+  if (!r.status) {
+    caja.innerHTML = '<div class="diag"><div class="p">NO_CONECTA</div><div class="m">' + PISTA_PYTHON + "</div></div>";
+    return;
+  }
+  if (!r.ok || !r.data || r.data.ok === false) {
+    const e = (r.data && r.data.error) || {};
+    caja.innerHTML = '<div class="diag"><div class="p">' + r.status + " " + (e.code || "ERROR") + '</div><div class="m">' +
+      (e.message || "El verificador contestó un error.") +
+      (r.status === 413 ? " Mandá un documento por vez: el tope es 32 MB por pedido." : "") + "</div></div>";
+    return;
+  }
+
+  const docs = r.data.documentos || {};
+  const desacuerdos = camposEnConflicto(docs);
+  let html = '<div class="sep"></div><div class="btns" style="margin-bottom:8px"><span class="badge b-ok">200</span>' +
+    '<span class="muted">verificador v' + r.data.version + " · " + (r.ms / 1000).toFixed(1) + " s · lectura directa, sin backend</span></div>";
+
+  if (desacuerdos.length) {
+    html += '<div class="note">Los protocolos no coinciden en: <b>' + desacuerdos.join(", ") +
+      "</b>. El backend no aprueba con un dato en conflicto — sacá de nuevo la foto que se leyó peor.</div>";
+  }
+
+  for (const slot of slots) {
+    const doc = docs[slot];
+    const meta = SLOTS_PY[slot];
+    html += '<div class="slot" style="margin-top:10px"><h4>' + meta.titulo +
+      ' <span class="muted">— ' + meta.protos + "</span></h4>";
+    if (!doc) { html += '<div class="diag"><div class="p">SIN_RESPUESTA</div></div></div>'; continue; }
+    if (doc.error) {
+      html += '<div class="diag"><div class="p">' + doc.error.code + '</div><div class="m">' + doc.error.message + "</div></div>";
+    }
+    for (const [proto, obj] of Object.entries(doc)) {
+      if (proto === "error" || !obj || typeof obj !== "object") continue;
+      const campos = Object.entries(obj).filter(([k]) => k !== "title" && k !== "error");
+      const leidos = campos.filter(([, v]) => v !== null && v !== undefined).length;
+      html += '<div style="margin-top:8px"><span class="badge ' +
+        (obj.error ? "b-err" : leidos === campos.length ? "b-ok" : leidos ? "b-warn" : "b-mute") + '">' +
+        (obj.title || proto) + " · " + leidos + "/" + campos.length + "</span>";
+      if (obj.error) {
+        html += '<div class="diag"><div class="p">' + obj.error.code + '</div><div class="m">' + obj.error.message + "</div></div>";
+      }
+      html += "<table><tr><th>Campo</th><th>Valor leído</th></tr>" + campos.map(([k, v]) => {
+        const vacio = v === null || v === undefined;
+        const clase = vacio ? "st-vacio" : desacuerdos.includes(k) ? "st-conflicto" : "";
+        return '<tr class="' + clase + '"><td>' + k + '</td><td class="mono">' +
+          (vacio ? '<span class="muted">null</span>' : String(v)) + "</td></tr>";
+      }).join("") + "</table></div>";
+    }
+    html += "</div>";
+  }
+  caja.innerHTML = html;
+}
+
+/**
+ * Campos que dos protocolos leyeron distinto. No es la política del backend
+ * —esa vive en document-match.service.ts y no se replica acá— sino lo único
+ * que se puede decir mirando solo la lectura: si el PDF417 y el MRZ no dicen
+ * lo mismo, una de las dos fotos salió mal.
+ */
+function camposEnConflicto(docs) {
+  const lecturas = {};
+  for (const doc of Object.values(docs)) {
+    for (const [proto, obj] of Object.entries(doc || {})) {
+      if (proto === "error" || !obj || typeof obj !== "object") continue;
+      for (const [campo, valor] of Object.entries(obj)) {
+        if (campo === "title" || campo === "error" || valor === null || valor === undefined) continue;
+        // Comparación laxa a propósito: "20.123.456" y "20123456" son el
+        // mismo documento leído por dos protocolos distintos.
+        const canon = String(valor).toUpperCase().replace(/[^A-Z0-9]/g, "");
+        (lecturas[campo] = lecturas[campo] || new Set()).add(canon);
+      }
+    }
+  }
+  return Object.entries(lecturas).filter(([, vistos]) => vistos.size > 1).map(([campo]) => campo);
 }
 
 // ══════════════════════════════════════════════════════════════════════════

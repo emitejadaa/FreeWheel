@@ -1,6 +1,9 @@
 """
-EL CONTRATO DE SALIDA DEL VERIFICADOR
-=====================================
+LO QUE DEVUELVE EL VERIFICADOR
+==============================
+
+Dos cosas, y nada más: la forma del resultado de cada foto y la forma de un
+error. Todo lo demás del subproyecto devuelve una de las dos.
 
 Cada foto devuelve un objeto por protocolo de extracción. Dentro de cada
 objeto: `title` (el protocolo) y SIEMPRE todos los atributos extraíbles en
@@ -22,7 +25,32 @@ from __future__ import annotations
 
 from typing import Any
 
-# Qué atributos lleva cada objeto de cada foto. Es la ÚNICA definición del
+
+# ══════════════════════════════════════════════════════════════════════════
+#  La forma de un resultado: salió bien y hay datos, o salió mal y hay un
+#  motivo con código y mensaje. Nunca una excepción suelta, nunca un None
+#  sin explicación.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def ok(**datos: Any) -> dict:
+    return {"ok": True, **datos}
+
+
+def error(code: str, message: str) -> dict:
+    return {"ok": False, "error": {"code": code, "message": message}}
+
+
+def desde_excepcion(code: str, exc: BaseException) -> dict:
+    """Una excepción como error, con el tipo adentro del mensaje: es lo único
+    que llega hasta el usuario, así que tiene que decir algo por sí solo."""
+    return error(code, f"{type(exc).__name__}: {exc}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  El contrato de salida
+# ══════════════════════════════════════════════════════════════════════════
+
 # contrato: analyze.py la usa para armar la salida y los tests para
 # verificarla.
 CONTRATO: dict[str, dict[str, list[str]]] = {

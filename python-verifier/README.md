@@ -41,34 +41,29 @@ echo '{"documentos": {"dni_front": "testDocuments/dniFrente.jpeg"}}' \
 
 ## Probarlo en el navegador, sin backend
 
-Hay un front que le habla **directo a este servidor**, sin NestJS, sin cuenta,
-sin Cloudinary y sin base de datos: subís las fotos y ves campo por campo lo
-que leyó cada protocolo. Sirve para probar la lectura mientras se decide dónde
-va a correr el Python.
+El front de prueba de la verificación (`public/demo/verificacion.html`) tiene
+una sección **"Verificador Python en tu máquina"**: manda las fotos que
+cargaste directo a este servidor y muestra campo por campo lo que leyó cada
+protocolo, sin NestJS, sin cuenta, sin Cloudinary y sin base de datos. Sirve
+para trabajar la lectura mientras se decide dónde va a correr el Python.
 
 ```bash
 # 1. levantar el verificador con CORS prendido
 DOCVERIFY_ALLOW_ANONYMOUS=true DOCVERIFY_CORS_ORIGIN='*' .venv/bin/python server.py
 
-# 2. abrir el front (cualquiera de las dos)
-xdg-open ../public/demo/verificador-python.html          # el archivo, sin servidor
-python3 -m http.server 5500 -d ../public/demo            # http://localhost:5500/verificador-python.html
+# 2. abrir el demo: es un HTML suelto, no hace falta servidor
+xdg-open ../public/demo/verificacion.html
 ```
 
 `DOCVERIFY_CORS_ORIGIN` **no es opcional para esto**: sin ella el navegador ni
 llega a mandar el pedido (el server contesta el preflight sin las cabeceras y
 loguea `preflight rechazado`). Acepta `*`, o los orígenes separados por coma
-(`http://localhost:5500`; el archivo abierto con `file://` manda `null`).
+(el archivo abierto con `file://` manda `null`).
 
 Por defecto está **apagada**, que es lo que corresponde en el deploy: ahí el
 único que llama es el backend, servidor contra servidor, y con CORS abierto
 cualquier página que la persona visite podría mandarle documentos a este
 servidor desde su navegador.
-
-El front además **cruza** lo leído entre protocolos y contra los datos que le
-cargues, para ver de una si las fotos alcanzarían. Ese cruce es una réplica
-local y simplificada de `src/verification/matching/document-match.service.ts`:
-el veredicto de verdad lo sigue dando el backend.
 
 ## Tests
 
@@ -89,19 +84,10 @@ persona puede reenviar fotos o pedir revisión de un admin.
 
 ### 1. Levantarlo
 
-Hay un `Dockerfile` que ya trae tesseract con español, y configs listas para
-los dos hosts más simples:
+El `Dockerfile` ya trae tesseract con español y corre sin root. Sirve igual en
+Render, Railway, Fly, ECS o un VPS: no hay nada atado a un host.
 
 ```bash
-# Render (plan free): New → Blueprint → apuntá a python-verifier/render.yaml
-
-# Fly.io
-cd python-verifier
-fly launch --no-deploy --copy-config
-fly secrets set DOCVERIFY_TOKEN="$(openssl rand -hex 32)"
-fly deploy
-
-# O a mano, donde sea que corra un contenedor
 docker build -t freewheel-docverify .
 docker run -p 8000:8000 -e DOCVERIFY_TOKEN="$(openssl rand -hex 32)" freewheel-docverify
 ```
@@ -146,17 +132,23 @@ conviene bajarlo a ~50 s: así el backend contesta "el verificador remoto no
 contestó" —un motivo entendible, con la posibilidad de reintentar— en vez de que
 Vercel mate la función sin explicación.
 
-Importa sobre todo con planes que apagan el servicio por inactividad (el free de
-Render): el primer pedido después de dormir puede tardar un minuto entero.
+Importa sobre todo con planes que apagan el servicio por inactividad: el primer
+pedido después de dormir puede tardar un minuto entero.
 
 ## Módulos
 
-- `analyze.py` — punto de entrada: JSON por stdin → JSON por stdout.
-- `contrato.py` — la forma de la salida (qué objeto y campos por foto).
-- `imagenes.py` — apertura de la foto y variantes para el código de barras.
-- `codigos_barras.py` — PDF417 del DNI (zxing-cpp) y su parser.
-- `mrz.py` — parser TD1 con dígitos verificadores.
-- `document_geometry.py` — bordes, perspectiva y orientación (OpenCV + OSD).
-- `zonas_documento.py` — dónde está cada campo en la tarjeta rectificada.
-- `extraccion_campos.py` — OCR posicional, MRZ del dorso, dorso de licencia.
-- `normalizadores_campos.py` — limpieza e interpretación de valores crudos.
+Seis, más los tests. Cada uno tiene un test con su nombre.
+
+- `analyze.py` — el análisis (`analizar()`, las fotos en paralelo) y la entrada
+  por stdin/stdout. Lo que corre el backend como subproceso.
+- `server.py` — la otra entrada, HTTP, sobre el mismo `analizar()`.
+- `contrato.py` — la forma de la salida y la de los errores.
+- `imagen.py` — abrir la foto, enderezarla (bordes, perspectiva, orientación) y
+  el probador de rotaciones que usan los tres lugares que tienen que decidir
+  para qué lado va la tarjeta.
+- `codigos.py` — los dos protocolos que se validan solos: PDF417 (zxing-cpp) y
+  MRZ TD1 con sus dígitos verificadores.
+- `campos.py` — las zonas de la tarjeta y todo el OCR: campos por posición, MRZ
+  del dorso y dorso de licencia.
+- `normalizadores.py` — limpieza de valores crudos (fechas, nombres, CUIL). No
+  importa nada del subproyecto: lo usan tanto los códigos como el OCR.

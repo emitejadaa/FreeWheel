@@ -1,31 +1,125 @@
 """
-Arma los campos de cada foto: OCR posicional por zonas y, en el dorso del
-DNI, el MRZ, todos reacomodados al mismo vocabulario de nombres de campo
-(apellido, nombre, nDocumento, etc.) para poder comparar entre protocolos y
-entre documentos.
+LEER LOS CAMPOS DE UNA FOTO
+===========================
+
+Todo lo que sale de la IMAGEN de un documento: OCR posicional por zonas, el
+MRZ del dorso del DNI y el dorso de la licencia (que no tiene zonas fijas).
+Los tres devuelven la misma estructura rica {valor, ok, motivo} con el
+vocabulario de campos compartido, para que contrato.py la aplane sin saber de
+dónde vino cada dato.
 
 Cada campo se intenta leer de forma independiente: si uno falla queda con
 valor None y su motivo, y el resto se arma igual. Nunca una excepción de un
 campo corta el análisis de la foto.
+
+El código de barras del DNI no pasa por acá: no depende de la rectificación y
+lo decodifica codigos.py.
+
+LAS ZONAS son el punto de partida: dónde está cada campo en la tarjeta ya
+rectificada, como fracción (0.0-1.0) del ancho y el alto. Están calibradas a
+ojo contra las fotos reales de testDocuments/ — se ajustan acá mismo si algún
+recorte no cae sobre el texto correcto.
 """
 
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Any
 
-from document_geometry import rectificar_documento
-from mrz import buscar_mrz, parsear_mrz_td1
-from normalizadores_campos import (
+from codigos import buscar_mrz, parsear_mrz_td1
+from imagen import SEGURO, mejor_rotacion, rectificar_documento
+from normalizadores import (
     limpiar_cuil,
     limpiar_domicilio,
     limpiar_nombre,
     limpiar_sexo,
     limpiar_solo_digitos,
     normalizar_fecha,
+    sin_acentos,
 )
-from zonas_documento import ZONA_MRZ_DNI_DORSO, ZONAS, zona_a_pixeles
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Dónde está cada campo en la tarjeta rectificada
+# ══════════════════════════════════════════════════════════════════════════
+
+ZONAS: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    "dni_front": {
+        "apellido":         (0.36, 0.18, 1.00, 0.28),
+        "nombre":           (0.36, 0.31, 1.00, 0.41),
+        "sexo":             (0.36, 0.44, 0.46, 0.53),
+        "fechaNacimiento":  (0.36, 0.54, 0.75, 0.63),
+        "fechaEmision":     (0.36, 0.64, 0.75, 0.73),
+        "fechaVencimiento": (0.36, 0.74, 0.75, 0.84),
+        "nDocumento":       (0.00, 0.85, 0.33, 1.00),
+    },
+    "dni_back": {
+        "domicilio": (0.02, 0.04, 0.72, 0.18),
+        "cuil":      (0.02, 0.52, 0.40, 0.62),
+    },
+    "license_front": {
+        "numLicencia":      (0.36, 0.22, 0.60, 0.34),
+        "apellido":         (0.36, 0.36, 0.80, 0.49),
+        "nombre":           (0.38, 0.51, 0.65, 0.60),
+        "domicilio":        (0.36, 0.59, 0.92, 0.79),
+        "fechaNacimiento":  (0.34, 0.79, 0.62, 0.94),
+        "fechaVencimiento": (0.62, 0.87, 0.98, 1.00),
+    },
+    # El dorso de la licencia no usa zonas: el CUIL y la leyenda de
+    # principiante se buscan en el texto completo (extraccion_campos), porque
+    # su posición varía entre jurisdicciones y el CUIL trae su propio dígito
+    # verificador para validar la lectura.
+}
+
+# Franja del MRZ (dorso del DNI): tres líneas, se OCR-ea como bloque único y
+# se parsea con buscar_mrz / parsear_mrz_td1 — no campo por campo, porque el
+# MRZ se interpreta por posición de caracter dentro de la línea, no por
+# ubicación visual.
+ZONA_MRZ_DNI_DORSO: tuple[float, float, float, float] = (0.02, 0.68, 1.00, 1.00)
+
+
+def zona_a_pixeles(
+    zona: tuple[float, float, float, float],
+    ancho: int,
+    alto: int,
+    padding: float = 0.02,
+) -> tuple[int, int, int, int]:
+    """Convierte una zona fraccionaria a un recorte en píxeles, con margen."""
+    x0, y0, x1, y1 = zona
+    pad_x = (x1 - x0) * padding
+    pad_y = (y1 - y0) * padding
+    x0 = max(0.0, x0 - pad_x)
+    y0 = max(0.0, y0 - pad_y)
+    x1 = min(1.0, x1 + pad_x)
+    y1 = min(1.0, y1 + pad_y)
+    return (int(x0 * ancho), int(y0 * alto), int(x1 * ancho), int(y1 * alto))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Fechas impresas
+# ══════════════════════════════════════════════════════════════════════════
+
+# "28 ABR 2027", "28/04/2027" o "28 04 2027". Una sola expresión para las dos
+# búsquedas por texto (la fecha de principiante del dorso y las fechas del
+# frente de la licencia): lo que no sea una fecha real lo descarta después
+# normalizar_fecha.
+_FECHA_IMPRESA = re.compile(
+    r"\d{1,2}\s*[/-]?\s*(?:[A-ZÑ]{3}(?:\s*/?\s*[A-Z]{3})?|\d{1,2})\s*[/-]?\s*\d{4}"
+)
+
+
+def _fechas_cerca(lineas: list[str], indice: int) -> list[str]:
+    """Las fechas interpretables del renglón y del siguiente: en los dos
+    documentos el valor va pegado a su rótulo o justo debajo."""
+    candidatas = _FECHA_IMPRESA.findall(lineas[indice])
+    if indice + 1 < len(lineas):
+        candidatas += _FECHA_IMPRESA.findall(lineas[indice + 1])
+    return [f for f in (normalizar_fecha(c.strip()) for c in candidatas) if f]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  OCR posicional por zonas
+# ══════════════════════════════════════════════════════════════════════════
 
 LIMPIADOR_POR_CAMPO = {
     "apellido": limpiar_nombre,
@@ -182,6 +276,11 @@ def extraer_campos_ocr(imagen_rectificada: Any, documento_slot: str) -> dict[str
 #  MRZ del dorso del DNI
 # ══════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MRZ del dorso del DNI
+# ══════════════════════════════════════════════════════════════════════════
+
 CAMPOS_MRZ = (
     "apellido",
     "nombre",
@@ -250,22 +349,16 @@ def _mrz_desde_imagen(imagen_derecha: Any) -> dict | None:
 
 
 def _corregir_orientacion_dni_dorso(imagen_derecha: Any) -> tuple[Any, dict | None]:
-    """El OSD de document_geometry.py no siempre acierta la orientación del
-    dorso del DNI (documentado y aceptado como límite conocido). El MRZ trae
-    sus propios dígitos verificadores, así que es una señal mucho más fuerte
-    que la confianza genérica de OCR: si no valida en la orientación que
-    llegó, se prueban las otras 3 rotaciones y se usa la que sí valida."""
-    datos = _mrz_desde_imagen(imagen_derecha)
-    if datos is not None:
-        return imagen_derecha, datos
-
-    for grados in (90, 180, 270):
-        candidata = imagen_derecha.rotate(-grados, expand=True)
+    """El OSD de imagen.py no siempre acierta la orientación del dorso del DNI
+    (documentado y aceptado como límite conocido). El MRZ trae sus propios
+    dígitos verificadores, así que es una señal mucho más fuerte que la
+    confianza genérica de OCR: se prueba cada rotación y gana la que valida."""
+    def mrz(candidata: Any):
         datos = _mrz_desde_imagen(candidata)
-        if datos is not None:
-            return candidata, datos
+        return (SEGURO, datos) if datos is not None else None
 
-    return imagen_derecha, None
+    imagen, _grados, datos = mejor_rotacion(imagen_derecha, mrz)
+    return imagen, datos
 
 
 def extraer_campos_mrz_dni_dorso(imagen_derecha: Any) -> tuple[dict[str, dict], Any]:
@@ -303,17 +396,22 @@ def extraer_campos_mrz_dni_dorso(imagen_derecha: Any) -> tuple[dict[str, dict], 
 # ══════════════════════════════════════════════════════════════════════════
 
 # Candidatos a CUIL dentro de un texto: 11 dígitos con o sin separadores.
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Dorso de la licencia: CUIL y leyenda de principiante
+#
+#  Sin zonas fijas: la posición varía entre jurisdicciones y el propio dorso
+#  suele venir en cualquier orientación. Se lee el texto completo en las 4
+#  rotaciones y se elige la que produce un CUIL cuyo dígito verificador
+#  cierra — un CUIL mal leído casi nunca pasa ese control por azar, así que
+#  valida a la vez la lectura y la orientación.
+# ══════════════════════════════════════════════════════════════════════════
+
 _CUIL_EN_TEXTO = re.compile(r"\d{2}[-–—.\s]?\d{8}[-–—.\s]?\d")
 
 # "PRINCIPIANTE" tolerando las confusiones típicas del OCR (I/1/l).
 _LEYENDA_PRINCIPIANTE = re.compile(r"PR[I1L]NC[I1L]P[I1L]ANTE")
-_FECHA_EN_TEXTO = re.compile(r"\d{1,2}[/-]\d{1,2}[/-]\d{4}")
-
-
-def _sin_acentos(texto: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn"
-    )
 
 
 def _cuil_en_texto(texto: str) -> str | None:
@@ -329,17 +427,14 @@ def _texto_dorso_licencia(imagen_derecha: Any) -> str:
     CUIL válido; si ninguna, la que más palabras reconoce."""
     import pytesseract
 
-    mejor_texto, mejor_palabras = "", -1
-    for grados in (0, 90, 180, 270):
-        candidata = imagen_derecha.rotate(-grados, expand=True) if grados else imagen_derecha
+    def leer(candidata: Any):
         texto = pytesseract.image_to_string(candidata, lang="spa+eng")
         if _cuil_en_texto(texto) is not None:
-            return texto
-        palabras = len(texto.split())
-        if palabras > mejor_palabras:
-            mejor_texto, mejor_palabras = texto, palabras
+            return SEGURO, texto
+        return len(texto.split()), texto
 
-    return mejor_texto
+    _imagen, _grados, texto = mejor_rotacion(imagen_derecha, leer)
+    return texto or ""
 
 
 def _principiante_en_lineas(lineas: list[str]) -> dict[str, dict]:
@@ -354,19 +449,12 @@ def _principiante_en_lineas(lineas: list[str]) -> dict[str, dict]:
         if not _LEYENDA_PRINCIPIANTE.search(linea):
             continue
 
-        # La fecha límite suele estar en el mismo renglón que la leyenda o
-        # en el siguiente ("PRINCIPIANTE HASTA 28/10/2026").
-        candidatas = _FECHA_EN_TEXTO.findall(linea)
-        if indice + 1 < len(lineas):
-            candidatas += _FECHA_EN_TEXTO.findall(lineas[indice + 1])
-
-        for candidata in candidatas:
-            fecha = normalizar_fecha(candidata)
-            if fecha:
-                return {
-                    "esPrincipiante": {"valor": True, "ok": True},
-                    "finPrincipiante": {"valor": fecha, "ok": True},
-                }
+        fechas = _fechas_cerca(lineas, indice)
+        if fechas:
+            return {
+                "esPrincipiante": {"valor": True, "ok": True},
+                "finPrincipiante": {"valor": fechas[0], "ok": True},
+            }
 
         return {
             "esPrincipiante": {"valor": True, "ok": True},
@@ -386,7 +474,7 @@ def _principiante_en_lineas(lineas: list[str]) -> dict[str, dict]:
 def extraer_dorso_licencia(imagen_derecha: Any) -> dict[str, dict]:
     """CUIL + leyenda de principiante del dorso, desde el texto completo."""
     texto = _texto_dorso_licencia(imagen_derecha)
-    lineas = [_sin_acentos(l).upper() for l in texto.splitlines() if l.strip()]
+    lineas = [sin_acentos(l).upper() for l in texto.splitlines() if l.strip()]
 
     if not lineas:
         detalle = "Tesseract no reconoció texto en el dorso de la licencia."
@@ -420,15 +508,18 @@ def extraer_dorso_licencia(imagen_derecha: Any) -> dict[str, dict]:
 # Etiquetas impresas junto a cada fecha del frente de la licencia. El layout
 # cambia entre jurisdicciones, así que cuando la zona fija no da resultado se
 # busca la fecha por su etiqueta en el texto completo.
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Frente de la licencia: fechas por etiqueta, cuando la zona fija no alcanza
+# ══════════════════════════════════════════════════════════════════════════
+
 _ETIQUETAS_FECHA_LICENCIA = {
     "fechaNacimiento": re.compile(r"FECHA DE NAC|DATE OF BIRTH"),
     "fechaVencimiento": re.compile(r"VENCIM[I1L]ENTO|EXP[I1L]RES"),
 }
 
 # "28 ABR 2027" o "28/04/2027".
-_FECHA_IMPRESA = re.compile(
-    r"\d{1,2}\s*[/-]?\s*(?:[A-ZÑ]{3}(?:\s*/?\s*[A-Z]{3})?|\d{1,2})\s*[/-]?\s*\d{4}"
-)
 
 
 def _fecha_por_etiqueta(lineas: list[str], etiqueta: Any) -> str | None:
@@ -437,15 +528,9 @@ def _fecha_por_etiqueta(lineas: list[str], etiqueta: Any) -> str | None:
     for indice, linea in enumerate(lineas):
         if not etiqueta.search(linea):
             continue
-        candidatas = [m.group(0) for m in _FECHA_IMPRESA.finditer(linea)]
-        if indice + 1 < len(lineas):
-            candidatas += [
-                m.group(0) for m in _FECHA_IMPRESA.finditer(lineas[indice + 1])
-            ]
-        for candidata in candidatas:
-            fecha = normalizar_fecha(candidata.strip())
-            if fecha:
-                return fecha
+        fechas = _fechas_cerca(lineas, indice)
+        if fechas:
+            return fechas[0]
     return None
 
 
@@ -467,7 +552,7 @@ def _completar_fechas_licencia(
     import pytesseract
 
     texto = pytesseract.image_to_string(imagen_derecha, lang="spa+eng")
-    lineas = [_sin_acentos(l).upper() for l in texto.splitlines() if l.strip()]
+    lineas = [sin_acentos(l).upper() for l in texto.splitlines() if l.strip()]
     if not lineas:
         return
 
