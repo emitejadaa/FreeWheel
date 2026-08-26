@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hmac
 import json
 import os
@@ -330,7 +331,23 @@ def main() -> int:
         return 1
 
     puerto = int(os.environ.get("PORT") or 8000)
-    servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Handler)
+    try:
+        servidor = ThreadingHTTPServer(("0.0.0.0", puerto), Handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        # Casi siempre es otro verificador que quedó corriendo de antes, y el
+        # traceback de socketserver no lo dice por ningún lado. Peor: ese otro
+        # puede estar levantado SIN CORS, y entonces el front tampoco anda.
+        sys.stderr.write(
+            f"[docverify] NO ARRANCA: el puerto {puerto} ya está ocupado.\n"
+            "  Suele ser otro server.py que quedó vivo de un intento anterior.\n"
+            f"  Ver quién lo tiene:  ss -ltnp 'sport = :{puerto}'\n"
+            "  Bajarlo:             pkill -f 'python.*server[.]py'\n"
+            f"  O usar otro puerto:  PORT={puerto + 1} ... server.py\n"
+            "                       (y cambiá la URL en el front demo)\n"
+        )
+        return 1
     tesseract = _version_tesseract()
     origenes = _origenes_cors()
     sys.stderr.write(
