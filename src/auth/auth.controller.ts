@@ -7,12 +7,12 @@ import {
   Res,
   UseGuards,
 } from "@nestjs/common";
-import { AuthGuard } from "@nestjs/passport";
 import { ConfigService } from "@nestjs/config";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 import { OnboardingAuthGuard } from "./guards/onboarding-auth.guard";
+import { GoogleAuthGuard } from "./guards/google-auth.guard";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterStartDto } from "./dto/register-start.dto";
 import { RegisterCompleteDto } from "./dto/register-complete.dto";
@@ -88,14 +88,25 @@ export class AuthController {
     return this.authService.resetPassword(dto);
   }
 
+  /*
+    GoogleAuthGuard en vez de AuthGuard("google") pelado.
+
+    Hace lo mismo, y además contesta algo entendible cuando el servidor no tiene
+    cargadas las credenciales de Google. Sin credenciales la estrategia no se
+    registra (ver auth.module.ts, y está bien que sea así: passport revienta al
+    construirse sin ellas y se llevaría puesta la aplicación entera), pero
+    entonces passport tiraba `Unknown authentication strategy "google"` y al
+    navegador le llegaba un "Internal server error" pelado. Una situación
+    prevista mostrada como si el servidor se hubiera roto.
+  */
   @Get("google")
-  @UseGuards(AuthGuard("google"))
+  @UseGuards(GoogleAuthGuard)
   googleAuth() {
     // Passport redirige a Google automáticamente
   }
 
   @Get("google/callback")
-  @UseGuards(AuthGuard("google"))
+  @UseGuards(GoogleAuthGuard)
   async googleCallback(@Req() req: Request, @Res() res: Response) {
     const result = await this.authService.googleLogin(
       req.user as GoogleProfilePayload,
