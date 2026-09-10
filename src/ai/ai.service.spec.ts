@@ -51,6 +51,51 @@ describe("AiService.vision", () => {
     expect(result.detected).toBe("auto sedán gris");
   });
 
+  it("returns the traits split up, so the front can compare one photo against another", async () => {
+    // `detected` es para mostrar; los rasgos son para comparar. Dos fotos del
+    // mismo auto pueden describirse como "auto blanco" y "Renault Clio", que
+    // como texto no se parecen en nada: sin los rasgos separados, el front las
+    // daría por autos distintos.
+    const service = conRespuesta(
+      '{"es_vehiculo": true, "es_real": true, "que_es": "SUV gris", ' +
+        '"tipo": "SUV", "color": "gris", "marca_modelo": "Toyota Corolla Cross", ' +
+        '"motivo": "Es un auto real."}',
+    );
+
+    const result = await service.vision(IMAGEN);
+
+    expect(result.rasgos).toEqual({
+      tipo: "SUV",
+      color: "gris",
+      marcaModelo: "Toyota Corolla Cross",
+    });
+  });
+
+  it("leaves a trait in null instead of guessing it", async () => {
+    const service = conRespuesta(
+      '{"es_vehiculo": true, "es_real": true, "que_es": "auto blanco", ' +
+        '"tipo": "hatchback", "color": "blanco", "marca_modelo": null}',
+    );
+
+    expect((await service.vision(IMAGEN)).rasgos).toEqual({
+      tipo: "hatchback",
+      color: "blanco",
+      marcaModelo: null,
+    });
+  });
+
+  it("asks for the traits in Spanish even when the answer is in another language", async () => {
+    // Los rasgos son etiquetas para comparar, no texto para leer. Traducidos, la
+    // misma SUV sería "suv" o "SUV" según el idioma de quien publica y dos fotos
+    // del mismo auto no coincidirían nunca.
+    const service = conRespuesta('{"es_vehiculo": true, "es_real": true}');
+    await service.vision(IMAGEN, "en");
+
+    const enviado = promptEnviado();
+    expect(enviado).toContain("marca_modelo");
+    expect(enviado).not.toContain('"motivo", "que_es", "tipo"');
+  });
+
   it("rejects a toy car even though it has the shape of a car", async () => {
     const service = conRespuesta(
       '{"es_vehiculo": true, "es_real": false, "que_es": "auto a batería de juguete", "motivo": "Es un auto de juguete a batería para chicos, no un vehículo real."}',

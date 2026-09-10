@@ -818,6 +818,27 @@ export class AiService {
     /** Qué se vio en la foto, para explicarle a la persona por qué no sirve. */
     reason?: string;
     detected?: string | null;
+    /**
+     * Los mismos rasgos, pero SEPARADOS, para poder compararlos entre fotos.
+     *
+     * `detected` es una frase de dos o tres palabras pensada para mostrarse
+     * ("SUV gris"). Sirve para leerla, no para compararla: dos fotos del mismo
+     * auto descritas como "auto blanco" y "Renault Clio" no se parecen en nada
+     * como texto, y una comparación por palabras las daría por autos distintos.
+     *
+     * Con los rasgos separados eso se puede hacer bien, y es lo que necesita el
+     * front para no dejar publicar fotos de dos autos distintos en el mismo
+     * aviso (el caso real: dos fotos de un Clio y una de un Corolla Cross, las
+     * tres aprobadas porque las tres eran autos de verdad).
+     *
+     * Cualquiera de los tres puede venir en null: si no se ve la marca, no se
+     * inventa. Un rasgo que falta no se compara.
+     */
+    rasgos?: {
+      tipo: string | null;
+      color: string | null;
+      marcaModelo: string | null;
+    };
     code?: AiUnavailableCode;
   }> {
     const answer = await this.askVisionModel(
@@ -838,7 +859,16 @@ export class AiService {
         "Respondé SOLO un JSON válido, sin texto alrededor, con esta forma exacta:\n" +
         '{"es_vehiculo": true|false, "es_real": true|false, ' +
         '"que_es": "en 2 o 3 palabras qué se ve", ' +
+        '"tipo": "la carrocería en UNA palabra (hatchback, sedan, suv, pickup, van, coupe, familiar, moto) o null", ' +
+        '"color": "el color principal en UNA palabra o null", ' +
+        '"marca_modelo": "la marca y el modelo si se leen con seguridad, o null", ' +
         '"motivo": "una frase corta explicando la decisión"}\n' +
+        // Los tres rasgos nuevos se piden EN CASTELLANO siempre, y por eso
+        // quedan afuera de la lista de campos que se traducen: no son texto para
+        // mostrar, son las etiquetas con las que el front compara una foto
+        // contra otra. Traducidas, la misma SUV sería "suv" en una foto y "SUV"
+        // en otra según el idioma de quien publica, y no coincidirían nunca.
+        "Si no estás seguro de alguno de esos tres, poné null en vez de adivinar.\n" +
         answerInLanguage(lang, ["motivo", "que_es"]),
       // Mismo motivo que en la revisión de documentos: con un modelo de
       // razonamiento, 220 tokens se van enteros en el análisis y la respuesta
@@ -868,12 +898,20 @@ export class AiService {
     const esReal = parsed.es_real !== false;
     const detected = asText(parsed.que_es);
     const motivo = asText(parsed.motivo);
+    // Los rasgos separados. Un modelo viejo o uno que ignore los campos nuevos
+    // deja los tres en null, y el front sigue funcionando con `detected`.
+    const rasgos = {
+      tipo: asText(parsed.tipo),
+      color: asText(parsed.color),
+      marcaModelo: asText(parsed.marca_modelo),
+    };
 
     if (esVehiculo && esReal) {
       return {
         isVehicle: true,
         reason: motivo ?? VISION_RESULT[lang].realCar,
         detected,
+        rasgos,
       };
     }
 
