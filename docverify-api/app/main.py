@@ -35,9 +35,11 @@ conoce al usuario.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,7 +57,39 @@ logging.basicConfig(
 )
 log = logging.getLogger("docverify")
 
+@asynccontextmanager
+async def ciclo_de_vida(_app: FastAPI):
+    """
+    Prende el motor de OCR apenas arranca el servicio, sin bloquear el arranque.
+
+    Abrir las tres sesiones de ONNX Runtime y reservarles memoria son varios
+    segundos en una instancia con poca CPU. Sin esto los pagaba el PRIMER
+    documento que llegara, que es el peor momento posible: justo después de un
+    arranque en frío, que es cuando el servicio ya viene demorado.
+
+    Va en un hilo y sin esperar el resultado a propósito. Si bloqueara el
+    arranque, el health check no contestaría hasta que el motor estuviera
+    listo, y la plataforma podría dar el deploy por fallido. Así el servicio
+    responde enseguida y se calienta solo por atrás; y si igual llega un
+    documento mientras tanto, `ocr.motor()` está bajo candado y simplemente
+    espera a que termine de cargar, sin abrir un segundo motor.
+    """
+    from . import ocr
+
+    tarea = asyncio.create_task(asyncio.to_thread(ocr.motor))
+    tarea.add_done_callback(
+        lambda t: log.info("motor de OCR listo")
+        if not t.cancelled() and t.exception() is None
+        # No se relanza: un motor que no carga acá va a volver a intentarlo —y
+        # a fallar con su propio error— en el primer análisis. Tumbar el
+        # servicio entero dejaría también sin `/health` a quien lo diagnostica.
+        else log.error("el motor de OCR no cargó al arrancar: %s", t.exception())
+    )
+    yield
+
+
 app = FastAPI(
+    lifespan=ciclo_de_vida,
     title="FreeWheel · API de verificación documental",
     description=(
         "Extrae los datos del DNI y de la licencia nacional de conducir "
@@ -144,11 +178,13 @@ def salud() -> dict:
     """
     Si el servicio está vivo y con qué cuenta.
 
-    Incluye si los motores están CARGADOS, que no es lo mismo que instalados:
-    el de OCR levanta tres modelos ONNX la primera vez que se lo usa, así que
-    el primer análisis después de arrancar tarda varios segundos más que el
-    resto. Saberlo evita diagnosticar como "la API está lenta" lo que es el
-    arranque en frío.
+    `ocr_cargado` dice si el motor de OCR ya está abierto EN ESTE PROCESO, que
+    no es lo mismo que si los modelos están instalados —lo están siempre: vienen
+    dentro del paquete `rapidocr`—. Al arrancar se dispara la carga en segundo
+    plano, así que este campo pasa de false a true solo, en unos segundos, sin
+    que nadie mande una foto. Verlo en false justo después de un deploy es
+    normal; verlo en false minutos después significa que la carga falló, y el
+    motivo está en los logs.
     """
     from . import ocr
 

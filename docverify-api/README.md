@@ -20,9 +20,10 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-La primera llamada tarda unos segundos más: el motor de OCR carga tres modelos
-ONNX (~100 MB, se bajan una sola vez y quedan cacheados). `GET /health` dice si
-ya están cargados.
+Al arrancar, el servicio abre las tres sesiones de ONNX del motor de OCR en
+segundo plano (los modelos vienen dentro del paquete `rapidocr`: no se baja
+nada). Tarda unos segundos y no bloquea nada; `GET /health` dice en
+`ocr_cargado` cuándo terminó.
 
 Documentación interactiva: <http://localhost:8000/docs>
 
@@ -385,9 +386,15 @@ Dos advertencias honestas:
 curl https://<tu-servicio>.onrender.com/health
 ```
 
-Los dos campos que importan son `protegido_con_token: true` (el token quedó
-puesto) y `ocr_cargado: true` (los modelos se precargaron en el build, así que
-no los baja el primer usuario).
+El campo que importa es `protegido_con_token: true`: el token quedó puesto.
+
+`ocr_cargado` dice si el motor está abierto **en el proceso que está
+corriendo**, no si los modelos están instalados —eso lo están siempre, porque
+`rapidocr` los trae adentro del paquete y no se bajan nunca—. Al arrancar, el
+servicio dispara esa carga en segundo plano, así que el campo pasa a `true`
+solo, en unos segundos. Verlo en `false` recién deployado es normal; verlo en
+`false` minutos después significa que la carga falló, y el motivo está en los
+logs.
 
 **5 · Conectarlo al backend.** En las variables de entorno del backend:
 `DOCVERIFY_URL` con la URL de Render (sin barra final) y `DOCVERIFY_TOKEN` con

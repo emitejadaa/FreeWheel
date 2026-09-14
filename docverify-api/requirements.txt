@@ -23,8 +23,9 @@ numpy==2.3.4
 pillow==12.1.0
 
 # ── OCR ──────────────────────────────────────────────────────────────────────
-# Modelos PP-OCR corriendo sobre ONNX Runtime. Se bajan la primera vez que se
-# instancia el motor (~100 MB) y quedan cacheados en ~/.rapidocr.
+# Modelos PP-OCR corriendo sobre ONNX Runtime. Vienen DENTRO del paquete
+# (site-packages/rapidocr/models/), así que no se baja nada en runtime ni hace
+# falta un caché con estado: la imagen se construye una vez y queda cerrada.
 #
 # Es `rapidocr` y NO `rapidocr-onnxruntime`: ese último quedó congelado en
 # Python <3.13 (su última versión, 1.4.4, declara Requires-Python <3.13), así

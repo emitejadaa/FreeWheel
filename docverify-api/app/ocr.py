@@ -287,7 +287,13 @@ def motor():
     """
     El motor de OCR del proceso. Se crea una sola vez y bajo candado: dos
     requests simultáneos en el arranque instanciarían dos motores y cada uno
-    cargaría los tres modelos ONNX por su cuenta.
+    abriría los tres modelos ONNX por su cuenta.
+
+    Los modelos NO se bajan de internet: `rapidocr` 3.x los trae adentro del
+    paquete, en `site-packages/rapidocr/models/`. Lo que cuesta acá es abrir
+    las tres sesiones de ONNX Runtime y reservarles memoria, que en una
+    instancia con poca CPU son varios segundos — por eso `main.py` lo dispara
+    apenas arranca el servicio, en vez de esperar al primer documento.
     """
     global _motor
     if _motor is None:

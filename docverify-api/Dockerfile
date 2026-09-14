@@ -23,9 +23,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# Los modelos de OCR (~100 MB) se bajan la primera vez que se instancia el
-# motor. Se precargan ACÁ, en build, para que no los baje el primer request en
-# producción: si no, la primera persona que sube una foto espera la descarga.
+# Instanciar el motor una vez, en build.
+#
+# NO es para bajar los modelos: `rapidocr` 3.x los trae adentro del paquete
+# (site-packages/rapidocr/models/), así que ya llegaron con el pip install de
+# arriba. Este paso tarda un segundo y sirve para otra cosa: si algo del stack
+# de ONNX no funciona en esta imagen, el build FALLA ACÁ, con el error a la
+# vista, en vez de fallar en producción cuando alguien sube su primer
+# documento.
 RUN python -c "from app.ocr import motor; motor()"
 
 ENV PORT=8000
