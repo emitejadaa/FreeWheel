@@ -16,13 +16,19 @@ DORSO DEL DNI ARGENTINO.
 
 DOS ORÍGENES, y acá la división es tajante:
 
-  · ocr — el DOMICILIO, el LUGAR DE NACIMIENTO y el CUIL. Estos tres datos
-          existen ÚNICAMENTE impresos: no están ni en el PDF417 del frente ni
-          en la MRZ de abajo. Si el OCR no los lee, no hay otra forma de
-          obtenerlos.
-  · mrz — apellido, nombre, sexo, documento y vencimiento, con sus dígitos
-          verificadores. Es la lectura más confiable del documento entero,
-          porque es la única que puede demostrar por sí sola que se leyó bien.
+  · ocr — el CUIL. Es el único dato de esta cara que existe ÚNICAMENTE
+          impreso: no está ni en el PDF417 del frente ni en la MRZ de abajo.
+          Si el OCR no lo lee, no hay otra forma de obtenerlo. El domicilio y
+          el lugar de nacimiento están impresos al lado y ya no se leen: el
+          domicilio del DNI casi nunca coincide con el que la persona cargó
+          —se mudó, lo abrevia distinto— así que cruzarlo produce rechazos
+          falsos sin detectar ningún fraude, y el lugar de nacimiento no
+          decide nada. El código de control hexadecimal tampoco: solo sirve
+          contra el padrón del RENAPER, que no consultamos.
+  · mrz — apellido, nombre, sexo, documento, nacimiento y vencimiento, con sus
+          dígitos verificadores. Es la lectura más confiable del documento
+          entero, porque es la única que puede demostrar por sí sola que se
+          leyó bien.
 
 Este dorso NO tiene PDF417 ni QR: el único código del DNI está en el frente.
 Los dos orígenes correspondientes se informan igual, con disponible=false, para
@@ -52,6 +58,9 @@ CORTES_MRZ = (0.60, 0.55, 0.50, 0.65)
 
 CLAVE = "dni_dorso"
 
+# Las anclas son palabras IMPRESAS que deciden la orientación, no campos: que
+# "DOMICILIO" ya no se extraiga no quita que el rótulo siga estando ahí y siga
+# sirviendo para saber si la foto está cabeza abajo.
 ANCLAS = (
     "DOMICILIO",
     "LUGAR DE NACIMIENTO",
@@ -73,17 +82,16 @@ FORMATOS_CODIGO = ("QRCode",)
 ZONAS_CODIGO: tuple[tuple[float, float, float, float], ...] = ()
 
 CAMPOS_OCR = (
-    "domicilio",
-    "lugar_nacimiento",
     "cuil",
-    "codigo_control",
     "numero_documento",
 )
 
+# `tipo_documento` y `pais_emisor` no se cruzan contra nada: se leen porque
+# tienen que decir ID y ARG, y un documento que diga otra cosa no es un DNI
+# argentino por más que todo lo demás coincida.
 CAMPOS_MRZ = (
     "tipo_documento",
     "pais_emisor",
-    "nacionalidad",
     "apellido",
     "nombre",
     "sexo",
@@ -103,11 +111,11 @@ def extraer(
 
 def _del_texto(lectura: ocr.Lectura) -> Origen:
     """
-    Lo impreso arriba del dorso: domicilio, lugar de nacimiento y CUIL.
+    El CUIL, y el número de documento que sale de adentro del CUIL.
 
-    Los tres tienen un rótulo con dos puntos delante del valor
-    ("DOMICILIO: ..."), así que `despues_de_etiqueta` los resuelve; la zona
-    queda de respaldo para cuando el OCR se come el rótulo.
+    El CUIL tiene un rótulo con dos puntos delante del valor ("CUIL: ..."),
+    así que `despues_de_etiqueta` lo resuelve; el patrón queda de primera
+    opción porque además se autovalida.
     """
     origen = Origen(
         nombre="ocr", disponible=True, campos=base.campos_vacios(*CAMPOS_OCR)
@@ -117,26 +125,6 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
         return origen
 
     origen.ok = True
-
-    # El domicilio ocupa una o dos líneas según el largo. Se lee la zona
-    # entera del bloque superior y se le saca el rótulo, en vez de tomar solo
-    # el renglón del rótulo: con dos líneas, esa segunda línea se perdía.
-    bloque, conf_bloque = lectura.texto_en_zona(0.05, 0.02, 0.98, 0.20)
-    domicilio, conf_dom = lectura.despues_de_etiqueta("DOMICILIO")
-    if domicilio and "LUGAR" not in normalizar.sin_tildes(domicilio).upper():
-        domicilio = _completar_domicilio(domicilio, bloque)
-    else:
-        domicilio, conf_dom = _domicilio_del_bloque(bloque), conf_bloque
-    origen.campos["domicilio"] = campo(
-        normalizar.domicilio(domicilio), domicilio, conf_dom
-    )
-
-    lugar, conf_lugar = lectura.despues_de_etiqueta(
-        "LUGAR DE NACIMIENTO", "LUGAR DE NACIMENTO"
-    )
-    origen.campos["lugar_nacimiento"] = campo(
-        normalizar.texto(lugar).upper(), lugar, conf_lugar
-    )
 
     # El CUIL se busca por forma y no por rótulo: tiene un patrón inconfundible
     # (11 dígitos con guiones) y encima un dígito verificador que dice si se
@@ -155,13 +143,6 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
         origen.campos["numero_documento"] = campo(
             derivado, f"derivado del CUIL {cuil_normalizado}", conf_cuil
         )
-
-    # La cadena hexadecimal debajo del CUIL: 32 caracteres, impresa en cuerpo
-    # muy chico. Se busca por forma porque no tiene rótulo ninguno.
-    control, conf_control = lectura.primer_patron(r"\b[0-9A-F]{24,40}\b")
-    origen.campos["codigo_control"] = campo(
-        control.upper() if control else "", control, conf_control
-    )
 
     origen.detalle = {
         "texto_completo": lectura.texto_completo,
@@ -243,7 +224,6 @@ def _de_la_mrz(lectura: ocr.Lectura, marco: encuadrador.Encuadre) -> Origen:
     for nombre_campo, valor, claves in (
         ("tipo_documento", datos.tipo_documento, ("compuesto",)),
         ("pais_emisor", datos.pais_emisor, ("compuesto",)),
-        ("nacionalidad", datos.nacionalidad, ("compuesto",)),
         ("apellido", datos.apellido, ("compuesto",)),
         ("nombre", datos.nombre, ("compuesto",)),
         ("sexo", datos.sexo, ("compuesto",)),
@@ -274,32 +254,3 @@ def _del_qr(codigos: list[lector_codigos.Codigo]) -> Origen:
     else:
         origen.error = "el dorso del DNI no tiene código QR"
     return origen
-
-
-def _completar_domicilio(primera_linea: str, bloque: str) -> str:
-    """
-    Pega la continuación del domicilio cuando ocupa dos renglones.
-
-    El corte no respeta palabras: "HAITI 2558 ... - MARTÍNEZ - SAN" / "ISIDRO -
-    BUENOS AIRES". Se busca la primera línea dentro del bloque y se devuelve
-    todo lo que sigue, hasta donde empieza el rótulo del lugar de nacimiento.
-    """
-    normalizado = normalizar.sin_tildes(bloque).upper()
-    marca = normalizar.sin_tildes(primera_linea).upper()
-    corte_inicio = normalizado.find(marca)
-    if corte_inicio < 0:
-        return primera_linea
-    resto = bloque[corte_inicio:]
-    fin = normalizar.sin_tildes(resto).upper().find("LUGAR DE NAC")
-    return resto[:fin].strip() if fin > 0 else resto.strip()
-
-
-def _domicilio_del_bloque(bloque: str) -> str:
-    """El bloque de arriba sin los rótulos, cuando el OCR no leyó "DOMICILIO"."""
-    normalizado = normalizar.sin_tildes(bloque).upper()
-    fin = normalizado.find("LUGAR DE NAC")
-    texto = bloque[:fin] if fin > 0 else bloque
-    inicio = normalizar.sin_tildes(texto).upper().find("DOMICILIO")
-    if inicio >= 0:
-        texto = texto[inicio + len("DOMICILIO") :]
-    return texto.strip(" :.-")

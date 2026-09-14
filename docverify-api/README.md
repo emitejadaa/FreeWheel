@@ -45,7 +45,59 @@ el que están escritas las zonas de cada extractor.
 
 ## Los endpoints
 
-Uno por **cara** de documento, porque cada cara se lee distinto:
+### El documento entero, en segundo plano
+
+```
+POST /analizar/documento
+```
+
+Es el que usa un backend. Recibe las **dos caras** juntas, contesta **202 en el
+acto** y, cuando terminó, le pega de vuelta a la URL que le dejaron.
+
+Es asíncrono por dos razones que empujan igual: un documento son dos análisis
+de varios segundos cada uno, y **no pueden correr dos a la vez** —el motor de
+OCR trabaja sobre imágenes descomprimidas y dos análisis simultáneos no entran
+en una instancia de 512 MB—. Los pedidos se ponen en fila; `/health` dice
+cuántos hay esperando.
+
+Es además el único modo que puede **cruzar una cara contra la otra**, que es de
+donde sale casi todo el valor: el apellido del frente del DNI contra el de la
+MRZ del dorso, el número de licencia del frente contra el del PDF417 del dorso.
+
+```bash
+curl -X POST http://localhost:8000/analizar/documento \
+  -H "content-type: application/json" \
+  -H "Authorization: Bearer $DOCVERIFY_TOKEN" \
+  -d '{
+    "documento": "dni",
+    "frente_base64": "/9j/4AAQSk...",
+    "dorso_base64": "/9j/4AAQSk...",
+    "referencia": "id-de-la-fila-del-backend",
+    "callback_url": "https://mi-backend/verification/identity/analysis-callback",
+    "callback_token": "un-token-de-un-solo-uso"
+  }'
+```
+
+Contesta `202 {"aceptado": true, "referencia": "...", "en_cola": 1}`, y al
+terminar manda un `POST` al `callback_url` con
+`{"referencia": ..., "resultado": {...}}` y el `callback_token` en el header
+`Authorization`. Ese token es de quien pide el análisis, no nuestro: sirve para
+que pueda comprobar que el aviso corresponde a un pedido suyo y no a cualquiera
+que sepa la URL. Si el aviso no llega, se **reintenta** hasta cuatro veces con
+espera creciente — esta API no guarda nada, así que un aviso perdido es un
+análisis perdido.
+
+**Sin `callback_url` analiza esperando** y devuelve el resultado en la misma
+respuesta. Sirve para probar a mano; puede tardar más de lo que aguanta un
+cliente HTTP común.
+
+Si la fila está llena contesta **503** con `Retry-After`. No es un error: es que
+ahora no puede.
+
+### Una cara suelta, al toque
+
+Para mirar una foto y ver qué se leyó. Uno por **cara**, porque cada cara se lee
+distinto:
 
 | Endpoint | Orígenes que devuelve |
 |---|---|
@@ -56,8 +108,8 @@ Uno por **cara** de documento, porque cada cara se lee distinto:
 
 \* con `disponible: false`: ese documento no tiene ese código. No es un fallo.
 
-Además: `GET /health` (estado) y `GET /contrato` (qué campos devuelve cada
-endpoint, sin tener que mandar una foto para averiguarlo).
+Además: `GET /health` (estado y fila) y `GET /contrato` (qué campos devuelve
+cada endpoint, sin tener que mandar una foto para averiguarlo).
 
 ### Cómo mandar la imagen
 
@@ -95,7 +147,7 @@ origen, en su `error`.
 {
   "ok": true,
   "documento": "dni_frente",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "ms": 6028,
 
   "encuadre": {
@@ -111,7 +163,7 @@ origen, en su `error`.
   // qué es cada campo, para no tener que salir a buscarlo
   "diccionario": {
     "apellido": "Apellido del titular, como figura impreso",
-    "ejemplar": "Letra del ejemplar del DNI (A, B, C...)"
+    "numero_documento": "Número de DNI, sin puntos"
     // …
   },
 
@@ -128,6 +180,8 @@ origen, en su `error`.
         // …
       },
       "detalle": { "texto_completo": "…", "renglones": 28, "confianza_media": 0.95 }
+      // (el dorso de la licencia NO manda texto_completo: ahí están impresos
+      //  el grupo sanguíneo y las observaciones, que son datos de salud)
     },
     "pdf417": {
       "ok": true,
@@ -154,6 +208,53 @@ permite saber si el problema fue la lectura o la normalización.
 texto impreso y el código se contradicen, y esa comparación es lo único que lo
 muestra.
 
+En `/analizar/documento` las coincidencias van **a través de las dos caras**, y
+cada lectura se identifica como `cara.origen` para que un desacuerdo diga quién
+dijo qué:
+
+```jsonc
+"coincidencias": {
+  "apellido": {
+    "coinciden": true,
+    "corroborado": true,          // más de un origen independiente lo confirmó
+    "valores": ["TEJADA ARAGON"],
+    "origenes": ["dorso.mrz", "frente.ocr", "frente.pdf417"],
+    "por_origen": { "frente.ocr": "TEJADA ARAGON", "dorso.mrz": "TEJADA ARAGON" }
+  }
+}
+```
+
+---
+
+## Qué campos devuelve, y por qué son pocos
+
+De 28 campos quedaron 14. Los documentos traen impreso bastante más
+—nacionalidad, ejemplar, número de trámite, oficina identificadora, domicilio,
+lugar de nacimiento, código de control, jurisdicción, responsable— y todo eso se
+leía bien. Se dejó de leer porque **un dato que no decide nada no es gratis**:
+ocupa una zona de OCR, agrega un valor más que puede salir mal, y engorda un
+JSON que alguien tiene que mirar. Cada campo que quedó está por una de dos
+razones:
+
+**SE CRUZA** — aparece en varias caras o varios orígenes, así que comparar las
+lecturas entre sí detecta un documento adulterado: `apellido`, `nombre`,
+`sexo`, `numero_documento`, `fecha_nacimiento`, `cuil`, `numero_licencia`.
+
+**HABILITA** — el backend decide algo con él: `fecha_vencimiento`,
+`fecha_otorgamiento`, `clase`, `es_principiante`, `fin_principiante`. Más
+`tipo_documento` y `pais_emisor`, que tienen que decir `ID` y `ARG`.
+
+Dos se sacaron por una razón más fuerte que la utilidad: **el grupo sanguíneo y
+las observaciones de la licencia son datos de salud**, sensibles bajo la Ley
+25.326. No hacían falta, y no tenerlos es la única forma segura de no
+filtrarlos. Por eso el dorso de la licencia tampoco publica su `texto_completo`:
+sería devolverlos por la ventana.
+
+El **domicilio** se sacó por una razón distinta y práctica: el del documento
+casi nunca coincide con el que la persona cargó —se mudó, lo abrevia distinto,
+el OCR le come un número de altura—, así que cruzarlo produce rechazos falsos
+sin detectar ningún fraude.
+
 ---
 
 ## Cómo lee cada documento
@@ -164,10 +265,11 @@ cruzar. El **vencimiento es la excepción**: no está codificado en el PDF417, a
 que solo existe impreso y no se puede contrastar contra nada.
 
 ### DNI dorso — OCR + MRZ
-División tajante. El **domicilio, el lugar de nacimiento y el CUIL** existen
-únicamente impresos. La **MRZ** (las tres líneas de `<<<` del pie) trae apellido,
-nombre, sexo, documento y vencimiento **con sus dígitos verificadores**: es la
-única lectura del documento que puede demostrar por sí sola que se leyó bien.
+División tajante. El **CUIL** existe únicamente impreso: no está ni en el PDF417
+del frente ni en la MRZ. La **MRZ** (las tres líneas de `<<<` del pie) trae
+apellido, nombre, sexo, documento, nacimiento y vencimiento **con sus dígitos
+verificadores**: es la única lectura del documento que puede demostrar por sí
+sola que se leyó bien.
 
 ### Licencia frente — solo OCR
 No tiene ningún código. Sus datos solo se pueden contrastar contra el dorso.
@@ -175,7 +277,8 @@ No tiene ningún código. Sus datos solo se pueden contrastar contra el dorso.
 ### Licencia dorso — OCR + PDF417 + código 1D
 El más rico. El dato que importa sacar bien es el **período de principiante**
 ("Principiante hasta 28/10/2026"), que determina si la persona puede manejar
-sin acompañante y no está en ningún código: es OCR o nada.
+sin acompañante y no está en ningún código: es OCR o nada. De todo el renglón de
+"Observaciones" se extrae solo eso; la frase completa no sale de la función.
 
 ---
 
@@ -188,6 +291,9 @@ Todo opcional — sin `.env` el servicio levanta y funciona. Ver `.env.example`.
 | `DOCVERIFY_TOKEN` | Exige `Authorization: Bearer <token>`. Vacío = abierto. |
 | `DOCVERIFY_ORIGENES` | Orígenes permitidos por CORS, separados por coma. |
 | `DOCVERIFY_MAX_KB` | Tope de tamaño de imagen (default 15.000 KB). |
+| `DOCVERIFY_CONCURRENCIA` | Análisis simultáneos (default 1). Subirlo requiere MÁS MEMORIA, no más CPU: dos análisis a la vez no entran en 512 MB. |
+| `DOCVERIFY_COLA_MAXIMA` | Cuántos análisis se aceptan sin terminar antes de contestar 503 (default 8). |
+| `DOCVERIFY_CALLBACK_TIMEOUT` | Segundos de espera al avisar que un análisis terminó (default 20). |
 
 En un deploy expuesto a internet **poné el token**: por acá pasan documentos de
 identidad de personas reales, y sin token alcanza con conocer la URL.
@@ -197,15 +303,58 @@ identidad de personas reales, y sin token alcanza con conocer la URL.
 ## Deploy
 
 Todo se instala con `pip` — no hace falta ningún binario del sistema (ni
-Tesseract ni zbar), así que el deploy es igual en Windows y en Linux y no
-necesita un `Dockerfile` con `apt-get`.
+Tesseract ni zbar), así que el deploy es igual en Windows y en Linux.
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Hay un `Dockerfile` para las plataformas que lo prefieran. **No conviene
-serverless**: cada arranque en frío recargaría los modelos de OCR.
+**No va en serverless.** Entre `opencv`, `numpy` y `onnxruntime` son ~300 MB de
+wheels y el tope de una función de Vercel son 250 MB descomprimidos: no entra. Y
+aunque entrara, cada arranque en frío volvería a cargar los modelos de OCR. Esto
+necesita un proceso que viva entre pedidos.
+
+### En Render, paso a paso
+
+La raíz del repo tiene un `render.yaml` que ya describe este servicio. Toma
+entre 8 y 15 minutos, casi todo esperando el primer build: la imagen pesa ~1 GB
+y precarga los modelos. Los builds siguientes reusan las capas de `pip` y bajan
+a 2-3 minutos.
+
+**1 · Crear el servicio.** En el dashboard de Render → **New** → **Blueprint** →
+repo `emitejadaa/FreeWheel`, rama `main`. Render lee el `render.yaml` y muestra
+un servicio `freewheel-docverify`. **Apply**.
+
+> A mano (New → Web Service) los valores son: Language **Docker**, Dockerfile
+> Path `./docverify-api/Dockerfile`, Docker Build Context Directory
+> `./docverify-api`, Health Check Path `/health`.
+
+**2 · El plan.** El blueprint pide **Starter**. Es a propósito: el plan **Free
+se apaga a los 15 minutos sin tráfico** y despertarlo tarda ~50 segundos, que
+espera el usuario que está subiendo su documento. Si el servicio se reinicia
+con *out of memory*, subilo a **Standard**: el OCR sobre ONNX ronda los 400-500
+MB residentes y en los 512 MB de Starter entra sin mucho aire.
+
+**3 · El token.** Render genera `DOCVERIFY_TOKEN` solo. Copialo de la pestaña
+**Environment**: es el que hay que poner en el backend. Sin él la API responde
+401.
+
+**4 · Comprobar.** Cuando quede en **Live**:
+
+```bash
+curl https://<tu-servicio>.onrender.com/health
+```
+
+Los dos campos que importan son `protegido_con_token: true` (el token quedó
+puesto) y `ocr_cargado: true` (los modelos se precargaron en el build, así que
+no los baja el primer usuario).
+
+**5 · Conectarlo al backend.** En las variables de entorno del backend:
+`DOCVERIFY_URL` con la URL de Render (sin barra final) y `DOCVERIFY_TOKEN` con
+el token del paso 3.
+
+No hace falta base de datos ni disco persistente: esta API no guarda nada, y los
+modelos ya están dentro de la imagen.
 
 ---
 
@@ -213,6 +362,10 @@ serverless**: cada arranque en frío recargaría los modelos de OCR.
 
 Medido contra las cuatro fotos de `public/images/` (fotos de teléfono reales,
 con reflejos, una de ellas sacada de costado):
+
+Esa medición se hizo con el contrato viejo, de 28 campos; los números son de
+entonces y se dejan porque lo que muestran sigue valiendo — qué lee bien cada
+origen y qué no:
 
 | Documento | Resultado |
 |---|---|
@@ -229,7 +382,10 @@ Dos cosas honestas sobre esa tabla:
   varios preprocesados morfológicos, y ninguno decodifica. Con una foto mejor
   del mismo documento debería salir; la API lo reporta con `ok: false` y el
   motivo, que es exactamente para lo que está ese campo.
-- **`grupo_sanguineo` sale vacío en la licencia y está bien:** el documento
-  tiene un guion ahí, o sea que el dato no está cargado.
+- **`grupo_sanguineo` salía vacío en la licencia y estaba bien:** el documento
+  tiene un guion ahí. Hoy ese campo ya no se lee (ver "Qué campos devuelve").
 
-El tiempo por análisis ronda los **3 a 6 segundos** en una máquina de escritorio.
+El tiempo por análisis ronda los **3 a 6 segundos** en una máquina de
+escritorio, y bastante más en el medio CPU de una instancia chica. Un documento
+son dos análisis, y no corren en paralelo: por eso `/analizar/documento` es
+asíncrono.

@@ -15,7 +15,7 @@ DORSO DE LA LICENCIA NACIONAL DE CONDUCIR.
 
 TRES ORÍGENES — es el documento más rico de los cuatro:
 
-  · ocr        — CUIL, observaciones, clase y su descripción, grupo sanguíneo
+  · ocr        — CUIL, clase y el período de principiante
   · pdf417     — los datos del titular grabados por la autoridad emisora
   · codigo_1d  — el código lineal del borde, que en general repite el número
                  de licencia
@@ -26,6 +26,18 @@ si la persona puede o no manejar sin acompañante. No está en ningún código: 
 OCR o nada. Por eso se lo busca de varias formas y se devuelve desglosado en
 dos campos, la condición y la fecha, en vez de dejar la frase entera para que
 alguien la parsee después.
+
+DOS COSAS QUE ESTA CARA TIENE IMPRESAS Y QUE A PROPÓSITO NO SE LEEN:
+
+  · el GRUPO SANGUÍNEO y el renglón entero de OBSERVACIONES. Los dos son datos
+    de salud —"Grupo y factor: 0+", "uso obligatorio de lentes"— y por lo tanto
+    datos sensibles bajo la Ley 25.326. No hacen falta para alquilar un auto, y
+    la única forma segura de no filtrar un dato es no tenerlo. De las
+    observaciones se extrae únicamente si la licencia es de principiante y
+    hasta cuándo, que es lo que habilita o restringe; la frase completa no sale
+    de esta función.
+  · el RESPONSABLE, el funcionario que firma la emisión: es el dato personal de
+    un tercero que nunca pidió estar en nuestra base.
 """
 
 from __future__ import annotations
@@ -69,12 +81,8 @@ CAMPOS_OCR = (
     "cuil",
     "numero_documento",
     "clase",
-    "clase_descripcion",
-    "grupo_sanguineo",
-    "observaciones",
     "es_principiante",
     "fin_principiante",
-    "responsable",
 )
 
 CAMPOS_CODIGO = (
@@ -86,11 +94,13 @@ CAMPOS_CODIGO = (
     "cuil",
     "clase",
     "fecha_nacimiento",
-    "fecha_emision",
     "fecha_vencimiento",
 )
 
-CAMPOS_1D = ("codigo_barras", "numero_licencia")
+# El contenido crudo del código lineal sigue viajando en `detalle`, donde sirve
+# para diagnosticar; como CAMPO queda solo el número de licencia, y solo cuando
+# el código realmente tiene forma de uno (ver _del_1d).
+CAMPOS_1D = ("numero_licencia",)
 
 
 def extraer(
@@ -98,10 +108,10 @@ def extraer(
     codigos: list[lector_codigos.Codigo],
     marco: encuadre.Encuadre,
 ) -> list[Origen]:
-    return [_del_texto(lectura, marco), _del_pdf417(codigos), _del_1d(codigos)]
+    return [_del_texto(lectura), _del_pdf417(codigos), _del_1d(codigos)]
 
 
-def _del_texto(lectura: ocr.Lectura, marco: encuadre.Encuadre) -> Origen:
+def _del_texto(lectura: ocr.Lectura) -> Origen:
     origen = Origen(
         nombre="ocr", disponible=True, campos=base.campos_vacios(*CAMPOS_OCR)
     )
@@ -134,47 +144,29 @@ def _del_texto(lectura: ocr.Lectura, marco: encuadre.Encuadre) -> Origen:
         normalizar.clase_licencia(clase), clase, conf_clase
     )
 
-    descripcion, conf_desc = lectura.buscar("AUTOMOTORES", "MOTOCICLETAS"), 0.0
-    if descripcion is not None:
-        origen.campos["clase_descripcion"] = campo(
-            normalizar.texto(descripcion.texto),
-            descripcion.texto,
-            descripcion.confianza,
-        )
-
-    grupo, conf_grupo = lectura.despues_de_etiqueta(
-        "BLOOD TYPE", "GRUPO Y FACTOR", "GRUPO"
-    )
-    origen.campos["grupo_sanguineo"] = campo(
-        normalizar.grupo_sanguineo(grupo), grupo, conf_grupo
-    )
-
-    responsable, conf_resp = _responsable(lectura, marco)
-    origen.campos["responsable"] = campo(
-        normalizar.nombre(responsable), responsable, conf_resp
-    )
-
-    # ── Las observaciones y el período de principiante ────────────────────
-    # El rótulo es bilingüe y el motor lo devuelve entero junto con el valor
-    # ("Observaciones/ Observations: Principiante hasta 28/10/2026"), así que
-    # se corta por la parte EN INGLÉS, que es la última: cortando por
-    # "Observaciones" quedaría "/ Observations:" pegado adelante.
+    # ── El período de principiante ────────────────────────────────────────
+    # El renglón de observaciones se LEE pero no se publica: de todo lo que
+    # puede decir, lo único que decide algo es si la licencia es de
+    # principiante. El rótulo es bilingüe y el motor lo devuelve entero junto
+    # con el valor ("Observaciones/ Observations: Principiante hasta
+    # 28/10/2026"), así que se corta por la parte EN INGLÉS, que es la última:
+    # cortando por "Observaciones" quedaría "/ Observations:" pegado adelante.
     observaciones, conf_obs = lectura.despues_de_etiqueta(
         "OBSERVATIONS", "OBSERVACIONES"
     )
     if not observaciones:
         observaciones, conf_obs = lectura.texto_en_zona(0.18, 0.55, 0.95, 0.75)
-    origen.campos["observaciones"] = campo(
-        normalizar.texto(observaciones), observaciones, conf_obs
-    )
 
     # "Principiante" puede aparecer en el renglón de observaciones o suelto,
     # según cómo haya partido el OCR el bloque: se busca en todo el texto.
     texto_entero = normalizar.sin_tildes(lectura.texto_completo).upper()
     es_principiante = "PRINCIPIANTE" in texto_entero
+    # El `crudo` dice qué se encontró, no lo que decía el renglón: copiar ahí
+    # las observaciones o el texto del dorso volvería a meter por la ventana
+    # —"uso obligatorio de lentes"— lo que se sacó por la puerta.
     origen.campos["es_principiante"] = campo(
         "true" if es_principiante else "false",
-        observaciones or lectura.texto_completo[:120],
+        "PRINCIPIANTE" if es_principiante else "sin la palabra PRINCIPIANTE",
         conf_obs if conf_obs else lectura.confianza_media,
     )
 
@@ -184,8 +176,11 @@ def _del_texto(lectura: ocr.Lectura, marco: encuadre.Encuadre) -> Origen:
             normalizar.fecha(fin), fin, conf_fin
         )
 
+    # A diferencia de los otros tres documentos, acá el detalle NO lleva el
+    # texto completo: el dorso de la licencia tiene impresos el grupo sanguíneo
+    # y las observaciones, y volcarlo entero sería publicar por `detalle`
+    # exactamente los datos de salud que los campos dejaron afuera.
     origen.detalle = {
-        "texto_completo": lectura.texto_completo,
         "renglones": len(lectura.renglones),
         "confianza_media": round(lectura.confianza_media, 4),
     }
@@ -237,7 +232,6 @@ def _del_pdf417(codigos: list[lector_codigos.Codigo]) -> Origen:
         ("cuil", datos.cuil),
         ("clase", datos.clase),
         ("fecha_nacimiento", datos.fecha_nacimiento),
-        ("fecha_emision", datos.fecha_emision),
         ("fecha_vencimiento", datos.fecha_vencimiento),
     ):
         origen.campos[nombre_campo] = campo(valor, valor, 1.0 if valor else 0.0)
@@ -249,13 +243,12 @@ def _del_1d(codigos: list[lector_codigos.Codigo]) -> Origen:
     """
     El código de barras lineal del borde de la tarjeta.
 
-    Su contenido se devuelve SIEMPRE tal cual en `codigo_barras`, y solo se
-    ofrece además como `numero_licencia` cuando tiene la forma de uno. En la
-    licencia con la que se probó esto el código dice "046909121" mientras que
-    el número de licencia es "49380010": son nueve dígitos contra ocho, y no
-    tienen nada que ver. Mapearlo a `numero_licencia` sin mirar habría puesto
-    un número inventado en un campo que alguien va a comparar contra el DNI de
-    una persona.
+    Su contenido crudo va SIEMPRE a `detalle`, y solo sale como campo
+    `numero_licencia` cuando tiene la forma de uno. En la licencia con la que
+    se probó esto el código dice "046909121" mientras que el número de licencia
+    es "49380010": son nueve dígitos contra ocho, y no tienen nada que ver.
+    Mapearlo a `numero_licencia` sin mirar habría puesto un número inventado en
+    un campo que el backend compara contra el DNI de una persona.
     """
     origen = Origen(
         nombre="codigo_1d", disponible=True, campos=base.campos_vacios(*CAMPOS_1D)
@@ -273,7 +266,6 @@ def _del_1d(codigos: list[lector_codigos.Codigo]) -> Origen:
         "variante_lectura": codigo.variante,
         "esquinas": codigo.esquinas,
     }
-    origen.campos["codigo_barras"] = campo(codigo.texto, codigo.texto, 1.0)
 
     # Un número de licencia argentino es el DNI: 7 u 8 dígitos. Nueve no lo es.
     digitos = "".join(c for c in codigo.texto if c.isdigit())
@@ -307,67 +299,3 @@ def _fecha_de_principiante(
             return suelta.group(0), renglon.confianza
 
     return lectura.primer_patron(r"\b\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}\b")
-
-
-# Dónde está el nombre del responsable dentro del dorso encuadrado: el rincón
-# de abajo a la derecha, arriba del rótulo "Responsable / in charge".
-ZONA_RESPONSABLE = (0.75, 0.68, 1.00, 1.00)
-
-
-def _responsable(
-    lectura: ocr.Lectura, marco: encuadre.Encuadre
-) -> tuple[str, float]:
-    """
-    El funcionario que firma la emisión.
-
-    Está impreso en cuerpo muy chico y descolorido, en el rincón de abajo a la
-    derecha, y leyendo el dorso entero el motor directamente NO LO VE: no
-    aparece ni un renglón ahí. Por eso el camino principal es volver a pasarle
-    el OCR a su rincón recortado, que es donde sí sale ("YESICAPORCELLI"). El
-    texto general queda de respaldo, por si en otra foto aparece sin necesidad
-    de insistir.
-    """
-    recorte = base.recorte(marco.imagen, *ZONA_RESPONSABLE)
-    aislada = ocr.leer(recorte)
-    if aislada:
-        valor, confianza = aislada.mejor_en_zona((0.0, 0.0, 1.0, 1.0), _parece_nombre)
-        if valor:
-            return valor, confianza
-
-    etiqueta = lectura.buscar("RESPONSABLE", "IN CHARGE", "RESPONSIBLE")
-    if etiqueta is not None:
-        candidatos = [
-            renglon
-            for renglon in lectura.renglones
-            if renglon.y1 <= etiqueta.y0 + etiqueta.alto * 0.5
-            and abs(renglon.centro_x - etiqueta.centro_x) < 0.20
-            and _parece_nombre(renglon.texto)
-        ]
-        if candidatos:
-            # El más abajo de los que están arriba: el inmediatamente superior.
-            mas_cercano = max(candidatos, key=lambda r: r.y1)
-            return mas_cercano.texto, mas_cercano.confianza
-
-    return lectura.mejor_en_zona(ZONA_RESPONSABLE, _parece_nombre)
-
-
-def _parece_nombre(valor: str) -> str:
-    """
-    Algo con forma de nombre de persona: solo letras, sin dígitos, y con
-    cuerpo suficiente.
-
-    Se acepta UNA sola palabra larga además de dos o más cortas, porque acá el
-    motor devuelve el nombre sin el espacio del medio —"YESICAPORCELLI"— y
-    exigir dos palabras dejaba el campo vacío teniendo el dato leído. Lo que
-    descarta el ruido es el largo: el logo "LNC" y los restos de la guarda de
-    seguridad no llegan a seis letras.
-    """
-    limpio = normalizar.nombre(valor)
-    if any(c.isdigit() for c in valor or ""):
-        return ""
-    partes = [p for p in limpio.split() if len(p) >= 3]
-    if len(partes) >= 2:
-        return " ".join(partes)
-    if len(partes) == 1 and len(partes[0]) >= 8:
-        return partes[0]
-    return ""

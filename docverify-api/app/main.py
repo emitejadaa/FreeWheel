@@ -1,20 +1,36 @@
 """
 LA API DE VERIFICACIÓN DOCUMENTAL.
 
-Un endpoint por cara de documento:
+DOS FORMAS DE USARLA, para dos usos que no se parecen.
+
+**Un documento entero, en segundo plano** — es la que usa el backend:
+
+    POST /analizar/documento    las dos caras juntas, 202 y aviso al terminar
+
+Manda frente y dorso en un JSON, contesta 202 en el acto y, cuando terminó,
+le pega de vuelta a la URL que le dejaron. Es así porque un documento son dos
+análisis de varios segundos cada uno y porque en una instancia chica no pueden
+correr dos a la vez: la espera no entra en un request HTTP. Además es el único
+modo que puede cruzar una cara contra la otra, que es de donde sale casi todo
+el valor —el apellido del frente del DNI contra el de la MRZ del dorso, el
+número de licencia del frente contra el del PDF417 del dorso.
+
+**Una cara suelta, al toque** — para mirar una foto y ver qué se leyó:
 
     POST /analizar/dni-frente        OCR + PDF417
     POST /analizar/dni-dorso         OCR + MRZ
     POST /analizar/licencia-frente   OCR
     POST /analizar/licencia-dorso    OCR + PDF417 + código 1D
 
-Los cuatro reciben UNA imagen —como archivo en multipart o en base64 dentro de
-un JSON— y devuelven el mismo sobre (ver contrato.py).
+Reciben UNA imagen —archivo multipart o base64 en un JSON— y devuelven el sobre
+de esa cara (ver contrato.py).
 
-ESTE SERVICIO NO ESTÁ CONECTADO CON EL BACKEND. No tiene base de datos, no
-guarda las imágenes, no sabe quién es el usuario y no le pega a ninguna otra
-API: recibe una foto, la analiza y contesta. Se deploya por su cuenta, y quien
-lo quiera usar decide qué hacer con lo que devuelve.
+ESTE SERVICIO NO SABE NADA DE NADIE. No tiene base de datos, no guarda las
+imágenes, no sabe quién es el usuario y no decide si una verificación se aprueba.
+Recibe fotos, dice qué leyó en cada una y con cuánta confianza, y avisa si las
+distintas lecturas de un mismo dato coinciden entre sí. QUIÉN ES ESA PERSONA Y
+SI CORRESPONDE A LA CUENTA LO DECIDE EL BACKEND, que es el único lado que
+conoce al usuario.
 """
 
 from __future__ import annotations
@@ -28,7 +44,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import contrato
+from . import contrato, trabajos
 from .config import ajustes
 from .documentos import REGISTRO
 from .documentos import base as analizador_base
@@ -76,6 +92,38 @@ class ImagenBase64(BaseModel):
     )
 
 
+class PedidoDocumento(BaseModel):
+    """Las dos caras de un documento y a dónde avisar cuando esté listo."""
+
+    documento: str = Field(..., description='"dni" o "licencia"')
+    frente_base64: str = Field(..., description="La foto del frente, en base64")
+    dorso_base64: str = Field(..., description="La foto del dorso, en base64")
+    referencia: str = Field(
+        default="",
+        description=(
+            "Identificador de quien pide el análisis. Vuelve tal cual en el "
+            "aviso; esta API no lo interpreta, solo lo repite para que los logs "
+            "de los dos lados se puedan cruzar"
+        ),
+    )
+    callback_url: str = Field(
+        default="",
+        description=(
+            "A dónde mandar el resultado cuando termine. SI SE OMITE, el "
+            "análisis se hace esperando y el resultado viene en esta misma "
+            "respuesta: sirve para probar a mano, pero puede tardar bastante "
+            "más de lo que aguanta un cliente HTTP común"
+        ),
+    )
+    callback_token: str = Field(
+        default="",
+        description=(
+            "Se manda como `Authorization: Bearer` al avisar, para que quien "
+            "recibe el aviso pueda comprobar que corresponde a un pedido suyo"
+        ),
+    )
+
+
 def autorizar(authorization: str | None = Header(default=None)) -> None:
     """
     Comprueba el token compartido, si hay uno configurado.
@@ -111,6 +159,11 @@ def salud() -> dict:
         "documentos": sorted(REGISTRO),
         "ocr_cargado": ocr._motor is not None,
         "protegido_con_token": bool(ajustes.token),
+        # Cuántos análisis hay aceptados y sin terminar. Es lo primero que hay
+        # que mirar cuando "la API está lenta": si acá hay número, no está
+        # lenta, está ocupada, y el que pidió último espera a los de adelante.
+        "analisis_en_cola": trabajos.pendientes(),
+        "analisis_simultaneos": ajustes.concurrencia,
     }
 
 
@@ -144,6 +197,100 @@ def describir_contrato() -> dict:
         "diccionario": contrato.DICCIONARIO,
         "documentos": documentos,
     }
+
+
+def _bytes_de_base64(crudo: str, cual: str) -> bytes:
+    """Los bytes de una imagen que vino en base64, con el data URI tolerado."""
+    limpio = (crudo or "").strip()
+    if not limpio:
+        raise HTTPException(status_code=400, detail=f"falta la imagen del {cual}")
+    # Es lo que devuelve un FileReader del navegador. Obligar a recortarlo del
+    # lado del cliente solo agrega un paso donde equivocarse.
+    if limpio.startswith("data:"):
+        _, _, limpio = limpio.partition(",")
+    try:
+        datos = base64.b64decode(limpio, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"el base64 del {cual} no es válido: {error}",
+        ) from error
+    if not datos:
+        raise HTTPException(status_code=400, detail=f"la imagen del {cual} llegó vacía")
+    if len(datos) > ajustes.max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"la imagen del {cual} pesa {len(datos) // 1024} KB y el máximo "
+                f"es {ajustes.max_bytes // 1024} KB"
+            ),
+        )
+    return datos
+
+
+@app.post(
+    "/analizar/documento",
+    summary="Analizar un documento entero (las dos caras)",
+    tags=["análisis"],
+)
+async def analizar_documento(
+    pedido: PedidoDocumento, _: None = Depends(autorizar)
+) -> JSONResponse:
+    """
+    Las dos caras de un documento, con los cruces entre ellas.
+
+    Contesta **202 y avisa después** cuando le dejan un `callback_url`, que es
+    como lo usa el backend. Sin `callback_url` analiza esperando y devuelve el
+    resultado en esta misma respuesta: sirve para probar a mano con curl, pero
+    puede tardar más de lo que aguanta un cliente HTTP común.
+    """
+    if pedido.documento not in ("dni", "licencia"):
+        raise HTTPException(
+            status_code=400,
+            detail=f'el documento debe ser "dni" o "licencia", llegó "{pedido.documento}"',
+        )
+
+    trabajo = trabajos.Pedido(
+        documento=pedido.documento,
+        caras={
+            "frente": _bytes_de_base64(pedido.frente_base64, "frente"),
+            "dorso": _bytes_de_base64(pedido.dorso_base64, "dorso"),
+        },
+        referencia=pedido.referencia or "sin-referencia",
+        callback_url=pedido.callback_url,
+        callback_token=pedido.callback_token,
+    )
+
+    if not trabajo.callback_url:
+        return JSONResponse(content=await trabajos.analizar_esperando(trabajo))
+
+    try:
+        await trabajos.encolar(trabajo)
+    except trabajos.ColaLlena as llena:
+        # 503 y no 500: no es un error, es que ahora no se puede. Con
+        # Retry-After para que quien llama sepa cuánto esperar en vez de
+        # reintentar en loop.
+        raise HTTPException(
+            status_code=503,
+            detail=f"la API está saturada: {llena}. Reintentá en un rato.",
+            headers={"Retry-After": "60"},
+        ) from llena
+
+    log.info(
+        "aceptado %s · ref=%s · %d en cola",
+        trabajo.documento,
+        trabajo.referencia,
+        trabajos.pendientes(),
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "aceptado": True,
+            "documento": trabajo.documento,
+            "referencia": trabajo.referencia,
+            "en_cola": trabajos.pendientes(),
+        },
+    )
 
 
 async def _bytes_del_request(

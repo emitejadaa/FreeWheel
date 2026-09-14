@@ -16,14 +16,22 @@ FRENTE DEL DNI ARGENTINO (RENAPER, tarjeta Mercosur).
 
 DOS ORÍGENES, y la diferencia entre ellos es el punto de leer los dos:
 
-  · ocr    — todo lo impreso, incluido el VENCIMIENTO
+  · ocr    — lo impreso, incluido el VENCIMIENTO
   · pdf417 — los datos del titular tal como los grabó el RENAPER
 
 El PDF417 NO trae el vencimiento: no está codificado ahí. O sea que el
 vencimiento solo existe como texto impreso y no se puede contrastar contra
 nada. Al revés, todo lo que sí está en los dos —apellido, nombre, sexo,
-documento, nacimiento, emisión— se puede cruzar, y una discrepancia entre el
-texto y el código es exactamente la señal de una tarjeta alterada.
+documento, nacimiento— se puede cruzar, y una discrepancia entre el texto y el
+código es exactamente la señal de una tarjeta alterada.
+
+De la tarjeta se lee SOLO lo que el backend usa para decidir. La nacionalidad,
+el ejemplar, el número de trámite y la oficina identificadora están impresos
+ahí y se leían bien, pero no se cruzan contra nada ni habilitan nada: leerlos
+era gastar zonas de OCR para llenar un JSON que nadie miraba. El ejemplar
+además era activamente contraproducente —cambia con cada reimpresión y puede
+diferir entre el texto y el código legítimamente—, así que aparecía como una
+discrepancia que no lo era.
 """
 
 from __future__ import annotations
@@ -63,26 +71,19 @@ CAMPOS_OCR = (
     "apellido",
     "nombre",
     "sexo",
-    "nacionalidad",
-    "ejemplar",
     "numero_documento",
     "fecha_nacimiento",
-    "fecha_emision",
     "fecha_vencimiento",
-    "numero_tramite",
-    "oficina_identificadora",
 )
 
-# El código no codifica el vencimiento ni la oficina: sus campos son otros.
+# El código no codifica el vencimiento: de los seis de arriba trae cinco, y
+# esos cinco son los que se pueden cruzar contra el texto impreso.
 CAMPOS_CODIGO = (
     "apellido",
     "nombre",
     "sexo",
-    "ejemplar",
     "numero_documento",
     "fecha_nacimiento",
-    "fecha_emision",
-    "numero_tramite",
 )
 
 
@@ -124,32 +125,23 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
         nombre, confianza = lectura.texto_en_zona(0.37, 0.30, 0.85, 0.42)
     origen.campos["nombre"] = campo(normalizar.nombre(nombre), nombre, confianza)
 
-    # Sexo, nacionalidad y ejemplar comparten un renglón de tres columnas bajo
-    # sus rótulos. Van por zona porque `debajo_de` alinea por el borde
-    # izquierdo y las tres columnas caen a la misma altura: la zona es lo único
-    # que las separa. Y van por `mejor_en_zona` porque la zona agarra también
-    # el rótulo de arriba —"Ejemplar" queda pegado a la "A"—: el validador es
-    # el que descarta el rótulo y se queda con el valor.
+    # El sexo comparte un renglón de tres columnas con la nacionalidad y el
+    # ejemplar, que ya no se leen. Va por zona y no por `debajo_de` porque ese
+    # alinea por el borde izquierdo y las tres columnas caen a la misma altura:
+    # la zona es lo único que las separa. Y va por `mejor_en_zona` porque la
+    # zona agarra también el rótulo de arriba: el validador es el que lo
+    # descarta y se queda con el valor.
     sexo, conf_sexo = lectura.mejor_en_zona((0.26, 0.43, 0.40, 0.56), normalizar.sexo)
     origen.campos["sexo"] = campo(normalizar.sexo(sexo), sexo, conf_sexo)
 
-    nacionalidad, conf_nac = lectura.mejor_en_zona(
-        (0.40, 0.44, 0.64, 0.58), _nacionalidad
-    )
-    origen.campos["nacionalidad"] = campo(
-        _nacionalidad(nacionalidad), nacionalidad, conf_nac
-    )
-
-    ejemplar, conf_ej = lectura.mejor_en_zona((0.63, 0.46, 0.82, 0.60), _ejemplar)
-    origen.campos["ejemplar"] = campo(_ejemplar(ejemplar), ejemplar, conf_ej)
-
-    # Las tres fechas van una debajo de la otra con su rótulo. Se intenta por
-    # etiqueta porque el rótulo las distingue sin ambigüedad, y se cae a la
-    # zona cuando el OCR no leyó el rótulo —que es justo lo que pasa con el de
-    # vencimiento, tapado por el holograma del sol.
+    # Nacimiento y vencimiento tienen su rótulo, y entre los dos está el de
+    # emisión, que ya no se lee pero sigue ocupando su renglón —por eso las
+    # zonas no son contiguas—. Se intenta por etiqueta porque el rótulo las
+    # distingue sin ambigüedad, y se cae a la zona cuando el OCR no leyó el
+    # rótulo, que es justo lo que pasa con el de vencimiento, tapado por el
+    # holograma del sol.
     for nombre_campo, etiquetas, zona in (
         ("fecha_nacimiento", ("NACIMIENTO", "DATE OF BIRTH"), (0.26, 0.55, 0.62, 0.65)),
-        ("fecha_emision", ("EMISION", "DATE OF ISSUE"), (0.26, 0.65, 0.62, 0.75)),
         ("fecha_vencimiento", ("VENCIMIENTO", "EXPIRY"), (0.26, 0.75, 0.62, 0.87)),
     ):
         crudo, confianza = lectura.debajo_de(*etiquetas)
@@ -168,19 +160,6 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
         )
     origen.campos["numero_documento"] = campo(
         normalizar.numero_documento(documento), documento, conf_doc
-    )
-
-    # El trámite son 11 dígitos y la oficina 4, impresos uno debajo del otro
-    # bajo el rótulo "Trámite N° / Of. ident.". El trámite se busca por forma:
-    # 11 dígitos seguidos no son ninguna otra cosa en esta tarjeta. La oficina
-    # no se puede buscar así —4 dígitos aparecen en varios lados— pero en su
-    # zona es el único renglón de exactamente 4 dígitos.
-    tramite, conf_tramite = lectura.primer_patron(r"\b\d{11}\b")
-    origen.campos["numero_tramite"] = campo(tramite, tramite, conf_tramite)
-
-    oficina, conf_oficina = lectura.mejor_en_zona((0.24, 0.88, 0.50, 1.0), _oficina)
-    origen.campos["oficina_identificadora"] = campo(
-        _oficina(oficina), oficina, conf_oficina
     )
 
     origen.detalle = {
@@ -225,40 +204,10 @@ def _del_codigo(codigos: list[lector_codigos.Codigo]) -> Origen:
         ("apellido", datos.apellido),
         ("nombre", datos.nombre),
         ("sexo", datos.sexo),
-        ("ejemplar", datos.ejemplar),
         ("numero_documento", datos.numero_documento),
         ("fecha_nacimiento", datos.fecha_nacimiento),
-        ("fecha_emision", datos.fecha_emision),
-        ("numero_tramite", datos.numero_tramite),
     ):
         origen.campos[nombre_campo] = campo(valor, valor, 1.0 if valor else 0.0)
 
     return origen
 
-
-def _ejemplar(valor: str) -> str:
-    """
-    El ejemplar es UNA letra suelta. Exigir exactamente un carácter es lo que
-    descarta el rótulo "Ejemplar", que cae en la misma zona.
-    """
-    limpio = normalizar.texto(valor).upper()
-    return limpio if len(limpio) == 1 and limpio.isalpha() else ""
-
-
-def _nacionalidad(valor: str) -> str:
-    """
-    Una sola palabra de letras ("ARGENTINA"). El rótulo que comparte la zona
-    —"Sexo / Sex Nacionalidad / Nationality"— trae barras y varias palabras,
-    así que no pasa.
-    """
-    limpio = normalizar.sin_tildes(normalizar.texto(valor)).upper()
-    return limpio if limpio.isalpha() and len(limpio) >= 4 else ""
-
-
-def _oficina(valor: str) -> str:
-    """
-    La oficina identificadora son exactamente 4 dígitos. El número de trámite,
-    que está justo encima y cae en la misma zona, tiene 11: así se separan.
-    """
-    digitos = "".join(c for c in (valor or "") if c.isdigit())
-    return digitos if len(digitos) == 4 else ""

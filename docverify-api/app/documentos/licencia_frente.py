@@ -26,6 +26,12 @@ otorgamiento, 4b vencimiento, 5 número, 8 domicilio, 9 clases). Ese número es
 un ancla mucho más confiable que el rótulo en sí, porque el rótulo es bilingüe
 y largo —"4b. Vencimiento / Expires"— y el OCR lo parte donde se le ocurre,
 pero el "4b." al principio del renglón casi siempre sobrevive.
+
+El campo 8, el domicilio, ya no se lee: el de la licencia casi nunca coincide
+con el que la persona cargó en su cuenta —se mudó, lo abrevia distinto, el OCR
+le come un número de altura— así que cruzarlo produce rechazos falsos sin
+detectar ningún fraude. La jurisdicción tampoco: no habilita ni deshabilita
+nada. Los dos eran, además, los campos más caros de leer de esta cara.
 """
 
 from __future__ import annotations
@@ -60,12 +66,10 @@ CAMPOS_OCR = (
     "numero_licencia",
     "apellido",
     "nombre",
-    "domicilio",
     "fecha_nacimiento",
     "fecha_otorgamiento",
     "fecha_vencimiento",
     "clase",
-    "jurisdiccion",
 )
 
 
@@ -89,10 +93,9 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
 
     # TODAS las búsquedas de acá van con validador, y no es un detalle de
     # estilo. Los rótulos de esta licencia son bilingües y de dos partes
-    # ("8. Domicilio / Address", "9. Clases / Class"), así que la cola después
-    # del rótulo en castellano es el rótulo en inglés: sin validar, el
-    # domicilio salía "Address" y la clase salía "C" —la primera letra de
-    # "Class"—, los dos con pinta de dato bueno.
+    # ("9. Clases / Class"), así que la cola después del rótulo en castellano
+    # es el rótulo en inglés: sin validar, la clase salía "C" —la primera
+    # letra de "Class"— con toda la pinta de un dato bueno.
 
     # El número de licencia es el DNI del titular: mismo número, sin puntos.
     numero, conf_numero = lectura.debajo_de(
@@ -119,19 +122,6 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
     if not nombre:
         nombre, conf_nom = lectura.mejor_en_zona((0.24, 0.39, 0.78, 0.49), _es_nombre)
     origen.campos["nombre"] = campo(normalizar.nombre(nombre), nombre, conf_nom)
-
-    # El domicilio ocupa DOS renglones —la calle con sus rótulos internos y,
-    # debajo, la localidad— así que se toma la zona entera concatenada en vez
-    # de un renglón: quedarse con el primero perdía la localidad.
-    domicilio, conf_dom = lectura.texto_en_zona(0.22, 0.50, 0.95, 0.68)
-    domicilio = _sin_rotulo(domicilio, "ADDRESS", "DOMICILIO")
-    if not _es_domicilio(domicilio):
-        domicilio, conf_dom = lectura.despues_de_etiqueta(
-            "DOMICILIO", "ADDRESS", validar=_es_domicilio
-        )
-    origen.campos["domicilio"] = campo(
-        normalizar.domicilio(domicilio), domicilio, conf_dom
-    )
 
     # Las tres fechas se buscan por el número del campo (3, 4a, 4b) y, si no
     # aparece, por el rótulo. Una licencia de principiante tiene otorgamiento y
@@ -171,44 +161,12 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
         normalizar.clase_licencia(clase), clase, conf_clase
     )
 
-    # La jurisdicción está debajo del título, con la provincia y el municipio
-    # separados por un guion. El validador exige ese guion: es lo que la
-    # distingue del título "Licencia Nacional de Conducir", que está pegado
-    # arriba y cae en la misma zona.
-    jurisdiccion, conf_jur = lectura.mejor_en_zona(
-        (0.18, 0.08, 0.95, 0.22), _es_jurisdiccion
-    )
-    origen.campos["jurisdiccion"] = campo(
-        _es_jurisdiccion(jurisdiccion), jurisdiccion, conf_jur
-    )
-
     origen.detalle = {
         "texto_completo": lectura.texto_completo,
         "renglones": len(lectura.renglones),
         "confianza_media": round(lectura.confianza_media, 4),
     }
     return origen
-
-
-def _sin_rotulo(valor: str, *rotulos: str) -> str:
-    """
-    Saca el rótulo del principio de un texto tomado por zona.
-
-    Tomar la zona entera es lo único que trae el domicilio completo —son dos
-    renglones— pero arrastra el rótulo que está arriba. Se corta después de la
-    ÚLTIMA aparición del rótulo, no de la primera, porque es bilingüe y la
-    parte en inglés va al final: "8. Domicilio/ Address HAITI…" tiene que
-    cortarse en "Address" y no en "Domicilio".
-    """
-    if not valor:
-        return ""
-    normalizado = normalizar.sin_tildes(valor).upper()
-    corte = 0
-    for rotulo in rotulos:
-        posicion = normalizado.rfind(normalizar.sin_tildes(rotulo).upper())
-        if posicion >= 0:
-            corte = max(corte, posicion + len(rotulo))
-    return valor[corte:].lstrip(" :./-") if corte else valor
 
 
 def _es_nombre(valor: str) -> str:
@@ -221,32 +179,6 @@ def _es_nombre(valor: str) -> str:
     """
     limpio = normalizar.nombre(valor)
     if len(limpio.replace(" ", "")) < 3 or any(c.isdigit() for c in valor or ""):
-        return ""
-    return limpio
-
-
-def _es_domicilio(valor: str) -> str:
-    """
-    Un domicilio lleva número: sin un dígito, lo que se leyó es el rótulo.
-    Es lo que separa "HAITI, Altura:2558, …" de "Address".
-    """
-    limpio = normalizar.domicilio(valor)
-    if len(limpio) < 6 or not any(c.isdigit() for c in limpio):
-        return ""
-    return limpio
-
-
-def _es_jurisdiccion(valor: str) -> str:
-    """
-    La jurisdicción es "Provincia - Municipio": el guion es obligatorio.
-
-    Sin exigirlo, el título de la tarjeta —"Licencia Nacional de Conducir",
-    que está justo arriba y cae en la misma zona— pasaba como jurisdicción.
-    """
-    limpio = normalizar.texto(valor).upper()
-    if "-" not in limpio or len(limpio) < 6:
-        return ""
-    if "LICENCIA" in normalizar.sin_tildes(limpio):
         return ""
     return limpio
 

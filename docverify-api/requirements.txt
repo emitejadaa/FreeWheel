@@ -9,6 +9,9 @@ fastapi==0.121.2
 uvicorn[standard]==0.40.0
 # Sin esto FastAPI no puede leer multipart/form-data (la subida de archivos).
 python-multipart==0.0.21
+# Para avisarle al backend que un análisis terminó. Es el cliente que ya usa
+# FastAPI internamente para su TestClient, así que no agrega un árbol nuevo.
+httpx==0.28.1
 
 # ── Imagen ───────────────────────────────────────────────────────────────────
 # "headless" y no opencv-python a secas: la variante completa arrastra las

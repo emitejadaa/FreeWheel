@@ -238,39 +238,6 @@ def clase_licencia(valor: str) -> str:
     return f"{letra}.{numero}" if numero else letra
 
 
-def grupo_sanguineo(valor: str) -> str:
-    """El grupo y factor: "0+", "A-", "AB+". Vacío si el campo trae un guion."""
-    if not valor:
-        return ""
-    limpio = sin_tildes(str(valor)).upper().replace(" ", "")
-    encontrado = re.search(r"\b(0|O|A|B|AB)\s*([+\-]|POS|NEG)", limpio)
-    if not encontrado:
-        return ""
-    grupo, factor = encontrado.groups()
-    grupo = "0" if grupo == "O" else grupo
-    signo = "+" if factor in ("+", "POS") else "-"
-    return f"{grupo}{signo}"
-
-
-def domicilio(valor: str) -> str:
-    """
-    Un domicilio impreso, con los espacios que el OCR se comió.
-
-    El dorso del DNI separa los tramos con guiones y el motor devuelve
-    "HAITI2558 1640-MARTÍNEZ-SAN": pega la calle con la altura y come el
-    espacio alrededor del guion. Se reponen los dos casos seguros —el borde
-    entre letra y dígito, y los separadores— y nada más: cualquier heurística
-    más agresiva empezaría a partir nombres de calle que van pegados de verdad.
-    """
-    limpio = texto(valor)
-    if not limpio:
-        return ""
-    limpio = re.sub(r"\s*-\s*", " - ", limpio)
-    limpio = re.sub(r"(?<=[A-Za-zÁÉÍÓÚÑáéíóúñ])(?=\d)", " ", limpio)
-    limpio = re.sub(r"(?<=\d)(?=[A-Za-zÁÉÍÓÚÑáéíóúñ])", " ", limpio)
-    return re.sub(r"\s+", " ", limpio).strip().upper()
-
-
 def _armar(anio: int, mes: int, dia: int) -> str:
     """Arma la fecha ISO validando que exista de verdad (un 31/02 no pasa)."""
     if anio < 100:

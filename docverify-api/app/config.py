@@ -30,6 +30,19 @@ class Ajustes:
     origenes_permitidos: list[str]
     """Orígenes que pueden llamar desde un navegador (CORS)."""
 
+    concurrencia: int
+    """Cuántos análisis corren A LA VEZ. El default es 1 y no es conservadurismo:
+    el motor de OCR trabaja sobre imágenes descomprimidas y dos análisis
+    simultáneos no entran en una instancia de 512 MB. Subirlo requiere haberle
+    dado más memoria a la instancia, no solo más CPU."""
+
+    cola_maxima: int
+    """Cuántos análisis se aceptan sin terminar antes de contestar 503. Acota
+    cuánto puede crecer la espera de quien ya está en la fila."""
+
+    callback_timeout: float
+    """Cuánto se espera al backend al avisarle que un análisis terminó."""
+
 
 def _cargar() -> Ajustes:
     origenes = os.environ.get("DOCVERIFY_ORIGENES", "").strip()
@@ -39,6 +52,9 @@ def _cargar() -> Ajustes:
         origenes_permitidos=(
             [o.strip() for o in origenes.split(",") if o.strip()] if origenes else ["*"]
         ),
+        concurrencia=max(1, _entero("DOCVERIFY_CONCURRENCIA", 1)),
+        cola_maxima=max(1, _entero("DOCVERIFY_COLA_MAXIMA", 8)),
+        callback_timeout=float(_entero("DOCVERIFY_CALLBACK_TIMEOUT", 20)),
     )
 
 
