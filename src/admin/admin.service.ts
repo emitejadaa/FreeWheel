@@ -209,7 +209,6 @@ export class AdminService {
         front: signedUrl(verification.frontUrl),
         back: signedUrl(verification.backUrl),
       },
-      extracted: verification.extracted,
       matchReport: verification.matchReport,
       notes: verification.notes,
     };

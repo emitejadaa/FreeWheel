@@ -107,12 +107,12 @@ describe("buildEnvReport", () => {
     soloCon({
       DATABASE_URL: "postgres://x",
       JWT_SECRET: "s",
-      DOCVERIFY_MODE: "manual",
+      SMS_PROVIDER: "twilio",
     });
 
     const reporte = buildEnvReport();
 
-    expect(reporte.modes.DOCVERIFY_MODE).toBe("manual");
+    expect(reporte.modes.SMS_PROVIDER).toBe("twilio");
     // Los que no están cargados dicen cuál es el valor por defecto.
     expect(reporte.modes.PAYMENTS_PROVIDER).toContain("defecto");
   });

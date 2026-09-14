@@ -65,10 +65,28 @@ ENDPOINTS.md
 # External skill repos (local only, not committed)
 .tools/
 
-# Subproyecto Python de verificación de documentos
-python-verifier/.venv/
-python-verifier/__pycache__/
-python-verifier/**/__pycache__/
-python-verifier/.pytest_cache/
-# Fotos reales de prueba: documentos personales, solo locales
-python-verifier/testDocuments/
+# API de verificación de documentos (docverify-api/). Tiene su propio
+# .gitignore para el entorno y los cachés; acá va solo lo que conviene repetir.
+docverify-api/.venv/
+docverify-api/**/__pycache__/
+docverify-api/.debug/
+
+# FOTOS REALES DE DOCUMENTOS: NO VAN AL REPO.
+#
+# Son el DNI y la licencia de una persona de verdad —nombre, número, CUIL,
+# domicilio, fecha de nacimiento, foto, huella y la MRZ completa—. Subirlas a
+# git no se deshace: quedan en el historial, en los forks y en las cachés
+# aunque después se borre el archivo. Y encima `public/` lo sirve el backend,
+# así que en el deploy quedarían descargables desde internet.
+#
+# Se usan para probar el lector (`python probar_imagenes.py`) y para eso
+# alcanza con tenerlas en disco. Quien clone el repo pone las suyas.
+public/images/
+
+# Estado local de Thunder Client. thunderEnvironment.json guarda los tokens
+# con los que uno probó la API: es un archivo de la máquina, no del proyecto.
+thunderActivity.json
+thunderEnvironment.json
+
+# Salida de la herramienta graphify: caché regenerable.
+graphify-out/

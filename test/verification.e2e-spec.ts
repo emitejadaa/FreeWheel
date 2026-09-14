@@ -278,12 +278,24 @@ describe("Verification", () => {
     await verifyPhone(user.token);
     await setIdentityProfile(app, user.token);
 
+    // Enviar las fotos NO aprueba nada: las aprueba un admin. Acá la
+    // aprobación se escribe directo en la base porque lo que se ejercita es
+    // el cálculo del estado de la CUENTA, no el circuito de la revisión (ese
+    // vive completo en identity-review.e2e-spec.ts).
+    const aprobar = async (kind: "dni" | "license") => {
+      await http()
+        .post(`/verification/identity/${kind}/submit`)
+        .set("Authorization", auth(user.token))
+        .send(documentUrls(user.id, kind))
+        .expect(201);
+      await prisma.documentVerification.updateMany({
+        where: { userId: user.id, type: kind === "dni" ? "DNI" : "LICENSE" },
+        data: { status: "APPROVED" },
+      });
+    };
+
     // Solo el DNI: la cuenta todavía no está verificada.
-    await http()
-      .post("/verification/identity/dni/submit")
-      .set("Authorization", auth(user.token))
-      .send(documentUrls(user.id, "dni"))
-      .expect(201);
+    await aprobar("dni");
 
     const parcial = await http()
       .get("/verification/me/status")
@@ -295,11 +307,7 @@ describe("Verification", () => {
     expect(parcial.body.checklist.licenseApproved).toBe(false);
 
     // Con la licencia también aprobada, la cuenta queda VERIFIED.
-    await http()
-      .post("/verification/identity/license/submit")
-      .set("Authorization", auth(user.token))
-      .send(documentUrls(user.id, "license"))
-      .expect(201);
+    await aprobar("license");
 
     const status = await http()
       .get("/verification/me/status")
@@ -317,6 +325,21 @@ describe("Verification", () => {
     });
   });
 
+  it("accepts resubmitting a document that is still pending review", async () => {
+    const user = await registerUser(app, { verified: false });
+    await setIdentityProfile(app, user.token);
+    const enviar = () =>
+      http()
+        .post("/verification/identity/dni/submit")
+        .set("Authorization", auth(user.token))
+        .send(documentUrls(user.id, "dni"));
+
+    await enviar().expect(201);
+    // Reenviar reemplaza la fila viva en vez de rechazar el envío.
+    const reenvio = await enviar().expect(201);
+    expect(reenvio.body.status).toBe("PENDING");
+  });
+
   it("refuses to resubmit a document that is already approved (400)", async () => {
     const user = await registerUser(app, { verified: false });
     await setIdentityProfile(app, user.token);
@@ -325,6 +348,10 @@ describe("Verification", () => {
       .set("Authorization", auth(user.token))
       .send(documentUrls(user.id, "dni"))
       .expect(201);
+    await prisma.documentVerification.updateMany({
+      where: { userId: user.id, type: "DNI" },
+      data: { status: "APPROVED" },
+    });
 
     const res = await http()
       .post("/verification/identity/dni/submit")

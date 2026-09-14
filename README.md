@@ -171,7 +171,7 @@ No usar migraciones destructivas ni `db push` contra produccion sin confirmacion
 - `UsersModule`: lectura y actualizacion de perfil propio.
 - `VehiclesModule`: alta, lectura, edicion y baja de vehiculos propios.
 - `ListingsModule`: publicaciones propias y catalogo publico activo.
-- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) y documental (DNI y licencia en flujos separados). La extraccion de datos la hace un verificador externo (`DOCVERIFY_URL`), todavia sin implementar; la comparacion y el veredicto, este backend. Deja la cuenta `VERIFIED` para habilitar acciones sensibles.
+- `VerificationModule`: verificacion de email/telefono (codigos por email/SMS) y documental (DNI y licencia en flujos separados). Los documentos se revisan A MANO: el backend guarda las fotos y un admin las aprueba o rechaza. La lectura automatica de documentos vive en `docverify-api/`, un servicio aparte que este backend no llama. Deja la cuenta `VERIFIED` para habilitar acciones sensibles.
 - `SmsModule`: envio de codigos por SMS con interfaz de proveedor (`SMS_PROVIDER`, solo `mock` implementado).
 - `BookingsModule`: solicitudes, aceptacion/rechazo/cancelacion y confirmaciones por token.
 - `AdminModule`: gestion protegida por `ADMIN` de usuarios, verificaciones, listings y bookings.
@@ -385,53 +385,58 @@ están aprobados.
 
 Para probar el flujo entero a mano hay un front mínimo en
 `public/demo/verificacion.html`, que el backend sirve en
-`/demo/verificacion.html` (mismo origen, sin CORS de por medio). Hace los tres
-pasos reales — firma, subida a Cloudinary y verificación — y muestra en cuál de
-ellos falla, con lo que se esperaba y lo que llegó.
+`/demo/verificacion.html` (mismo origen, sin CORS de por medio). Hace los pasos
+reales — firma, subida a Cloudinary, envío y revisión del admin — y muestra en
+cuál de ellos falla, con lo que se esperaba y lo que llegó. Ese mismo front es
+**un HTML suelto**: se abre con doble clic, sin servidor ni puerto.
 
-Ese mismo front es **un HTML suelto**: se abre con doble clic, sin servidor ni
-puerto. Tiene una sección para probar **sólo la lectura de los documentos**,
-sin backend de por medio, pegándole directo a un verificador en
-`DOCVERIFY_URL` — hoy no hay ninguno implementado, así que esa sección queda
-sin backend que la conteste hasta que exista uno.
+### El backend NO lee las fotos
 
-La extracción todavía no está implementada. El plan es que un verificador
-externo (apuntado por `DOCVERIFY_URL`, ver
-`src/verification/docverify/python-docverify.service.ts`) reciba las fotos en
-base64 por HTTP y devuelva, por foto, un objeto por protocolo de lectura —el
-contrato completo está en `src/verification/docverify/docverify.types.ts`:
+Las valida como archivos (que sean nuestras, del slot correcto, de esta cuenta
+y que existan en el storage), las guarda y las deja para que las mire un
+admin. El ciclo es:
 
-- **DNI frente**: `codigo` (PDF417 del RENAPER, decodificado con `zxing-cpp`) y
-  `ocr` (lectura posicional tras corregir bordes, perspectiva y orientación).
-- **DNI dorso**: `mrz` (TD1 ICAO, aceptado sólo si cierran sus dígitos
-  verificadores) y `ocr` (domicilio y CUIL, que no están en ningún código).
-- **Licencia frente / dorso**: `ocr` (número, nombre, domicilio, fechas, CUIL y
-  la leyenda de principiante con su fecha límite).
+```
+submit         → PENDING        las fotos están, nadie las revisó
+request-review → MANUAL_REVIEW  a la cola de GET /admin/verifications
+admin          → APPROVED | REJECTED
+```
 
-El backend cruza **todo** y sólo aprueba si no queda nada vacío ni en conflicto:
-cada dato debe coincidir entre protocolos y contra los datos de la cuenta, el
-documento tiene que estar vigente, la persona ser mayor de 18 según el
-documento, el CUIL contener el DNI leído, la licencia pertenecer al mismo
-titular y su período de principiante estar cumplido.
+Desde `PENDING` se puede reenviar fotos siempre (reemplaza el intento anterior
+y borra sus archivos) y se puede pedir la revisión. Pedirla **no** cierra la
+puerta a reenviar: mandar fotos nuevas deja el pedido sin efecto, porque el
+admin tiene que mirar esas fotos y no las anteriores. El rechazo del admin
+**borra la documentación** del storage.
 
-Cuando algo no cierra, el usuario recibe **motivos con código estable y mensaje
-en castellano** que dicen qué campo y en qué foto falló, y le quedan dos
-salidas: reenviar fotos mejores (reemplaza el intento anterior y borra sus
-archivos) o `POST /verification/identity/:document/request-review`, que lo pasa
-a la cola de un admin. El admin aprueba o rechaza desde
-`PATCH /admin/verifications/:id/review`; **el rechazo borra la documentación**
-del storage.
+Las fotos son información personal sensible: sólo las ve un admin
+(`GET /admin/verifications/:id/documents`, con URLs firmadas efímeras y
+auditoría de acceso), nunca el usuario ni los logs. Un mismo documento no puede
+verificar dos cuentas, y los campos que respaldan la identidad quedan
+inmutables una vez verificada.
 
-Los datos extraídos y el reporte de cruces son información personal sensible:
-sólo los ve un admin (`GET /admin/verifications/:id/documents`, con URLs
-firmadas efímeras y auditoría de acceso), nunca el usuario ni los logs. Un
-mismo documento no puede verificar dos cuentas, y los campos que respaldan la
-identidad quedan inmutables una vez verificada.
+### La lectura automática vive aparte
 
-Modos (`DOCVERIFY_MODE`): `auto` (producción; exige `CLOUDINARY_*` y
-`DOCVERIFY_URL` configurada, si no degrada a `manual` avisando), `manual`
-(decide siempre un admin) y `auto_approve` (aprueba todo; **sólo** desarrollo
-y tests).
+En [`docverify-api/`](docverify-api/README.md): un servicio de Python
+independiente, con su propio deploy y **sin ninguna conexión con este
+backend** — no comparten base, ni configuración, ni llamadas. Encuadra el
+documento, lo endereza y lo lee por todos los medios que tenga, con un endpoint
+por cara:
+
+- **DNI frente** — `ocr` + `pdf417` (el código del RENAPER). El vencimiento es
+  el único campo que no está codificado: sólo existe impreso.
+- **DNI dorso** — `ocr` (domicilio, lugar de nacimiento y CUIL, que no están en
+  ningún código) + `mrz` (TD1 ICAO, con sus dígitos verificadores: la única
+  lectura que puede demostrar por sí sola que se leyó bien).
+- **Licencia frente** — `ocr`. No tiene códigos.
+- **Licencia dorso** — `ocr` + `pdf417` + el código de barras lineal del borde.
+
+Devuelve el mismo JSON en los cuatro endpoints, organizado **por origen**, con
+cada dato normalizado y crudo, y un bloque `coincidencias` que dice si lo que
+está impreso y lo que dice el código coinciden — que es lo que delata una
+tarjeta adulterada. Lo que no se pudo leer vuelve vacío, nunca ausente.
+
+El paso 5 del demo le pega directo desde el navegador, sin pasar por el
+backend.
 
 ## QR Tokens
 

@@ -423,17 +423,18 @@ Archivos:
 
 - `src/verification/verification.controller.ts`
 - `src/verification/verification.service.ts`
-- `src/verification/verification.module.ts` (resuelve `DOCVERIFY_MODE`)
+- `src/verification/verification.module.ts`
 - `src/verification/dto/confirm-code.dto.ts`
 - `src/verification/dto/submit-document.dto.ts`
 - `src/verification/dto/upload-signature.dto.ts`
 - `src/verification/identity/identity-documents.service.ts` (firma, valida y borra archivos)
 - `src/verification/identity/document-verification.service.ts` (el flujo completo)
-- `src/verification/docverify/docverify.types.ts` (contrato con el verificador)
-- `src/verification/docverify/python-docverify.service.ts` (llama al verificador via HTTP)
-- `src/verification/matching/document-match.service.ts` (toda la politica de decision)
-- `src/verification/matching/normalize.util.ts`
 - `src/verification/errors/verification-reasons.ts` (catalogo de motivos)
+
+Este modulo NO analiza las fotos. La lectura automatica de documentos vive en
+`docverify-api/`, un servicio de Python independiente que se deploya aparte y
+con el que este backend no tiene ninguna conexion: no lo llama, no lo
+configura y no sabe donde esta.
 
 Responsabilidades:
 
@@ -486,18 +487,14 @@ FAILED -> reenviar fotos (reemplaza el intento y borra sus archivos)
 REJECTED -> los archivos se borran del storage; se puede volver a empezar
 ```
 
-Diseno reemplazable:
+Revision manual:
 
-- `DOCVERIFY_MODE` elige el modo: `auto` (default; sin `CLOUDINARY_*` o sin el verificador Python instalado degrada a `manual` avisando, y si se pidio a mano sin credenciales falla al arrancar), `manual` (decide siempre un admin) y `auto_approve` (aprueba todo; solo desarrollo y tests).
-- `PythonDocverifyService` es el unico punto de contacto con el subproyecto y se fakea entero en los E2E (`test/helpers/identity.fake.ts`).
-- El subproyecto Python es reemplazable por cualquier cosa que respete el contrato de `docverify.types.ts`.
-- `DocumentMatchService` es puro: toda la politica de decision vive ahi y se testea sin base ni red.
+- No hay ningun modo que configurar: los documentos los aprueba o los rechaza un admin, siempre. `submit` deja la fila en `PENDING`; `request-review` la pasa a `MANUAL_REVIEW`.
+- `FAILED` sigue en el enum de `DocumentVerificationStatus` porque hay filas viejas con ese estado, escritas por la verificacion automatica que ya no existe. Se las trata igual que a un `PENDING`: se puede reenviar fotos o pedir revision.
+- La lectura automatica esta en `docverify-api/` y devuelve sus datos a quien la llame; no escribe en esta base ni influye en el veredicto.
 
-Seguridad y aislamiento del verificador:
+Seguridad de los documentos:
 
-- El subproceso no abre puertos, no sale a la red y no recibe ninguna credencial del backend (entorno minimo: `PATH` y `LANG`). No hay forma de llegar a el mas que por `PythonDocverifyService`, que solo usa el flujo de verificacion.
-- Ningun dato del usuario viaja por `argv`: solo rutas de archivo que genera el propio servicio con `randomUUID` en un directorio temporal privado (`0600`), borrado siempre al terminar.
-- Timeout duro con `SIGKILL` (`DOCVERIFY_TIMEOUT_MS`): un analisis colgado nunca deja el request vivo.
 - Los documentos se suben como `type=authenticated`: sus URLs sin firma devuelven 401. La base guarda la URL canonica sin firma; las firmadas se generan al momento y solo para admins.
 - El `public_id` lo arma el servidor a partir del JWT (`identity/<userId>/<documento>_<lado>_...`), asi que un usuario no puede subir a la carpeta de otro ni cruzar un documento de slot.
 - El submit valida cloud, tipo de entrega, prefijo de carpeta, slot y existencia real del asset antes de aceptar una URL.
@@ -1238,84 +1235,65 @@ Pasos:
    fallo (`problem`), en que etapa (`step`), en que campo (`field`) y que se
    esperaba contra que llego (`details`); `errors` lista los dos archivos
    cuando los dos estan mal.
-5. Descarga las dos fotos y se las pasa a un **verificador externo**
-   (`DOCVERIFY_URL`, ver `python-docverify.service.ts`), todavia sin
-   implementar, que deberia devolver, por foto, un objeto por protocolo de
-   lectura con SIEMPRE los mismos nombres de campo:
+5. La fila queda en `PENDING`. **El backend no lee las fotos**: no hay
+   extraccion, ni comparacion, ni veredicto automatico. Lo unico que se guarda
+   de la persona es el `documentNumber` tomado del DNI declarado en el perfil,
+   que es lo que sostiene el control antifraude.
 
-   | Foto | Protocolos | Campos |
-   | --- | --- | --- |
-   | `dni_front` | `ocr`, `codigo` | apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaEmision, fechaVencimiento (el codigo no trae vencimiento) |
-   | `dni_back` | `ocr`, `mrz` | domicilio, cuil / apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaVencimiento |
-   | `license_front` | `ocr` | numLicencia, apellido, nombre, domicilio, fechaNacimiento, fechaVencimiento |
-   | `license_back` | `ocr` | cuil, esPrincipiante, finPrincipiante |
+6. `POST /verification/identity/:document/request-review` pasa la fila a
+   `MANUAL_REVIEW` y la pone en la cola de `GET /admin/verifications`. Se puede
+   pedir sobre un `PENDING` o sobre un `FAILED` (el estado que dejaron las
+   submissions de la verificacion automatica vieja).
 
-   El verificador **no decide nada**: rectifica la foto (bordes, perspectiva,
-   orientacion), decodifica el PDF417 con `zxing-cpp`, lee el MRZ y valida sus
-   digitos verificadores, hace OCR posicional por zonas y limpia cada valor
-   segun su tipo. Un campo que no se pudo leer viene en `null`; un protocolo
-   que fallo entero trae ademas su `error` con codigo y mensaje.
+   Pedir la revision NO bloquea el reenvio: mandar fotos nuevas reemplaza la
+   fila entera y deja el pedido sin efecto, porque el admin tiene que mirar
+   ESAS fotos. Si lo bloqueara, alguien que subio una foto movida quedaria
+   encerrado en la cola esperando a que alguien la mire.
 
-6. `DocumentMatchService` (puro, sin IO) cruza todo y decide. Aprueba **solo**
-   si no queda nada vacio ni en conflicto:
-
-   | Chequeo | DNI | Licencia |
-   | --- | --- | --- |
-   | PDF417 legible | obligatorio | - |
-   | MRZ con digitos verificadores validos | obligatorio | - |
-   | Apellido y nombre coinciden con la cuenta | si | si |
-   | Numero de documento coincide entre todas las fuentes y la cuenta | si | el nro de licencia es el DNI del titular |
-   | Fecha de nacimiento coincide entre todas las fuentes y la cuenta | si | si |
-   | Mayor de 18 segun el documento | si | si |
-   | Sexo coincide entre protocolos | si | - |
-   | Fecha de emision coincide entre protocolos | si | - |
-   | Documento vigente | si | si |
-   | CUIL: legible, checksum valido, igual al de la cuenta, contiene el DNI | si | si |
-   | Periodo de principiante ya cumplido | - | si |
-   | Domicilio | compara, no bloquea por si solo | idem |
-
-   Detalles del criterio: los nombres leidos por **optica** (OCR y la linea de
-   nombres del MRZ, que en TD1 no tiene digito verificador propio) toleran un
-   caracter mal transcripto por token de 4+ letras; el PDF417 y el formulario
-   se comparan exactos. La **edad** se evalua sobre lo que dice el documento
-   aunque no coincida con la cuenta: un documento que dice que la persona es
-   menor tiene que decirlo con ese motivo. El **domicilio** se compara por
-   similitud de tokens y su mensaje es mas suave, porque el formato impreso
-   varia tanto que un conflicto suele ser formato y no fraude.
-
-7. Veredicto:
+7. Veredicto del admin (`PATCH /admin/verifications/:id/review`):
    - **APPROVED**: el documento queda verificado. Si el otro tambien lo esta,
-     la cuenta pasa a `VERIFIED`.
-   - **FAILED**: la respuesta trae los motivos (codigo estable + mensaje en
-     castellano que dice que campo y en que foto fallo, sin exponer el valor
-     leido). Al usuario le quedan dos salidas: **reenviar fotos** mejores (el
-     nuevo intento reemplaza al anterior y borra sus archivos) o
-     `POST /verification/identity/:document/request-review`, que lo pasa a
-     `MANUAL_REVIEW`.
-   - **MANUAL_REVIEW**: espera a un admin, que resuelve con
-     `PATCH /admin/verifications/:id/review`. `APPROVED` lo aprueba;
-     `REJECTED` lo rechaza **y borra la documentacion del storage**.
+     la cuenta pasa a `VERIFIED`. La aprobacion revalida dentro de la
+     transaccion que ese documento no verifique ya otra cuenta.
+   - **REJECTED**: rechaza **y borra la documentacion del storage**. La cuenta
+     queda `REJECTED` hasta que se reenvien fotos.
 
 Catalogo de motivos (`errors/verification-reasons.ts`): `PERFIL_INCOMPLETO`,
-`FOTO_NO_PROCESABLE`, `VERIFICACION_NO_DISPONIBLE`, `CODIGO_NO_LEIDO`,
-`MRZ_NO_LEIDO`, `CAMPO_ILEGIBLE`, `CAMPO_NO_COINCIDE`, `DOMICILIO_ILEGIBLE`,
-`DOMICILIO_NO_COINCIDE`, `DNI_VENCIDO`, `LICENCIA_VENCIDA`, `MENOR_DE_EDAD`,
-`PRINCIPIANTE_VIGENTE`, `PRINCIPIANTE_NO_DETERMINADO`,
-`CUIL_NO_CORRESPONDE_AL_DNI`, `LICENCIA_NO_CORRESPONDE_AL_DNI`,
-`DOCUMENTO_YA_VERIFICADO`, `RECHAZADO_POR_ADMIN`.
+`DOCUMENTO_YA_VERIFICADO` y `RECHAZADO_POR_ADMIN`. Son pocos porque el backend
+no analiza nada: los motivos de "no pudimos leer tal campo" pertenecian a la
+verificacion automatica y se fueron con ella. Las filas viejas guardan el
+motivo completo (codigo + mensaje) dentro de `matchReport`, asi que se siguen
+mostrando aunque su codigo ya no este en el catalogo.
 
 Antifraude: `User.dni` y `User.cuil` son unicos, la aprobacion revalida dentro
 de la transaccion que el documento no verifique ya otra cuenta, y los campos
 que respaldan la identidad quedan inmutables una vez que hay un documento
 aprobado.
 
-#### Matriz de evidencia
+#### La lectura automatica de documentos
 
-`matchReport.matrix` trae, para cada campo comparado, que dijo cada fuente
-(`cuenta`, `ocr <slot>`, `codigo`, `mrz`) y un estado (`ok`, `vacio`,
-`conflicto`, `advertencia`). Es EVIDENCIA para el admin, no la decision: cada
-chequeo conserva su propio criterio. Contiene datos personales, asi que solo se
-expone en `GET /admin/verifications/:id/documents`.
+Vive en `docverify-api/`, **fuera de este backend**: es un servicio de Python
+(FastAPI) que se deploya aparte, no comparte base ni configuracion, y al que
+este backend no le pega. Recibe una foto y devuelve lo que pudo leer; quien lo
+llame decide que hacer con eso.
+
+Un endpoint por cara del documento, porque cada cara se lee distinto:
+
+| Endpoint | Origenes |
+| --- | --- |
+| `POST /analizar/dni-frente` | `ocr` + `pdf417` (el codigo del RENAPER) |
+| `POST /analizar/dni-dorso` | `ocr` (domicilio, lugar de nacimiento, CUIL) + `mrz` (TD1 ICAO con sus digitos verificadores) |
+| `POST /analizar/licencia-frente` | `ocr` (no tiene codigos) |
+| `POST /analizar/licencia-dorso` | `ocr` + `pdf417` + el codigo de barras lineal del borde |
+
+Antes de leer nada encuadra el documento: detecta sus bordes, corrige la
+perspectiva y lo endereza a un rectangulo ID-1 de tamano fijo. Eso es lo que
+permite despues buscar cada dato POR SU POSICION, ademas de por su rotulo.
+
+El JSON es el mismo en los cuatro endpoints, organizado por origen, con cada
+dato normalizado y crudo, y un bloque `coincidencias` que dice si lo impreso y
+lo codificado dicen lo mismo — que es lo que delata una tarjeta adulterada. Un
+dato que no se pudo leer viene vacio, nunca ausente. El contrato completo esta
+en `docverify-api/README.md` y se puede consultar en vivo en `GET /contrato`.
 
 ### Flujo De Reserva Actual
 
@@ -1574,14 +1552,10 @@ SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
 # CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
 CORS_STRICT=""
-# Verificacion documental: auto (produccion) | manual | auto_approve
-DOCVERIFY_MODE="auto_approve"
-# URL de un verificador externo que cumpla el contrato de docverify.types.ts.
-# Todavia no hay ninguno implementado; sin esto "auto" degrada a "manual".
-DOCVERIFY_URL=""
-DOCVERIFY_TOKEN=""
-DOCVERIFY_TIMEOUT_MS=120000
-# Requeridas por DOCVERIFY_MODE=auto (falla al arrancar sin ellas)
+# Verificacion documental: no se configura. Los documentos los revisa un admin
+# a mano. La lectura automatica corre en docverify-api/, que tiene su propio
+# .env y se deploya aparte.
+# Requeridas para subir documentos (sin ellas el submit devuelve 503)
 CLOUDINARY_CLOUD_NAME=""
 CLOUDINARY_API_KEY=""
 CLOUDINARY_API_SECRET=""

@@ -37,12 +37,17 @@ enum VerifiedDocumentType {
 }
 
 /// Estado de la verificación de UN documento.
-/// - APPROVED: la revisión (automática o de un admin) aprobó el documento.
-/// - FAILED: la revisión automática no pudo aprobarlo; el usuario puede
-///   reenviar fotos o pedir revisión manual.
-/// - MANUAL_REVIEW: el usuario pidió revisión manual; espera a un admin.
+/// - PENDING: las fotos están subidas y todavía nadie las revisó. Es el
+///   estado con el que nace toda submission; el usuario puede reenviar fotos
+///   o pedir la revisión de un admin.
+/// - MANUAL_REVIEW: el usuario pidió la revisión; espera a un admin.
+/// - APPROVED: un admin aprobó el documento.
 /// - REJECTED: un admin lo rechazó; los archivos se borran del storage.
+/// - FAILED: histórico. Lo escribía la verificación automática, que ya no
+///   existe. Se conserva porque hay filas viejas con este estado; se las
+///   trata igual que a un PENDING (se puede reenviar o pedir revisión).
 enum DocumentVerificationStatus {
+  PENDING
   APPROVED
   FAILED
   MANUAL_REVIEW
@@ -345,17 +350,15 @@ model DocumentVerification {
   status         DocumentVerificationStatus
   frontUrl       String?
   backUrl        String?
-  // Datos leídos del documento por el verificador. Quedan registrados acá y
-  // no se le piden al usuario, así no se pueden falsear.
+  // Número de documento asociado a esta verificación. Sostiene el control
+  // antifraude: una misma identidad no puede quedar aprobada en dos cuentas.
   documentNumber String?
   expiresAt      DateTime?
-  // Extracción cruda del verificador Python y comparativa campo por campo.
-  // Contienen datos personales: solo se exponen a admins, nunca en las
-  // respuestas del propio usuario.
-  extracted      Json?
+  // Motivo del último veredicto (hoy: el rechazo de un admin), con el mensaje
+  // completo guardado adentro para que las filas viejas se sigan mostrando
+  // aunque su código ya no esté en el catálogo.
   matchReport    Json?
-  // Motivos del último veredicto automático, en códigos estables aptos para
-  // mostrarle al usuario (sin datos personales).
+  // Los mismos motivos en códigos estables, aptos para que el front ramifique.
   reasonCodes    String[]                   @default([])
   // Revisión manual: cuándo la pidió el usuario y quién/cuándo la resolvió.
   reviewRequestedAt DateTime?

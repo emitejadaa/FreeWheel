@@ -1,0 +1,37 @@
+# API de verificación documental — servicio independiente del backend Nest.
+#
+# Todo se instala con pip: no hace falta ningún binario del sistema (ni
+# Tesseract ni zbar). Es lo que hace que el deploy sea el mismo en Windows y en
+# Linux, y que no haga falta un Dockerfile con apt-get.
+
+# ── Web ──────────────────────────────────────────────────────────────────────
+fastapi==0.121.2
+uvicorn[standard]==0.40.0
+# Sin esto FastAPI no puede leer multipart/form-data (la subida de archivos).
+python-multipart==0.0.21
+
+# ── Imagen ───────────────────────────────────────────────────────────────────
+# "headless" y no opencv-python a secas: la variante completa arrastra las
+# librerías de GUI (GTK/Qt), que en un contenedor no existen y no se usan.
+opencv-python-headless==4.13.0.90
+numpy==2.3.4
+# Pillow lee la orientación EXIF, que es por dónde entra el 90% de las fotos
+# "giradas" que saca un teléfono.
+pillow==12.1.0
+
+# ── OCR ──────────────────────────────────────────────────────────────────────
+# Modelos PP-OCR corriendo sobre ONNX Runtime. Se bajan la primera vez que se
+# instancia el motor (~100 MB) y quedan cacheados en ~/.rapidocr.
+#
+# Es `rapidocr` y NO `rapidocr-onnxruntime`: ese último quedó congelado en
+# Python <3.13 (su última versión, 1.4.4, declara Requires-Python <3.13), así
+# que en un intérprete 3.13 pip ni siquiera lo encuentra. `rapidocr` 3.x es el
+# mismo proyecto continuado, con el runtime elegible por parámetro.
+rapidocr==3.9.2
+onnxruntime==1.30.0
+
+# ── Códigos de barras ────────────────────────────────────────────────────────
+# zxing-cpp lee PDF417, QR y los 1D (Code128/Code39/ITF) con una sola llamada.
+# Es la única de la lista que trae binario compilado, y publica wheels para
+# Windows y Linux, así que sigue siendo pip y nada más.
+zxing-cpp==2.3.0

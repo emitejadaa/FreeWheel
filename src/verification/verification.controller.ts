@@ -95,11 +95,11 @@ export class VerificationController {
   }
 
   /**
-   * Verifica UN documento (dni o license) con sus dos fotos. Corre el
-   * verificador Python y la comparación en el momento: la respuesta ya trae
-   * el veredicto (APPROVED/FAILED) con sus motivos. DNI y licencia son
-   * flujos separados: se pueden mandar juntos (dos requests) o cada uno
-   * cuando el usuario quiera.
+   * Envía UN documento (dni o license) con sus dos fotos. Las guarda y lo
+   * deja PENDING: este backend no analiza las imágenes. El paso siguiente lo
+   * da el usuario con `request-review`, que lo manda a la cola del admin.
+   * DNI y licencia son flujos separados: se pueden mandar juntos (dos
+   * requests) o cada uno cuando el usuario quiera.
    */
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @Post("identity/:document/submit")
@@ -115,7 +115,7 @@ export class VerificationController {
     );
   }
 
-  /** Pide que un admin revise a mano el último resultado FAILED. */
+  /** Manda el documento enviado a la cola de revisión de un admin. */
   @Throttle({ default: { limit: 3, ttl: 900_000 } })
   @Post("identity/:document/request-review")
   requestManualReview(
@@ -129,10 +129,8 @@ export class VerificationController {
   }
 
   /**
-   * Por qué este servidor verifica (o no) de forma automática: el modo
-   * efectivo, el motivo si degradó, y si el verificador contesta.
-   *
-   * Es lo primero que hay que mirar cuando "la verificación no anda".
+   * Cómo revisa documentos este servidor. Siempre a mano: el análisis
+   * automático vive en un servicio aparte que no está conectado con este.
    */
   @Get("identity/diagnostics")
   getDiagnostics() {

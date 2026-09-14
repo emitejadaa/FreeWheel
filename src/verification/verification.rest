@@ -6,15 +6,21 @@
 ### se aprueba por su cuenta. La cuenta queda VERIFIED cuando los DOS están
 ### aprobados (más el email, y el teléfono si REQUIRE_PHONE_VERIFICATION=true).
 ###
-### La extracción de datos la hace un verificador externo (DOCVERIFY_URL),
-### todavía sin implementar: PDF417 del DNI, MRZ del dorso, OCR posicional,
-### CUIL y leyenda de principiante. La comparación y el veredicto los hace
-### este backend (contrato en src/verification/docverify/docverify.types.ts).
+### ESTE BACKEND NO LEE LAS FOTOS. Las valida como archivos (que sean nuestras,
+### del slot correcto, de esta cuenta y que existan), las guarda y las deja para
+### que un admin las revise. El circuito es:
 ###
-### Con DOCVERIFY_MODE=auto_approve (.env — solo desarrollo) el submit aprueba
-### directo sin llamar al verificador. Igual necesita que los archivos EXISTAN en
-### Cloudinary (el submit valida existencia real vía la Admin API), así que
-### hace falta CLOUDINARY_* configurado y subir algo (requests #7-#10).
+###   submit         → PENDING        (fotos guardadas, nadie las miró todavía)
+###   request-review → MANUAL_REVIEW  (a la cola de GET /admin/verifications)
+###   admin          → APPROVED | REJECTED
+###
+### La lectura automática de documentos —PDF417, MRZ, OCR posicional, CUIL,
+### leyenda de principiante— vive en docverify-api/, un servicio de Python
+### aparte que se deploya por su cuenta y NO está conectado con este backend.
+###
+### El submit necesita que los archivos EXISTAN en Cloudinary (valida existencia
+### real vía la Admin API), así que hace falta CLOUDINARY_* configurado y haber
+### subido algo (requests #5-#6).
 ###
 ### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
 ### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
@@ -181,18 +187,12 @@ Content-Type: {{contentType}}
   "url": "https://res.cloudinary.com/<cloud>/image/authenticated/identity/{{userId}}/license_front_1700000000_abcdef01.jpg"
 }
 
-### ── #7 · Verificar el DNI (frente + dorso) ────────────────────────────────
-### La respuesta YA trae el veredicto: status APPROVED o FAILED con sus
-### motivos (código estable + mensaje listo para mostrar).
-###
-### Y trae "extraction": TODO lo que leyó el verificador (JSON crudo, foto por
-### foto y protocolo por protocolo) más la comparación campo por campo contra
-### los datos de la cuenta. Es lo que permite ver DÓNDE está el problema: si la
-### foto salió mal, si el OCR leyó cualquier cosa, o si el dato del perfil está
-### mal cargado. Se apaga con VERIFICATION_EXPOSE_EXTRACTION=false.
+### ── #7 · Enviar el DNI (frente + dorso) ───────────────────────────────────
+### Guarda las dos fotos y deja el documento en PENDING. No hay veredicto acá:
+### el análisis no lo hace este backend. El paso siguiente es #9.
 ###
 ### SE PUEDE REENVIAR SIEMPRE (salvo que ya esté APPROVED), incluso con una
-### revisión manual pendiente: mandar fotos nuevas la deja sin efecto. Hay UNA
+### revisión pendiente: mandar fotos nuevas la deja sin efecto. Hay UNA
 ### revisión viva por documento y la última que se pide es la que vale.
 ### Límite: 5 cada 15 minutos.
 POST {{baseUrl}}/verification/identity/dni/submit
@@ -204,7 +204,7 @@ Content-Type: {{contentType}}
   "backUrl": "https://res.cloudinary.com/<cloud>/image/authenticated/identity/{{userId}}/dni_back_1700000000_abcdef01.jpg"
 }
 
-### ── #8 · Verificar la licencia (frente + dorso) ───────────────────────────
+### ── #8 · Enviar la licencia (frente + dorso) ──────────────────────────────
 ### Se puede mandar junto con el DNI o en otro momento: son independientes.
 POST {{baseUrl}}/verification/identity/license/submit
 Authorization: Bearer {{token}}
@@ -215,13 +215,14 @@ Content-Type: {{contentType}}
   "backUrl": "https://res.cloudinary.com/<cloud>/image/authenticated/identity/{{userId}}/license_back_1700000000_abcdef01.jpg"
 }
 
-### ── #9 · Pedir revisión de un administrador ───────────────────────────────
-### Solo sobre un documento en FAILED. Lo pasa a MANUAL_REVIEW y aparece en
+### ── #9 · Pedir la revisión de un administrador ────────────────────────────
+### Sobre un documento en PENDING (o en FAILED, el estado de las submissions
+### viejas). Lo pasa a MANUAL_REVIEW y aparece en
 ### GET /admin/verifications?status=MANUAL_REVIEW. Límite: 3 cada 15 minutos.
 ###
 ### Pedirla NO cierra la puerta a seguir intentando: se puede reenviar fotos
 ### igual, y eso deja el pedido sin efecto. Después del reenvío se puede volver
-### a pedir, y la nueva revisión es sobre ESE resultado.
+### a pedir, y la nueva revisión es sobre ESAS fotos.
 POST {{baseUrl}}/verification/identity/dni/request-review
 Authorization: Bearer {{token}}
 
@@ -230,23 +231,15 @@ POST {{baseUrl}}/verification/identity/license/request-review
 Authorization: Bearer {{token}}
 
 ### ── #10 · Estado de mis dos documentos ────────────────────────────────────
-### Nunca devuelve las URLs de las fotos: son datos personales. Cada documento
-### trae su "extraction" igual que el submit.
+### Nunca devuelve las URLs de las fotos: son datos personales. Trae el estado,
+### los motivos del último veredicto y qué puede hacer el usuario ahora
+### (canResubmit / canRequestManualReview).
 GET {{baseUrl}}/verification/identity/me
 Authorization: Bearer {{token}}
 
-### ── #11 · Por qué este servidor verifica (o no) automáticamente ───────────
-### LO PRIMERO que hay que mirar cuando "la verificación no anda". Dice el modo
-### efectivo, por qué degradó si degradó, y si el verificador contesta.
-###
-###   "mode": "auto"        → verifica solo
-###   "mode": "unavailable" → NO puede: falta DOCVERIFY_URL.
-###                           Los documentos van a quedar FAILED con ese motivo.
-###   "mode": "manual"      → alguien lo configuró así a propósito
-###
-### Hoy no hay ningún verificador implementado: "auto" va a quedar en
-### "unavailable" hasta que se cargue DOCVERIFY_URL apuntando a uno que cumpla
-### el contrato de src/verification/docverify/docverify.types.ts.
+### ── #11 · Cómo revisa documentos este servidor ────────────────────────────
+### Siempre "manual": las fotos las mira un admin. El análisis automático corre
+### en docverify-api/, un servicio aparte que este backend no llama.
 GET {{baseUrl}}/verification/identity/diagnostics
 Authorization: Bearer {{token}}
 
@@ -258,9 +251,9 @@ Authorization: Bearer {{token}}
 ### 400 DOCUMENT_NOT_FOUND     → la URL es válida pero el archivo no existe
 ### 400 DOCUMENT_ALREADY_APPROVED → ese documento ya está verificado
 ###
-### (REVIEW_IN_PROGRESS ya NO existe: una revisión manual pendiente dejó de
-###  bloquear el reenvío. Era lo que dejaba trabada a una cuenta en un servidor
-###  sin verificador, donde la primera submission caía sola en MANUAL_REVIEW.)
+### (REVIEW_IN_PROGRESS ya NO existe: una revisión pendiente dejó de bloquear
+###  el reenvío. Si lo bloqueara, alguien que subió una foto movida quedaría
+###  encerrado en la cola esperando a que un admin la mire.)
 ###
 ### Los tres errores de archivos traen, además del `code`, DÓNDE falló:
 ### {

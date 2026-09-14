@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# Salidas de depurar.py: recortes e imágenes encuadradas para calibrar zonas.
+.debug/

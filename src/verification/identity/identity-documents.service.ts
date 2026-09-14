@@ -1,12 +1,25 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import { CloudinaryService } from "../../media/cloudinary.service";
-import { DocumentSlot } from "../docverify/docverify.types";
 import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import { UploadSignatureDto } from "../dto/upload-signature.dto";
 
 /** Tipo de documento en minúscula, como viaja en las URLs y los public_id. */
 export type DocumentKind = "dni" | "license";
+
+/**
+ * Las cuatro fotos que se pueden subir. Es el vocabulario de los public_id en
+ * el storage: cada archivo se firma bajo el prefijo de su slot y el submit
+ * rechaza una foto que llegue en el campo equivocado.
+ */
+export const DOCUMENT_SLOTS = [
+  "dni_front",
+  "dni_back",
+  "license_front",
+  "license_back",
+] as const;
+
+export type DocumentSlot = (typeof DOCUMENT_SLOTS)[number];
 
 const ALLOWED_FORMATS = ["jpg", "jpeg", "png", "webp"];
 

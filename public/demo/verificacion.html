@@ -176,10 +176,11 @@
 <header>
   <h1>FreeWheel <span>· consola de verificación documental</span></h1>
   <span id="version" class="badge b-mute" title="Versión del archivo que está corriendo el navegador. Si no coincide con la del disco, recargá con Ctrl+Shift+R."></span>
-  <div style="min-width:210px"><input id="baseUrl" placeholder="backend · http://localhost:3000"></div>
+  <div style="min-width:200px"><input id="baseUrl" placeholder="backend · http://localhost:3000"></div>
   <button class="sm" onclick="probarConexion()">Probar conexión</button>
   <span id="conn" class="badge b-mute">sin probar</span>
-  <span id="modo" class="badge b-mute">DOCVERIFY_MODE ?</span>
+  <div style="min-width:200px"><input id="ocrUrl" placeholder="lector · http://localhost:8000"></div>
+  <span id="connOcr" class="badge b-mute">lector sin probar</span>
   <div class="grow"></div>
   <button class="sm ghost" onclick="if(confirm('¿Borrar sesiones, URLs y log guardados?')){try{localStorage.clear()}catch(e){};location.reload()}">Reset</button>
 </header>
@@ -288,18 +289,32 @@
 
   <!-- ══ 4 · DOCUMENTOS ══ -->
   <details class="card" open>
-    <summary><span class="n">4</span> Verificar documentos <span class="muted">— DNI y licencia por separado</span></summary>
+    <summary><span class="n">4</span> Enviar documentos <span class="muted">— DNI y licencia por separado</span></summary>
     <div class="body">
-      <div class="note">Si <code>DOCVERIFY_MODE</code> es <code>manual</code> o no hay <code>DOCVERIFY_URL</code> configurada, el envío queda esperando a un admin sin analizarse (todavía no hay ningún verificador automático implementado).</div>
+      <div class="note"><b>El backend no lee las fotos.</b> Las valida como archivos, las guarda y deja el documento en <code>PENDING</code>; después <b>Pedir revisión</b> lo manda a la cola del admin (paso 6). La lectura de los documentos es otra cosa y vive en otro servicio: está en el paso 5.</div>
       <p class="hint">Subir ya diagnostica cada URL contra el backend (<code>inspect-url</code>): si una foto no sirve se marca <b>en la foto</b>, con el chequeo que falló y qué se esperaba, sin gastar ninguno de los 5 submits.</p>
       <div id="avisoBackend"></div>
       <div id="docs"></div>
     </div>
   </details>
 
-  <!-- ══ 5 · ESTADO ══ -->
+  <!-- ══ 5 · LECTURA AUTOMÁTICA (API PYTHON) ══ -->
   <details class="card" open>
-    <summary><span class="n">5</span> Estado de la cuenta</summary>
+    <summary><span class="n">5</span> Lectura automática <span class="muted">— API de Python, un endpoint por cara</span></summary>
+    <div class="body">
+      <div class="note">Este paso <b>no pasa por el backend</b>: el navegador le manda la foto directo al lector (<code id="ocrUrlEco">http://localhost:8000</code>). Son dos servicios sin ninguna conexión entre sí, deployados por separado — acá conviven solo porque es la misma pantalla de prueba.</div>
+      <p class="hint">Usa las mismas fotos que elegiste arriba. Cada cara va a su endpoint y se lee por todos los medios que ese documento tenga: texto por posición, PDF417, MRZ y códigos de barras. Lo que no se pudo leer vuelve <b>vacío</b>, nunca ausente.</p>
+      <div class="btns" style="margin-bottom:12px">
+        <button class="primary" onclick="analizarTodo(this)">Leer las 4 fotos</button>
+        <button onclick="verContrato(this)" title="GET /contrato — qué campos devuelve cada endpoint">Ver el contrato del lector</button>
+      </div>
+      <div id="lector" class="muted">Elegí las fotos en el paso 4 y apretá «Leer las 4 fotos».</div>
+    </div>
+  </details>
+
+  <!-- ══ 6 · ESTADO ══ -->
+  <details class="card" open>
+    <summary><span class="n">6</span> Estado de la cuenta</summary>
     <div class="body">
       <div class="btns" style="margin-bottom:12px">
         <button class="primary" onclick="verEstado()">GET /verification/me/status</button>
@@ -309,13 +324,13 @@
     </div>
   </details>
 
-  <!-- ══ 6 · ADMIN ══ -->
+  <!-- ══ 7 · ADMIN ══ -->
   <details class="card">
-    <summary><span class="n">6</span> Panel de administración</summary>
+    <summary><span class="n">7</span> Panel de administración</summary>
     <div class="body">
-      <p class="hint">Usa el <b>token del admin</b>. La cola de casos que pidió el usuario es <code>status=MANUAL_REVIEW</code>.</p>
+      <p class="hint">Usa el <b>token del admin</b>. La cola de casos que pidió el usuario es <code>status=MANUAL_REVIEW</code>; los enviados que todavía nadie mandó a revisar están en <code>PENDING</code>.</p>
       <div class="row c3">
-        <div><label>Estado</label><select id="fStatus"><option value="">(todos)</option><option>MANUAL_REVIEW</option><option>FAILED</option><option>APPROVED</option><option>REJECTED</option></select></div>
+        <div><label>Estado</label><select id="fStatus"><option value="">(todos)</option><option>MANUAL_REVIEW</option><option>PENDING</option><option>APPROVED</option><option>REJECTED</option><option>FAILED</option></select></div>
         <div><label>Tipo</label><select id="fType"><option value="">(todos)</option><option>DNI</option><option>LICENSE</option></select></div>
         <div style="display:flex;align-items:flex-end"><button class="primary" style="width:100%" onclick="listarAdmin()">Listar</button></div>
       </div>
@@ -324,9 +339,9 @@
     </div>
   </details>
 
-  <!-- ══ 7 · CASOS DE ERROR ══ -->
+  <!-- ══ 8 · CASOS DE ERROR ══ -->
   <details class="card">
-    <summary><span class="n">7</span> Casos de error <span class="muted">— comprobar que cada rechazo llega bien</span></summary>
+    <summary><span class="n">8</span> Casos de error <span class="muted">— comprobar que cada rechazo llega bien</span></summary>
     <div class="body">
       <p class="hint">Cada botón dispara un error concreto del backend. Mirá en el log el <code>problem</code> (qué chequeo falló), el <code>step</code> y los <code>details</code> con lo esperado contra lo recibido.</p>
       <div class="btns" style="flex-direction:column;align-items:stretch;gap:6px">
@@ -372,12 +387,12 @@
  * "Invalid Signature", y desde el error no hay forma de distinguirlo.
  * Subila cuando cambies el flujo de firma/subida.
  */
-const VERSION = "v4 · sin verificador Python local";
+const VERSION = "v5 · backend manual + lector Python aparte";
 
 const $ = (id) => document.getElementById(id);
 const val = (id) => $(id).value.trim();
 $("version").textContent = VERSION;
-const PERSIST = ["baseUrl","email","password","firstName","lastName","dateOfBirth","phone",
+const PERSIST = ["baseUrl","ocrUrl","email","password","firstName","lastName","dateOfBirth","phone",
                  "token","adminToken","adminEmail","adminPassword","dni","cuil","address"];
 
 // Esta página está pensada para abrirse TAMBIÉN como archivo suelto (doble
@@ -397,7 +412,13 @@ PERSIST.forEach((k) => {
 if (!val("baseUrl")) {
   $("baseUrl").value = location.origin.startsWith("http") ? location.origin : "http://localhost:3000";
 }
+// El lector NUNCA comparte origen con el backend: son dos servicios separados
+// y se deployan aparte, así que su URL no se puede derivar de location.origin.
+if (!val("ocrUrl")) $("ocrUrl").value = "http://localhost:8000";
 if (!val("email")) nuevoEmail();
+
+/** La URL del lector de documentos, normalizada igual que la del backend. */
+const ocrBase = () => base("ocrUrl") || "http://localhost:8000";
 
 function nuevoEmail() {
   $("email").value = "verif-" + Date.now() + "@test.local";
@@ -407,6 +428,16 @@ function nuevoEmail() {
 /** URLs subidas, por slot. Se guardan para poder recargar sin volver a subir. */
 let urls = JSON.parse(leer("fw.urls") || "{}");
 const guardarUrls = () => escribir("fw.urls", JSON.stringify(urls));
+
+/**
+ * Texto a HTML seguro. Hace falta porque lo que se muestra del lector sale de
+ * la FOTO: el OCR puede devolver cualquier cosa, y el contenido crudo de un
+ * código de barras mal leído trae basura binaria. Meter eso en innerHTML sin
+ * escapar es una inyección con el documento de alguien como vector.
+ */
+const escapar = (texto) =>
+  String(texto ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 // ── JSON coloreado ────────────────────────────────────────────────────────
 function pintarJson(valor) {
@@ -531,20 +562,44 @@ async function probarConexion() {
   $("conn").textContent = salud.ok ? "conectado" : "sin conexión";
 
   const env = await api("GET", "/health/env", null, { token: null });
-  const modo = env.data?.modes?.DOCVERIFY_MODE;
-  if (modo) {
-    $("modo").textContent = "DOCVERIFY_MODE: " + modo;
-    $("modo").className = "badge " + (modo.startsWith("auto ") || modo === "auto" ? "b-ok"
-      : modo === "auto_approve" ? "b-warn" : "b-info");
+  pintarPreflight(env.data);
+
+  await probarLector();
+}
+
+/**
+ * El lector de documentos es OTRO servicio, con su propia URL y su propio
+ * /health. Se prueba por separado a propósito: que el backend ande no dice
+ * nada sobre el lector, y al revés tampoco. Son dos deploys distintos.
+ */
+async function probarLector() {
+  const insignia = $("connOcr");
+  $("ocrUrlEco").textContent = ocrBase();
+  try {
+    const res = await fetch(ocrBase() + "/health", { headers: { accept: "application/json" } });
+    const cuerpo = await res.json();
+    registrar({ method: "GET", url: ocrBase() + "/health", status: res.status, ms: 0, data: cuerpo });
+    insignia.className = "badge " + (res.ok ? "b-ok" : "b-err");
+    // `ocr_cargado` no es un detalle de color: hasta que el motor levante sus
+    // modelos, el primer análisis tarda varios segundos más que el resto, y
+    // sin este dato eso se diagnostica como "la API está lenta".
+    insignia.textContent = res.ok
+      ? "lector v" + cuerpo.version + (cuerpo.ocr_cargado ? " · listo" : " · motor sin cargar")
+      : "lector: error " + res.status;
+  } catch (error) {
+    insignia.className = "badge b-err";
+    insignia.textContent = "lector sin conexión";
+    registrar({ method: "GET", url: ocrBase() + "/health", status: 0, ms: 0,
+      error: { error: String(error),
+               pista: "El lector corre aparte del backend: levantalo con `uvicorn app.main:app --port 8000` dentro de docverify-api/." } });
   }
-  pintarPreflight(env.data, modo);
 }
 
 /**
  * Qué se puede probar con la configuración que tiene el backend AHORA. Sin
  * esto uno descubre que falta Cloudinary recién cuando el submit tira 503.
  */
-function pintarPreflight(env, modo) {
+function pintarPreflight(env) {
   if (!env?.features) { $("preflight").innerHTML = ""; return; }
   const falta = (v) => (env.missing || []).includes(v);
 
@@ -557,10 +612,8 @@ function pintarPreflight(env, modo) {
   ];
 
   const problemas = [];
-  if (!cloud) problemas.push("Sin <b>CLOUDINARY_*</b> no se puede subir ni verificar ningún documento: todo el paso 4 devuelve <code>503</code>.");
+  if (!cloud) problemas.push("Sin <b>CLOUDINARY_*</b> no se puede subir ningún documento: todo el paso 4 devuelve <code>503</code>. El paso 5 (lectura) anda igual: no pasa por el backend.");
   if (!mail) problemas.push("Sin <b>GMAIL_USER</b> / <b>GMAIL_APP_PASSWORD</b> el registro por código no funciona (<code>503</code>). Creá el usuario por otro medio y usá <b>Login</b>.");
-  if (modo === "auto_approve") problemas.push("Con <b>DOCVERIFY_MODE=auto_approve</b> se aprueba todo sin leer las fotos: sirve para probar el circuito, no la lectura. Poné <code>auto</code> para ejercitar el verificador (necesita DOCVERIFY_URL).");
-  if (modo === "manual") problemas.push("Con <b>DOCVERIFY_MODE=manual</b> nada se aprueba solo: todo envío queda esperando a un admin (paso 6).");
 
   $("preflight").innerHTML =
     '<div class="pf' + (problemas.length ? " bad" : "") + '">' +
@@ -678,8 +731,8 @@ $("docs").innerHTML = DOCUMENTOS.map((d) => `
     <div class="btns" style="margin-top:10px">
       <button onclick="subir('${d.kind}', this)">Subir las dos a Cloudinary</button>
       <button onclick="diagnosticar('${d.kind}', this)" title="POST /verification/identity/inspect-url — no gasta intentos del submit">Diagnosticar las URLs</button>
-      <button class="primary" onclick="enviar('${d.kind}', this)">Verificar ${d.titulo}</button>
-      <button onclick="pedirRevision('${d.kind}', this)">Pedir revisión manual</button>
+      <button class="primary" onclick="enviar('${d.kind}', this)">Enviar ${d.titulo}</button>
+      <button onclick="pedirRevision('${d.kind}', this)">Pedir revisión</button>
     </div>
     <div id="v-${d.kind}"></div>
   </div>`).join("");
@@ -862,7 +915,7 @@ async function pedirRevision(kind, boton) {
   pintarVeredicto(kind, r);
 }
 
-const CLASE_ESTADO = { APPROVED: "b-ok", FAILED: "b-err", MANUAL_REVIEW: "b-warn", REJECTED: "b-err" };
+const CLASE_ESTADO = { APPROVED: "b-ok", PENDING: "b-info", FAILED: "b-err", MANUAL_REVIEW: "b-warn", REJECTED: "b-err" };
 
 function pintarVeredicto(kind, r) {
   const caja = $(`v-${kind}`);
@@ -912,10 +965,194 @@ function pintarVeredicto(kind, r) {
             <div class="m">${m.message}</div>
             ${(m.field || m.slot) ? `<div class="w">${m.field ? "campo: " + m.field : ""}${m.field && m.slot ? "  ·  " : ""}${m.slot ? "foto: " + m.slot : ""}</div>` : ""}
           </div>`).join("")}</div>`
-      : '<div style="color:var(--ok)">✓ Sin observaciones: todos los datos coinciden.</div>'}
+      : d.status === "PENDING"
+        ? '<div class="muted">Las dos fotos quedaron guardadas. El backend no las analiza: apretá <b>Pedir revisión</b> para mandarlas a la cola del admin, o pasalas por el lector en el paso 5 para ver qué dicen.</div>'
+        : d.status === "MANUAL_REVIEW"
+          ? '<div style="color:var(--warn)">En la cola del admin (paso 7). Mandar fotos nuevas deja este pedido sin efecto.</div>'
+          : '<div style="color:var(--ok)">✓ Sin observaciones.</div>'}
     <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Respuesta completa</summary>
       <pre class="json">${pintarJson(d)}</pre></details>
   </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Lectura automática · API de Python
+//
+//  Este bloque NO usa api(): esa función habla con el backend, manda el JWT y
+//  serializa JSON. Acá se le manda una FOTO a otro servicio, sin token y en
+//  multipart. Compartir el helper habría significado meterle condicionales
+//  para tapar que son dos protocolos distintos contra dos servidores
+//  distintos, que es justo lo que este demo quiere mostrar separado.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Las cuatro caras: qué archivo del paso 4 va a qué endpoint del lector. */
+const CARAS = [
+  { ruta: "dni-frente",       archivo: "f-dni-front",      titulo: "DNI · frente" },
+  { ruta: "dni-dorso",        archivo: "f-dni-back",       titulo: "DNI · dorso" },
+  { ruta: "licencia-frente",  archivo: "f-license-front",  titulo: "Licencia · frente" },
+  { ruta: "licencia-dorso",   archivo: "f-license-back",   titulo: "Licencia · dorso" },
+];
+
+async function analizarTodo(boton) {
+  const pendientes = CARAS.filter((c) => $(c.archivo).files[0]);
+  if (!pendientes.length) {
+    $("lector").innerHTML = '<div class="note">No hay ninguna foto elegida. Cargalas en el paso 4 — no hace falta subirlas a Cloudinary: el lector recibe el archivo directo del navegador.</div>';
+    return;
+  }
+
+  ocupado(boton, true);
+  $("lector").innerHTML = '<div class="muted"><span class="spin"></span> Leyendo ' + pendientes.length + ' foto(s)…</div>';
+
+  // De a una y no en paralelo: el lector corre los modelos en CPU, así que
+  // cuatro análisis a la vez se pelean por los mismos núcleos y no terminan
+  // antes. Además así el resultado de cada cara aparece apenas está.
+  const salidas = [];
+  for (const cara of pendientes) {
+    salidas.push({ cara, resultado: await analizarCara(cara) });
+    $("lector").innerHTML = salidas.map(pintarLectura).join("")
+      + (salidas.length < pendientes.length
+          ? '<div class="muted"><span class="spin"></span> ' + (pendientes.length - salidas.length) + ' restante(s)…</div>'
+          : "");
+  }
+  ocupado(boton, false);
+}
+
+async function analizarCara(cara) {
+  const cuerpo = new FormData();
+  cuerpo.append("imagen", $(cara.archivo).files[0]);
+  const url = ocrBase() + "/analizar/" + cara.ruta;
+  const t0 = performance.now();
+  try {
+    // Sin Content-Type a mano: el navegador tiene que ponerlo él para poder
+    // agregarle el `boundary` del multipart. Fijándolo se rompe la subida.
+    const res = await fetch(url, { method: "POST", body: cuerpo });
+    const datos = await res.json();
+    const ms = Math.round(performance.now() - t0);
+    registrar({ method: "POST", url, status: res.status, ms, body: "(imagen)", data: datos });
+    return { ok: res.ok, status: res.status, datos };
+  } catch (error) {
+    const ms = Math.round(performance.now() - t0);
+    registrar({ method: "POST", url, status: 0, ms, body: "(imagen)",
+      error: { error: String(error),
+               pista: "El lector es otro servicio: revisá que esté corriendo (uvicorn app.main:app --port 8000) y que su URL del encabezado sea la correcta." } });
+    return { ok: false, status: 0, datos: null, error: String(error) };
+  }
+}
+
+function pintarLectura({ cara, resultado }) {
+  if (!resultado.datos) {
+    return `<div class="verdict"><div class="top">
+      <span class="badge b-err">sin respuesta</span><b>${cara.titulo}</b></div>
+      <div>${resultado.error || "El lector no contestó."}</div></div>`;
+  }
+
+  const d = resultado.datos;
+  const e = d.encuadre || {};
+  const origenes = Object.entries(d.origenes || {});
+
+  return `<div class="verdict" style="margin-bottom:12px">
+    <div class="top">
+      <span class="badge ${d.ok ? "b-ok" : "b-err"}">${d.ok ? "leído" : "sin datos"}</span>
+      <b>${cara.titulo}</b>
+      <span class="muted mono">${d.ms} ms</span>
+      <div style="flex:1"></div>
+      <span class="badge ${e.detectado ? "b-info" : "b-warn"}" title="Cómo se encontró el documento dentro de la foto">
+        encuadre: ${e.detectado ? e.metodo : "no detectado"}</span>
+      ${e.rotacion ? `<span class="badge b-info">girada ${e.rotacion}°</span>` : ""}
+      ${Math.abs(e.angulo || 0) >= 1 ? `<span class="badge b-info">enderezada ${e.angulo}°</span>` : ""}
+    </div>
+
+    ${origenes.map(([nombre, o]) => pintarOrigen(nombre, o, d.diccionario || {})).join("")}
+
+    ${pintarCoincidencias(d.coincidencias)}
+
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">JSON completo</summary>
+      <pre class="json">${pintarJson(d)}</pre></details>
+  </div>`;
+}
+
+function pintarOrigen(nombre, o, diccionario) {
+  // `disponible: false` no es un fallo: ese documento no tiene ese código. Se
+  // muestra igual, apagado, porque el contrato promete los mismos orígenes
+  // siempre y esconderlo haría parecer que la respuesta cambia de forma.
+  if (!o.disponible) {
+    return `<div class="muted" style="margin-top:8px;font-size:12px">· <b>${nombre}</b> — no aplica a este documento</div>`;
+  }
+
+  const campos = Object.entries(o.campos || {});
+  const leidos = campos.filter(([, c]) => c.valor).length;
+
+  return `<div style="margin-top:10px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span class="badge ${o.ok ? "b-ok" : "b-err"}">${o.ok ? "✓" : "✗"} ${nombre}</span>
+      <span class="muted mono" style="font-size:11px">${leidos}/${campos.length} campos</span>
+    </div>
+    ${o.error ? `<div class="reason"><div class="m">${o.error}</div></div>` : ""}
+    ${campos.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      ${campos.map(([clave, c]) => `<tr>
+        <td class="mono" style="padding:2px 8px 2px 0;color:var(--fg-3);white-space:nowrap;vertical-align:top"
+            title="${(diccionario[clave] || "").replace(/"/g, "&quot;")}">${clave}</td>
+        <td style="padding:2px 0;${c.valor ? "" : "color:var(--fg-3)"}">
+          ${c.valor ? `<b>${escapar(c.valor)}</b>` : "—"}
+          ${c.crudo && c.crudo !== c.valor ? `<span class="muted mono" style="font-size:11px"> ← «${escapar(c.crudo)}»</span>` : ""}
+          ${c.valor ? `<span class="muted mono" style="font-size:11px"> (${c.confianza.toFixed(2)})</span>` : ""}
+        </td></tr>`).join("")}
+    </table>` : ""}
+    ${o.detalle?.crudo ? `<div class="muted mono" style="font-size:11px;margin-top:4px;word-break:break-all">contenido: ${escapar(o.detalle.crudo)}</div>` : ""}
+    ${o.detalle?.lineas ? `<pre class="json" style="margin-top:4px">${o.detalle.lineas.map(escapar).join("\n")}</pre>
+      <div class="muted mono" style="font-size:11px">verificadores: ${Object.entries(o.detalle.verificadores || {})
+        .map(([k, v]) => (v ? "✓" : "✗") + " " + k).join("  ")}</div>` : ""}
+  </div>`;
+}
+
+/**
+ * El cruce entre orígenes: para los campos que el documento trae por más de
+ * una vía, si todas dicen lo mismo. Es el control que justifica leer el
+ * documento por todos los medios: en una tarjeta adulterada el texto impreso
+ * y el código se contradicen, y esto es lo único que lo muestra.
+ */
+function pintarCoincidencias(coincidencias) {
+  const filas = Object.entries(coincidencias || {});
+  if (!filas.length) return "";
+  const enConflicto = filas.filter(([, c]) => !c.coinciden).length;
+  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)">
+    <b style="font-size:12px">Cruce entre orígenes</b>
+    ${enConflicto
+      ? `<span class="badge b-err">${enConflicto} en conflicto</span>`
+      : '<span class="badge b-ok">todo coincide</span>'}
+    <div style="margin-top:4px">${filas.map(([campo, c]) => `
+      <span class="badge ${c.coinciden ? "b-ok" : "b-err"}" style="margin:2px 4px 2px 0"
+            title="${c.origenes.join(" · ")}">${c.coinciden ? "=" : "≠"} ${campo}</span>`).join("")}</div>
+  </div>`;
+}
+
+async function verContrato(boton) {
+  ocupado(boton, true);
+  const url = ocrBase() + "/contrato";
+  try {
+    const res = await fetch(url);
+    const datos = await res.json();
+    registrar({ method: "GET", url, status: res.status, ms: 0, data: datos });
+    $("lector").innerHTML = `<div class="verdict">
+      <div class="top"><span class="badge b-info">contrato v${datos.version}</span>
+        <span class="muted">qué campos devuelve cada endpoint</span></div>
+      ${Object.entries(datos.documentos).map(([ruta, doc]) => `
+        <div style="margin-top:8px">
+          <b class="mono" style="font-size:12px">POST /analizar/${ruta}</b>
+          ${Object.entries(doc.campos_por_origen).map(([origen, campos]) => `
+            <div style="margin-left:12px;font-size:12px">
+              <span class="badge b-mute">${origen}</span>
+              <span class="muted mono">${campos.join(", ")}</span>
+            </div>`).join("")}
+        </div>`).join("")}
+      <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Diccionario de campos</summary>
+        <pre class="json">${pintarJson(datos.diccionario)}</pre></details>
+    </div>`;
+  } catch (error) {
+    registrar({ method: "GET", url, status: 0, ms: 0, error: { error: String(error) } });
+    $("lector").innerHTML = '<div class="note">No se pudo consultar el contrato: revisá que el lector esté corriendo.</div>';
+  }
+  ocupado(boton, false);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1000,14 +1237,16 @@ async function verAdmin(id) {
     ${motivos.length ? `<h4 style="margin:14px 0 0;font-size:12px">Motivos del último veredicto</h4>
       ${motivos.map((m) => `<div class="reason"><div class="c">${m.code}</div><div class="m">${m.message}</div></div>`).join("")}` : ""}
 
-    ${matriz.length ? `<h4 style="margin:14px 0 0;font-size:12px">Matriz de evidencia — qué dijo cada fuente</h4>
+    ${matriz.length ? `<h4 style="margin:14px 0 0;font-size:12px">Matriz de evidencia <span class="muted">— de la verificación automática vieja</span></h4>
       <table><thead><tr><th>Campo</th><th>Lecturas</th><th>Estado</th></tr></thead><tbody>
       ${matriz.map((f) => `<tr class="st-${f.status}">
         <td class="mono">${f.field}</td>
         <td class="mono">${Object.entries(f.readings).map(([k, v]) =>
-          `<div><span style="color:var(--fg-3)">${k}:</span> ${v === null ? '<span class="j-null">null</span>' : v}</div>`).join("")}</td>
+          `<div><span style="color:var(--fg-3)">${k}:</span> ${v === null ? '<span class="j-null">null</span>' : escapar(v)}</div>`).join("")}</td>
         <td><span class="badge ${f.status === "ok" ? "b-ok" : f.status === "conflicto" ? "b-err" : "b-warn"}">${f.status}</span></td>
       </tr>`).join("")}</tbody></table>` : ""}
+
+    <div class="note" style="margin-top:14px">El backend no trae ningún dato leído de estas fotos: acá se aprueba o se rechaza MIRÁNDOLAS. Para ver qué dicen, pasalas por el lector en el paso 5.</div>
 
     <div class="btns" style="margin-top:14px">
       <input id="adminNotes" placeholder="notas (opcional)" style="flex:1;min-width:180px">
@@ -1015,9 +1254,7 @@ async function verAdmin(id) {
       <button class="danger" onclick="revisar('${id}','REJECTED')">Rechazar y borrar fotos</button>
     </div>
 
-    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">extracted — lo que leyó el verificador</summary>
-      <pre class="json">${pintarJson(d.extracted)}</pre></details>
-    <details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">Fila completa (GET /admin/verifications/:id)</summary>
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Fila completa (GET /admin/verifications/:id)</summary>
       <pre class="json">${pintarJson(detalle.data)}</pre></details>`;
 }
 

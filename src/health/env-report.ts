@@ -112,7 +112,6 @@ export function buildEnvReport(): EnvReport {
     // Estos NO son secretos: son la forma en que está configurada la API, y
     // saberlos es justo lo que hace falta para entender qué está pasando.
     modes: {
-      DOCVERIFY_MODE: process.env.DOCVERIFY_MODE ?? "auto (defecto)",
       PAYMENTS_PROVIDER: process.env.PAYMENTS_PROVIDER ?? "mock (defecto)",
       SMS_PROVIDER: process.env.SMS_PROVIDER ?? "mock (defecto)",
       REQUIRE_PHONE_VERIFICATION:

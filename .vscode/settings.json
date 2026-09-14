@@ -17,8 +17,8 @@
       "baseUrl": "http://localhost:3000"
     },
     "production": {
-      // Reemplazá por la URL real del deploy (Vercel) antes de usar este entorno.
-      "baseUrl": "https://tu-backend.vercel.app"
+      // Deploy actual en Vercel.
+      "baseUrl": "https://free-wheel-back.vercel.app"
     }
   },
   "rest-client.defaultHeaders": {
