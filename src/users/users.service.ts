@@ -6,6 +6,10 @@ import {
 import { Prisma, User, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
+import {
+  DrivingEligibility,
+  evaluateDrivingEligibility,
+} from "../verification/identity/driving-eligibility";
 import { dniMatchesCuil, normalizeCuil } from "../common/utils/cuil.util";
 import { normalizeEmail } from "../common/utils/email.util";
 import {
@@ -125,11 +129,29 @@ export class UsersService {
     };
   }
 
-  async getMe(userId: string): Promise<SafeUser> {
+  /**
+   * Los datos de la propia cuenta, más si HOY puede alquilar un auto.
+   *
+   * El bloque `driving` es lo que le permite al front avisar antes de que la
+   * persona se choque con un 403: una cuenta puede estar perfectamente
+   * verificada y aun así no poder alquilar, porque la licencia venció. Viene
+   * calculado y no guardado porque depende de la fecha de hoy, y viene acá
+   * —y no solo en /verification/me/status— porque esta es la llamada que el
+   * front hace al abrir la aplicación.
+   *
+   * `reasons` trae código estable y mensaje en castellano: alcanza para
+   * mostrar el cartel sin tener que traducir nada del lado del cliente.
+   */
+  async getMe(
+    userId: string,
+  ): Promise<SafeUser & { driving: DrivingEligibility }> {
     const user = await this.findById(userId);
     assertFound(user, "User not found");
 
-    return this.toSafeUser(user);
+    return {
+      ...this.toSafeUser(user),
+      driving: evaluateDrivingEligibility(user),
+    };
   }
 
   async updateMe(userId: string, data: UpdateUserDto): Promise<SafeUser> {

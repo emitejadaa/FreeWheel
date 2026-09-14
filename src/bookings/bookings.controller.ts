@@ -10,6 +10,7 @@ import {
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
 import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
+import { RequireDrivingEligibility } from "../common/decorators/require-driving-eligibility.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { BookingsService } from "./bookings.service";
@@ -25,8 +26,21 @@ import { CreateBookingDto } from "./dto/create-booking.dto";
 export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) {}
 
+  /**
+   * Pedir un auto es el momento en que alguien se compromete a manejarlo, así
+   * que es acá donde se controla que pueda: licencia vigente, de una clase que
+   * sirva para un auto y fuera del período de principiante.
+   *
+   * Se controla ACÁ y no también en los pagos a propósito. Un cobro es de una
+   * reserva que ya existe, y esa reserva ya pasó por este control; repetirlo
+   * más adelante solo lograría dejar a alguien con una reserva aceptada que no
+   * puede terminar de pagar porque su licencia venció en el medio. Eso no es
+   * un fraude que haya que frenar, es un problema de atención al cliente que
+   * nos estaríamos creando solos.
+   */
   @Post()
   @RequireVerifiedAccount()
+  @RequireDrivingEligibility()
   create(
     @CurrentUser() user: CurrentUserPayload,
     @Body() createBookingDto: CreateBookingDto,

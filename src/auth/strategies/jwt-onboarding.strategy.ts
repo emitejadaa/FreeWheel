@@ -57,6 +57,9 @@ export class JwtOnboardingStrategy extends PassportStrategy(
       status: user.status,
       verificationStatus: user.verificationStatus,
       dateOfBirth: user.dateOfBirth,
+      licenseExpiresAt: user.licenseExpiresAt,
+      licenseClass: user.licenseClass,
+      licenseBeginnerUntil: user.licenseBeginnerUntil,
       tokenScope: "onboarding" as const,
     };
   }

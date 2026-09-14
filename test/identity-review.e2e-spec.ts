@@ -26,6 +26,11 @@ import {
  * salidas que conserva el usuario (reenviar fotos o volver a la cola).
  */
 describe("Verificación documental (revisión manual)", () => {
+  // Esta suite corre SIN DOCVERIFY_URL, o sea sin lectura automática, que es
+  // el modo en que un deploy funciona cuando el servicio de lectura no está
+  // configurado o se cayó. Lo que se ejercita acá es que todo el circuito
+  // manual siga funcionando igual en ese caso: la lectura automática acelera
+  // la verificación, no es un requisito para verificarse.
   let app: INestApplication;
   let prisma: PrismaService;
   let cloudinary: FakeCloudinaryService;
@@ -73,17 +78,25 @@ describe("Verificación documental (revisión manual)", () => {
 
   // ── El envío ───────────────────────────────────────────────────────────
 
-  it("enviar las fotos deja el documento PENDING, sin analizarlo", async () => {
+  it("sin lectura automática, enviar las fotos deja el documento PENDING y avisa por qué", async () => {
     const { token, id, dni } = await cuentaCompleta();
 
     const res = await submit(token, id, "dni").expect(201);
 
     expect(res.body.status).toBe("PENDING");
-    expect(res.body.reasons).toEqual([]);
     expect(res.body.documents).toEqual({ front: true, back: true });
     // Las dos salidas quedan abiertas: reenviar fotos o pedir la revisión.
     expect(res.body.canResubmit).toBe(true);
     expect(res.body.canRequestManualReview).toBe(true);
+
+    // `reasons` es "qué está mal con TU documento", y acá no hay nada mal:
+    // el que no está es nuestro servicio de lectura. Ese aviso va por
+    // `analysis`, separado, para que el front no le muestre a la persona un
+    // problema en su documentación que no existe.
+    expect(res.body.reasons).toEqual([]);
+    expect(res.body.analysis.status).toBe("FAILED");
+    expect(res.body.analysis.pending).toBe(false);
+    expect(res.body.analysis.error).toContain("administrador");
 
     const row = await prisma.documentVerification.findFirstOrThrow({
       where: { userId: id },
@@ -91,6 +104,7 @@ describe("Verificación documental (revisión manual)", () => {
     expect(row.status).toBe("PENDING");
     expect(row.documentNumber).toBe(dni);
     expect(row.reviewRequestedAt).toBeNull();
+    expect(row.reasonCodes).toEqual([]);
 
     // La cuenta registra que hay documentación cargada.
     const user = await prisma.user.findUniqueOrThrow({ where: { id } });

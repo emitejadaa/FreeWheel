@@ -1,14 +1,24 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
+import { AnalysisCallbackDto } from "./dto/analysis-callback.dto";
 import { ConfirmCodeDto } from "./dto/confirm-code.dto";
 import { InspectDocumentDto } from "./dto/inspect-document.dto";
 import { SubmitDocumentDto } from "./dto/submit-document.dto";
 import { UploadSignatureDto } from "./dto/upload-signature.dto";
 import { DocumentVerificationService } from "./identity/document-verification.service";
+import type { DocverifyResult } from "./identity/docverify.client";
 import type { DocumentKind } from "./identity/identity-documents.service";
 import { VerificationService } from "./verification.service";
 
@@ -16,6 +26,46 @@ import { VerificationService } from "./verification.service";
 function parseKind(document: string): DocumentKind {
   if (document === "dni" || document === "license") return document;
   throw new BadRequestException('El documento debe ser "dni" o "license"');
+}
+
+/**
+ * EL AVISO DE LA API QUE LEE DOCUMENTOS.
+ *
+ * Va en su propio controller porque es el único endpoint de verificación SIN
+ * sesión: lo llama otro servidor, no un usuario, así que no hay JWT que
+ * presentar. Separarlo es lo que permite que el resto de la clase siga con
+ * `@UseGuards(JwtAuthGuard)` a nivel de clase —donde no se puede olvidar— en
+ * lugar de tener que acordarse de ponerlo endpoint por endpoint.
+ *
+ * Lo que lo autentica es el token de un solo uso que le dimos a la API al
+ * pedirle el análisis, y que solo ella conoce.
+ */
+@Controller("verification/identity")
+export class VerificationAnalysisController {
+  constructor(
+    private readonly documentVerification: DocumentVerificationService,
+  ) {}
+
+  @Post("analysis-callback")
+  applyAnalysis(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() dto: AnalysisCallbackDto,
+  ) {
+    const token = /^Bearer (.+)$/.exec(authorization?.trim() ?? "")?.[1];
+    if (!token) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        code: "ANALYSIS_TOKEN_MISSING",
+        message:
+          "Falta el token del análisis: mandalo en el header " +
+          "Authorization como «Bearer <token>».",
+      });
+    }
+    return this.documentVerification.applyAnalysis(
+      token,
+      dto.resultado as unknown as DocverifyResult,
+    );
+  }
 }
 
 @Controller("verification")

@@ -69,7 +69,16 @@ export default function globalSetup(): void {
   };
 
   premigrate();
-  execSync("npx prisma db push --skip-generate", {
+  // --accept-data-loss: sobre una base VACÍA (la de CI) no cambia nada, porque
+  // no hay datos que perder. Hace falta para la otra base, la que ya tiene un
+  // esquema viejo de una corrida anterior: ahí Prisma corta pidiendo esta
+  // bandera, y lo hace incluso cuando el cambio es agregar un índice único, que
+  // no borra nada (el mismo aviso que scripts/deploy-migrate.js filtra a mano
+  // para el deploy real). Acá no hay nada que filtrar: esta base es descartable
+  // por definición —la suite la vacía entre tests y ALLOW_DB_RESET tiene que
+  // estar en "true" para siquiera arrancar—, así que perder sus datos es el
+  // comportamiento buscado y no un riesgo que haya que sopesar.
+  execSync("npx prisma db push --skip-generate --accept-data-loss", {
     stdio: "inherit",
     env: process.env,
   });

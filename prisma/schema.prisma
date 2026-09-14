@@ -54,6 +54,29 @@ enum DocumentVerificationStatus {
   REJECTED
 }
 
+/// En qué anda la LECTURA AUTOMÁTICA de un documento, que es una cosa distinta
+/// del estado de la verificación.
+///
+/// `status` dice si el documento está aprobado; esto dice si la máquina ya lo
+/// miró. Se separan porque avanzan por caminos distintos: un documento puede
+/// estar PENDING con el análisis DONE (la lectura salió bien pero algo no
+/// cerró y lo mira un admin) o PENDING con el análisis FAILED (el servicio de
+/// lectura estaba caído, y entonces lo resuelve un admin igual). Mezclarlos en
+/// un solo campo obligaba al front a adivinar cuál de las dos cosas estaba
+/// esperando.
+enum DocumentAnalysisStatus {
+  /// Todavía no se pidió: el documento se acaba de enviar.
+  NOT_REQUESTED
+  /// La API de lectura lo aceptó y está en su cola.
+  QUEUED
+  /// Terminó y el veredicto ya se aplicó.
+  DONE
+  /// No se pudo leer. `analysisError` dice por qué, y el documento sigue su
+  /// camino por revisión manual: un problema nuestro no puede dejar trabada a
+  /// una persona.
+  FAILED
+}
+
 enum ListingStatus {
   DRAFT
   ACTIVE
@@ -244,28 +267,28 @@ enum MessageType {
 }
 
 model User {
-  id                     String              @id @default(uuid())
-  email                  String              @unique
-  password               String
-  firstName              String
-  lastName               String
-  displayName            String?
+  id                      String              @id @default(uuid())
+  email                   String              @unique
+  password                String
+  firstName               String
+  lastName                String
+  displayName             String?
   /// El teléfono de contacto de la cuenta, en formato E.164 (+54911...). Único
   /// como el email: es el número al que se manda el código de verificación y el
   /// que ve la otra parte de una reserva, así que dos cuentas con el mismo
   /// número son una sola persona haciéndose pasar por dos. La normalización a
   /// E.164 (phone.validator.ts) es lo que hace que el índice sirva: sin ella
   /// "+5491132895416" y "011 3289-5416" entrarían como dos números distintos.
-  phone                  String?             @unique
-  dateOfBirth            DateTime?
+  phone                   String?             @unique
+  dateOfBirth             DateTime?
   // Datos de identidad cargados a mano en el panel; la revisión documental
   // los cruza contra el DNI y la licencia. Quedan inmutables una vez que la
   // cuenta es VERIFIED. Unicidad nullable: una misma identidad no puede
   // respaldar dos cuentas (antifraude a nivel base).
-  dni                    String?             @unique
-  cuil                   String?             @unique
-  address                String?
-  profilePhotoUrl        String?
+  dni                     String?             @unique
+  cuil                    String?             @unique
+  address                 String?
+  profilePhotoUrl         String?
   /// La foto de perfil SIN RECORTAR, tal como se subió.
   ///
   /// `profilePhotoUrl` guarda el RECORTE, que es lo que se muestra en todos
@@ -283,7 +306,7 @@ model User {
   /// se quiera. Por defecto la ve todo el mundo: si alguien se tomó el trabajo de
   /// subir una foto es para que se vea, y quien prefiera lo contrario lo cambia
   /// en dos toques.
-  profilePhotoVisibility PhotoVisibility     @default(EVERYONE)
+  profilePhotoVisibility  PhotoVisibility     @default(EVERYONE)
   /// Si esta persona quiere recibir avisos por mail: reservas pedidas,
   /// aceptadas, pagos, entregas y devoluciones, y el aviso de que tiene
   /// mensajes sin leer en el chat.
@@ -295,26 +318,52 @@ model User {
   ///
   /// Arranca en true: quien no quiera recibirlos lo apaga en Ajustes, y así
   /// ninguna cuenta que ya existía cambia de comportamiento.
-  emailNotifications     Boolean             @default(true)
+  emailNotifications      Boolean             @default(true)
   /// Cuándo se mandó el último aviso de "tenés mensajes sin leer". Sin esto, una
   /// charla de veinte mensajes serían veinte mails.
-  lastUnreadEmailAt      DateTime?
-  role                   UserRole            @default(USER)
-  status                 UserStatus          @default(ACTIVE)
-  verificationStatus     VerificationStatus  @default(UNVERIFIED)
-  emailVerifiedAt        DateTime?
-  acceptedTermsAt        DateTime?
-  googleId               String?             @unique
-  phoneVerifiedAt        DateTime?
-  stripeCustomerId       String?             @unique
-  stripeAccountId        String?             @unique
-  stripeAccountStatus    StripeAccountStatus @default(NONE)
+  lastUnreadEmailAt       DateTime?
+  role                    UserRole            @default(USER)
+  status                  UserStatus          @default(ACTIVE)
+  verificationStatus      VerificationStatus  @default(UNVERIFIED)
+  /// DATOS DE LA LICENCIA QUE SALEN DE LA FOTO, NO DEL FORMULARIO.
+  ///
+  /// Nadie los carga a mano: los completa la lectura del documento cuando se
+  /// aprueba la licencia, y se limpian si esa aprobación se revoca. Están
+  /// acá arriba y no solo en DocumentVerification porque son los que deciden,
+  /// en CADA pedido, si esta persona puede alquilar un auto. JwtStrategy ya
+  /// trae el usuario entero en cada request, así que tenerlos acá hace que ese
+  /// control no cueste una consulta más.
+  ///
+  /// El vencimiento se compara contra la fecha de hoy en el momento de usarlo
+  /// y no lo revisa ningún proceso programado: un job nocturno dejaría una
+  /// ventana entre que la licencia vence y alguien se entera, y en esa ventana
+  /// se puede alquilar un auto sin habilitación.
+  licenseExpiresAt        DateTime?
+  /// Clase de la licencia (B.1, A2.2, C...). Solo las que incluyen auto
+  /// particular habilitan a alquilar: una clase A es de moto.
+  licenseClass            String?
+  /// Desde cuándo tiene licencia. No bloquea nada hoy; queda guardado porque
+  /// es el dato con el que se define una antigüedad mínima si alguna vez se
+  /// pide.
+  licenseIssuedAt         DateTime?
+  /// Hasta cuándo dura el período de principiante, si la licencia lo tiene.
+  licenseBeginnerUntil    DateTime?
+  /// Cuándo vence el DNI. No bloquea alquilar —la persona sigue siendo quien
+  /// es— pero sirve para pedir una re-verificación cuando caduca.
+  dniExpiresAt            DateTime?
+  emailVerifiedAt         DateTime?
+  acceptedTermsAt         DateTime?
+  googleId                String?             @unique
+  phoneVerifiedAt         DateTime?
+  stripeCustomerId        String?             @unique
+  stripeAccountId         String?             @unique
+  stripeAccountStatus     StripeAccountStatus @default(NONE)
   /// Promedio de las reseñas recibidas y cuántas son. Se guardan calculados para
   /// no tener que recorrer todas las reseñas cada vez que se muestra un perfil.
-  ratingAverage          Float?
-  ratingCount            Int                 @default(0)
-  createdAt              DateTime            @default(now())
-  updatedAt              DateTime            @updatedAt
+  ratingAverage           Float?
+  ratingCount             Int                 @default(0)
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
 
   vehicles                  Vehicle[]
   listings                  Listing[]
@@ -343,30 +392,51 @@ model User {
 }
 
 model DocumentVerification {
-  id             String                     @id @default(uuid())
-  userId         String
-  user           User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
-  type           VerifiedDocumentType
-  status         DocumentVerificationStatus
-  frontUrl       String?
-  backUrl        String?
+  id                  String                     @id @default(uuid())
+  userId              String
+  user                User                       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  type                VerifiedDocumentType
+  status              DocumentVerificationStatus
+  frontUrl            String?
+  backUrl             String?
   // Número de documento asociado a esta verificación. Sostiene el control
   // antifraude: una misma identidad no puede quedar aprobada en dos cuentas.
-  documentNumber String?
-  expiresAt      DateTime?
+  documentNumber      String?
+  /// Cuándo vence ESTE documento, leído de la foto. Es el dato que después
+  /// decide si la persona puede alquilar: una licencia vencida no habilita a
+  /// manejar por más que la cuenta esté verificada.
+  expiresAt           DateTime?
   // Motivo del último veredicto (hoy: el rechazo de un admin), con el mensaje
   // completo guardado adentro para que las filas viejas se sigan mostrando
   // aunque su código ya no esté en el catálogo.
-  matchReport    Json?
+  matchReport         Json?
   // Los mismos motivos en códigos estables, aptos para que el front ramifique.
-  reasonCodes    String[]                   @default([])
+  reasonCodes         String[]                   @default([])
+  /// Lo que la lectura automática sacó de las dos fotos, ya recortado a los
+  /// campos que sirven y con el valor acordado entre orígenes. Se guarda para
+  /// poder auditar una decisión después: sin esto, "por qué se aprobó esta
+  /// cuenta" no tiene respuesta. NO guarda el texto completo del OCR — ahí
+  /// viajan el domicilio y, en la licencia, datos de salud.
+  extracted           Json?
+  /// En qué anda la lectura automática, y por qué falló si falló. El mensaje
+  /// se le muestra al usuario, así que dice qué pasó en castellano y no un
+  /// stack trace.
+  analysisStatus      DocumentAnalysisStatus     @default(NOT_REQUESTED)
+  analysisRequestedAt DateTime?
+  analysisError       String?
+  /// SHA-256 del token de un solo uso que la API de lectura tiene que devolver
+  /// al avisar que terminó. Se guarda hasheado por lo mismo que una
+  /// contraseña: quien pueda leer la base no puede con eso falsificar el aviso
+  /// de un análisis. Se borra al consumirlo, y eso es lo que lo hace de un
+  /// solo uso.
+  analysisTokenHash   String?                    @unique
   // Revisión manual: cuándo la pidió el usuario y quién/cuándo la resolvió.
-  reviewRequestedAt DateTime?
-  reviewedBy     String?
-  reviewedAt     DateTime?
-  notes          String?
-  createdAt      DateTime                   @default(now())
-  updatedAt      DateTime                   @updatedAt
+  reviewRequestedAt   DateTime?
+  reviewedBy          String?
+  reviewedAt          DateTime?
+  notes               String?
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
 
   // Una fila viva por documento y usuario: reenviar fotos reemplaza la
   // anterior (y borra sus archivos). El historial queda en AuditLog.

@@ -59,8 +59,25 @@ const OPCIONALES: Grupo[] = [
       "CLOUDINARY_API_SECRET",
     ],
     consecuencia:
-      "no se puede verificar el DNI ni la licencia: ahí viven las fotos, y sin " +
-      "eso la verificación automática queda deshabilitada",
+      "no se puede verificar el DNI ni la licencia: ahí viven las fotos",
+  },
+  {
+    feature: "lectura automática de documentos",
+    vars: ["DOCVERIFY_URL", "DOCVERIFY_TOKEN"],
+    consecuencia:
+      "los documentos no se leen solos: se guardan igual, pero cada " +
+      "verificación espera a que la mire un administrador",
+  },
+  {
+    // Sin esto la API de lectura no tiene a dónde devolver el resultado, así
+    // que el análisis ni se pide: es una de esas fallas silenciosas que este
+    // reporte existe para hacer visibles. En Vercel VERCEL_URL viene sola.
+    feature: "aviso de vuelta de la lectura de documentos",
+    vars: ["PUBLIC_URL"],
+    consecuencia:
+      "en Vercel no hace falta (VERCEL_URL alcanza); fuera de Vercel, la API " +
+      "de lectura no sabe a dónde devolver el resultado y todo pasa a " +
+      "revisión manual",
   },
   {
     feature: "links de los emails",

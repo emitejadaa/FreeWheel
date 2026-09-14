@@ -26,7 +26,10 @@ describe("buildEnvReport", () => {
       "FRONTEND_URL",
       "GOOGLE_CLIENT_ID",
       "GOOGLE_CLIENT_SECRET",
-      "DOCVERIFY_MODE",
+      "DOCVERIFY_URL",
+      "DOCVERIFY_TOKEN",
+      "PUBLIC_URL",
+      "VERCEL_URL",
       "PAYMENTS_PROVIDER",
       "SMS_PROVIDER",
       "REQUIRE_PHONE_VERIFICATION",
@@ -130,6 +133,9 @@ describe("buildEnvReport", () => {
       FRONTEND_URL: "https://freewheel-5a.vercel.app",
       GOOGLE_CLIENT_ID: "id",
       GOOGLE_CLIENT_SECRET: "sec",
+      DOCVERIFY_URL: "https://docverify.onrender.com",
+      DOCVERIFY_TOKEN: "t",
+      PUBLIC_URL: "https://freewheel-api.vercel.app",
     });
 
     const reporte = buildEnvReport();

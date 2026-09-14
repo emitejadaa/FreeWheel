@@ -429,12 +429,19 @@ Archivos:
 - `src/verification/dto/upload-signature.dto.ts`
 - `src/verification/identity/identity-documents.service.ts` (firma, valida y borra archivos)
 - `src/verification/identity/document-verification.service.ts` (el flujo completo)
+- `src/verification/identity/docverify.client.ts` (lo unico que le habla a la API de lectura)
+- `src/verification/identity/identity-match.service.ts` (el cruce: coherencia y contra la cuenta)
+- `src/verification/identity/driving-eligibility.ts` (si hoy puede alquilar un auto)
 - `src/verification/errors/verification-reasons.ts` (catalogo de motivos)
 
-Este modulo NO analiza las fotos. La lectura automatica de documentos vive en
-`docverify-api/`, un servicio de Python independiente que se deploya aparte y
-con el que este backend no tiene ninguna conexion: no lo llama, no lo
-configura y no sabe donde esta.
+Este modulo NO lee las fotos: eso lo hace `docverify-api/`, un servicio de
+Python que se deploya aparte (no entra en una funcion serverless: son ~300 MB
+de dependencias nativas). Este backend le manda las dos caras, recibe lo que
+leyo, lo CRUZA contra los datos de la cuenta y decide.
+
+Sin `DOCVERIFY_URL` configurada todo sigue funcionando: las fotos se guardan y
+las revisa un admin. La lectura automatica acelera la verificacion, no la
+habilita.
 
 Responsabilidades:
 
@@ -442,9 +449,11 @@ Responsabilidades:
 - Solicitar/confirmar codigo de telefono (entregado por `SmsService`).
 - Consultar estado propio con checklist derivado (`emailVerified`, `phoneVerified`, `dateOfBirthProvided`, `identityDataProvided`, `dniApproved`, `licenseApproved`), `fullyVerified` y el estado de cada documento con sus motivos.
 - Firmar la subida de cada archivo por separado (documento + lado), forzando carpeta, `public_id` y entrega privada.
-- Recibir las dos fotos de UN documento validando que cada URL sea un asset propio del slot correcto, ejecutar el verificador Python y decidir en el momento.
-- Permitir pedir revision manual de un documento en `FAILED`.
-- Recalcular `User.verificationStatus` tras cada evento (email, telefono, documentos, veredicto de admin).
+- Recibir las dos fotos de UN documento validando que cada URL sea un asset propio del slot correcto, y disparar su lectura sin esperarla.
+- Recibir el aviso de la API de lectura (`POST /verification/identity/analysis-callback`), cruzar lo leido y aplicar el veredicto.
+- Permitir pedir revision manual de un documento en `PENDING` o `FAILED`.
+- Recalcular `User.verificationStatus` tras cada evento (email, telefono, documentos, veredicto de admin) y tambien al leerlo, para que no quede desfasado.
+- Guardar lo que la lectura descubrio y el formulario no tenia (vencimiento de la licencia, clase, periodo de principiante) y con eso decidir, en cada pedido, si la persona puede alquilar un auto.
 
 Estado actual:
 
@@ -452,46 +461,95 @@ Estado actual:
 - Codigos numericos con RNG criptografico y TTL de 10 minutos (constante compartida con la verificacion de email de `AuthModule`).
 - El codigo no se devuelve en la respuesta HTTP; en entornos no productivos se loguea para pruebas manuales.
 - SMS via `SmsModule` con interfaz de proveedor (`SMS_PROVIDER`); solo el provider `mock` (loguea el codigo) esta implementado.
-- Verificacion documental real con el subproyecto Python, en dos flujos independientes (DNI y licencia).
+- Verificacion documental real contra `docverify-api/`, en dos flujos independientes (DNI y licencia).
 
-Como decide:
+Por que la lectura es asincrona:
 
-El verificador Python devuelve, por foto, un objeto por protocolo de lectura
-(`ocr`, `codigo`, `mrz`) con SIEMPRE los mismos nombres de campo, para poder
-cruzar el mismo dato entre fuentes independientes:
+Analizar un documento son dos caras de varios segundos cada una, y no pueden
+correr en paralelo (dos analisis simultaneos no entran en la memoria de una
+instancia chica). Esa espera no entra en el minuto que dura como maximo una
+funcion serverless. Entonces:
 
-| Foto | Protocolos | Campos |
-|---|---|---|
-| `dni_front` | `ocr`, `codigo` | apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaEmision, fechaVencimiento (el codigo no trae vencimiento) |
-| `dni_back` | `ocr`, `mrz` | domicilio, cuil / apellido, nombre, sexo, nDocumento, fechaNacimiento, fechaVencimiento |
-| `license_front` | `ocr` | numLicencia, apellido, nombre, domicilio, fechaNacimiento, fechaVencimiento |
-| `license_back` | `ocr` | cuil, esPrincipiante, finPrincipiante |
+```
+1. El usuario sube las 4 fotos -> Cloudinary (directo, no pasan por el backend)
+2. POST .../submit -> guarda, deja PENDING y RESPONDE YA
+3. El backend baja las 2 imagenes y se las manda a la API de lectura
+   -> la API contesta 202 en el acto y analiza en segundo plano
+4. La API termina y le pega de vuelta al backend (callback con token de un solo uso)
+5. El backend cruza todo contra la cuenta y decide
+6. El front consulta GET /verification/identity/me hasta que cambie el estado
+```
 
-`DocumentMatchService` (puro, sin IO) aprueba solo si NADA queda vacio ni en
-conflicto: cada dato coincide entre protocolos y contra la cuenta, el PDF417 y
-el MRZ se pudieron leer, el documento esta vigente, la persona es mayor de 18
-segun el documento, el CUIL tiene checksum valido y contiene el DNI leido, la
-licencia pertenece al mismo titular y su periodo de principiante ya se cumplio.
-Los nombres leidos por optica (OCR y la linea de nombres del MRZ, que no tiene
-digito verificador propio) toleran un caracter mal transcripto por token; el
-PDF417 y el formulario se comparan exactos. El domicilio se compara por
-similitud y nunca rechaza solo: deriva a revision humana.
+Cada salto HTTP dura pocos segundos, asi que el tope de la funcion serverless
+deja de importar. Las imagenes viajan en base64 y no como URL firmada de
+Cloudinary: esas firmas NO VENCEN, y mandarlas seria repartir un acceso
+permanente al documento de identidad de una persona.
+
+Como decide (`IdentityMatchService`, puro y sin IO):
+
+1. **Coherencia interna.** El mismo dato leido por varios origenes tiene que
+   coincidir. El apellido del DNI esta impreso, adentro del PDF417 y adentro de
+   la MRZ: quien altera una tarjeta cambia lo impreso y el codigo sigue diciendo
+   el dato original, y esa contradiccion es la firma del fraude.
+2. **Contra la cuenta.** `numero_documento`, `apellido`, `nombre`,
+   `fecha_nacimiento` y `cuil` se comparan con lo que el usuario cargo. La
+   comparacion normaliza tildes, mayusculas, espacios y puntos: "TEJADA ARAGON"
+   y "Tejada Aragon" son la misma persona, y tratarlos distinto mandaria a
+   revision manual documentos perfectos.
+3. **Estructura.** La MRZ tiene que decir `ID` y `ARG`; el numero de licencia
+   tiene que ser igual al DNI (en Argentina lo es); el CUIL tiene que contener
+   el DNI.
+4. **Habilitacion.** Vencimiento, clase y periodo de principiante. No invalidan
+   el documento —una licencia clase A es genuinamente suya— pero quedan
+   guardados y son los que despues impiden alquilar.
+
+**El veredicto es APPROVE o MANUAL_REVIEW: nunca hay rechazo automatico.** El
+costo de los dos errores no es el mismo. Aprobar de mas lo atrapa el control
+antifraude del numero de documento y la revision del admin; rechazar de menos
+echa a una persona real por una foto con reflejo, sin que nadie lo mire. Un OCR
+equivocandose no puede ser la ultima palabra sobre la identidad de alguien.
 
 Ciclo de vida de un documento (`DocumentVerification`, una fila viva por
 usuario y tipo):
 
 ```
-submit -> APPROVED | FAILED
-FAILED -> reenviar fotos (reemplaza el intento y borra sus archivos)
-       -> request-review -> MANUAL_REVIEW -> admin: APPROVED | REJECTED
+submit -> PENDING + analisis QUEUED     (fotos guardadas, lectura pedida)
+analisis DONE   -> APPROVED  (todo cruzo)
+                -> PENDING   (algo no cerro; se puede pedir revision)
+analisis FAILED -> PENDING   (no se pudo leer; camino manual, con el motivo)
+PENDING -> request-review -> MANUAL_REVIEW -> admin: APPROVED | REJECTED
+PENDING -> reenviar fotos (reemplaza el intento y borra sus archivos)
 REJECTED -> los archivos se borran del storage; se puede volver a empezar
 ```
 
+`analysisStatus` es una cosa distinta de `status`: uno dice si la maquina ya
+miro el documento, el otro si esta aprobado. Se separan porque un documento
+puede estar `PENDING` con el analisis `DONE` (se leyo bien pero algo no cerro) o
+`PENDING` con el analisis `FAILED` (el servicio de lectura estaba caido).
+
 Revision manual:
 
-- No hay ningun modo que configurar: los documentos los aprueba o los rechaza un admin, siempre. `submit` deja la fila en `PENDING`; `request-review` la pasa a `MANUAL_REVIEW`.
-- `FAILED` sigue en el enum de `DocumentVerificationStatus` porque hay filas viejas con ese estado, escritas por la verificacion automatica que ya no existe. Se las trata igual que a un `PENDING`: se puede reenviar fotos o pedir revision.
-- La lectura automatica esta en `docverify-api/` y devuelve sus datos a quien la llame; no escribe en esta base ni influye en el veredicto.
+- `FAILED` sigue en el enum de `DocumentVerificationStatus` porque hay filas viejas con ese estado, escritas por la verificacion automatica vieja. Se las trata igual que a un `PENDING`.
+- Un fallo del servicio de lectura va a `analysisError` y NO a `reasonCodes`: `reasons` es "que esta mal con TU documento", y que nuestro servicio este caido no es nada que el usuario haya hecho mal ni pueda arreglar.
+
+Habilitacion para conducir:
+
+Estar verificado y estar habilitado a manejar son cosas distintas. La
+verificacion dice "sos quien decis ser" y se resuelve una vez; la habilitacion
+dice "hoy podes conducir" y cambia sola con el paso del tiempo. Por eso son dos
+decoradores: `@RequireVerifiedAccount()` y `@RequireDrivingEligibility()`. Un
+dueño que cobra un alquiler tiene que estar verificado pero no necesita poder
+manejar; si fueran el mismo control, una licencia vencida le cortaria los cobros.
+
+Bloquean alquilar: **licencia vencida**, **clase que no habilita auto** (solo
+B/C/D/E) y **licencia en periodo de principiante**. Se evalua en CADA pedido
+contra la fecha de hoy, sin ningun proceso programado: un job nocturno dejaria
+una ventana de hasta 24 horas entre que una licencia vence y alguien se entera.
+
+**Lo que no se sabe no bloquea.** Un vencimiento en `null` deja alquilar: hay
+licencias aprobadas antes de que existiera la lectura automatica y ahi el dato
+nunca se cargo. Tratar "no se cuando vence" como "esta vencida" dejaria afuera,
+el dia del deploy, a todas las cuentas ya verificadas.
 
 Seguridad de los documentos:
 
@@ -704,8 +762,9 @@ Query soportada en catalogo:
 | GET | `/verification/me/status` | JWT | Estado propio + checklist (`fullyVerified`, `lastReview`) |
 | POST | `/verification/identity/upload-signature` | JWT | Firma la subida de UN documento (`document` + `side`) |
 | POST | `/verification/identity/inspect-url` | JWT | Diagnostica UNA url subida sin verificar nada (200 siempre) |
-| POST | `/verification/identity/:document/submit` | JWT | Envia las 2 fotos de un documento (`dni`\|`license`) y devuelve el veredicto |
-| POST | `/verification/identity/:document/request-review` | JWT | Pide que un admin revise a mano un documento en `FAILED` |
+| POST | `/verification/identity/:document/submit` | JWT | Envia las 2 fotos de un documento (`dni`\|`license`), dispara su lectura y responde ya (no espera el analisis) |
+| POST | `/verification/identity/:document/request-review` | JWT | Pide que un admin revise a mano un documento en `PENDING` o `FAILED` |
+| POST | `/verification/identity/analysis-callback` | Token de un solo uso | Lo llama la API de lectura cuando termino. SIN sesion: lo autentica el token que se le dio al pedir el analisis |
 | GET | `/verification/identity/me` | JWT | Solicitudes propias (sin URLs ni datos extraidos) |
 
 ### Bookings
@@ -1086,17 +1145,20 @@ Campos:
 
 - `userId`
 - `type` (`DNI` | `LICENSE`)
-- `status` (`APPROVED` | `FAILED` | `MANUAL_REVIEW` | `REJECTED`)
+- `status` (`PENDING` | `APPROVED` | `FAILED` | `MANUAL_REVIEW` | `REJECTED`)
 - `frontUrl`, `backUrl` (canonicas sin firma; en `REJECTED` quedan en null)
-- `documentNumber`, `expiresAt` (leidos del documento, no declarados)
-- `extracted` (JSON crudo del verificador), `matchReport` (motivos + matriz)
-- `reasonCodes` (codigos estables del ultimo veredicto)
+- `documentNumber` (al enviar, el declarado en el perfil; despues del analisis, el que dice el documento), `expiresAt` (leido del documento)
+- `extracted` (el informe del cruce: valor acordado por campo, quienes lo leyeron y que se decidio). NO guarda el texto completo del OCR: ahi viajan el domicilio y, en la licencia, datos de salud
+- `matchReport` (motivos del ultimo veredicto), `reasonCodes` (los mismos en codigos estables)
+- `analysisStatus` (`NOT_REQUESTED` | `QUEUED` | `DONE` | `FAILED`), `analysisRequestedAt`, `analysisError`
+- `analysisTokenHash` (SHA-256 del token de un solo uso del callback; se borra al consumirlo, y eso es lo que lo hace de un solo uso)
 - `reviewRequestedAt`, `reviewedBy`, `reviewedAt`, `notes`
 - timestamps
 
 Indices:
 
 - `userId, type` (unico)
+- `analysisTokenHash` (unico): es la busqueda que hace CADA callback
 - `status`
 - `documentNumber`
 
@@ -1235,34 +1297,58 @@ Pasos:
    fallo (`problem`), en que etapa (`step`), en que campo (`field`) y que se
    esperaba contra que llego (`details`); `errors` lista los dos archivos
    cuando los dos estan mal.
-5. La fila queda en `PENDING`. **El backend no lee las fotos**: no hay
-   extraccion, ni comparacion, ni veredicto automatico. Lo unico que se guarda
-   de la persona es el `documentNumber` tomado del DNI declarado en el perfil,
-   que es lo que sostiene el control antifraude.
+5. La fila queda en `PENDING` y el submit **responde ya**: no espera el
+   analisis. En paralelo el backend baja las dos fotos, se las manda a la API
+   de lectura y esta contesta 202; `analysisStatus` queda en `QUEUED`, que es lo
+   que el front muestra como "revisando tus documentos".
 
-6. `POST /verification/identity/:document/request-review` pasa la fila a
+   Si no se pudo pedir el analisis (no hay `DOCVERIFY_URL`, el servicio esta
+   caido o saturado), `analysisStatus` queda en `FAILED` con el motivo en
+   `analysisError` y el documento sigue por revision manual. **Eso no va a
+   `reasonCodes`**: `reasons` es "que esta mal con TU documento", y un problema
+   nuestro no lo es.
+
+6. Cuando la lectura termina, la API le pega a
+   `POST /verification/identity/analysis-callback` con el token de un solo uso.
+   El backend cruza lo leido (ver "Como decide") y aplica el veredicto:
+   `APPROVED` si todo cierra, o `PENDING` con los motivos si no. Ademas guarda
+   lo que el formulario no tenia: vencimiento del documento, y para la licencia
+   tambien clase, otorgamiento y periodo de principiante. El `documentNumber`
+   pasa a ser el que dice el DOCUMENTO y no el declarado en el perfil — el
+   declarado lo elige el usuario, el leido no.
+
+7. `POST /verification/identity/:document/request-review` pasa la fila a
    `MANUAL_REVIEW` y la pone en la cola de `GET /admin/verifications`. Se puede
-   pedir sobre un `PENDING` o sobre un `FAILED` (el estado que dejaron las
-   submissions de la verificacion automatica vieja).
+   pedir sobre un `PENDING` o sobre un `FAILED`.
 
    Pedir la revision NO bloquea el reenvio: mandar fotos nuevas reemplaza la
    fila entera y deja el pedido sin efecto, porque el admin tiene que mirar
    ESAS fotos. Si lo bloqueara, alguien que subio una foto movida quedaria
    encerrado en la cola esperando a que alguien la mire.
 
-7. Veredicto del admin (`PATCH /admin/verifications/:id/review`):
+8. Veredicto del admin (`PATCH /admin/verifications/:id/review`):
    - **APPROVED**: el documento queda verificado. Si el otro tambien lo esta,
      la cuenta pasa a `VERIFIED`. La aprobacion revalida dentro de la
      transaccion que ese documento no verifique ya otra cuenta.
    - **REJECTED**: rechaza **y borra la documentacion del storage**. La cuenta
      queda `REJECTED` hasta que se reenvien fotos.
 
-Catalogo de motivos (`errors/verification-reasons.ts`): `PERFIL_INCOMPLETO`,
-`DOCUMENTO_YA_VERIFICADO` y `RECHAZADO_POR_ADMIN`. Son pocos porque el backend
-no analiza nada: los motivos de "no pudimos leer tal campo" pertenecian a la
-verificacion automatica y se fueron con ella. Las filas viejas guardan el
-motivo completo (codigo + mensaje) dentro de `matchReport`, asi que se siguen
-mostrando aunque su codigo ya no este en el catalogo.
+Catalogo de motivos (`errors/verification-reasons.ts`). La regla del archivo es
+que un motivo tiene que decir QUE PASO y QUE HACER: "verificacion fallida" no
+es un motivo, "la fecha de nacimiento del documento no coincide con la de tu
+cuenta, corregila en tu perfil o envia el documento correcto" si lo es. Cuatro
+familias:
+
+- **Prerrequisitos**: `PERFIL_INCOMPLETO`.
+- **Antifraude**: `DOCUMENTO_YA_VERIFICADO`.
+- **Revision**: `RECHAZADO_POR_ADMIN`.
+- **Lectura**: `LECTURA_NO_DISPONIBLE`, `LECTURA_FALLIDA`, `DATO_ILEGIBLE`. Nunca rechazan; mandan a revision manual.
+- **Cruces**: `DATO_NO_COINCIDE_ENTRE_ORIGENES`, `DATO_NO_COINCIDE_CON_LA_CUENTA`, `LICENCIA_NO_ES_DEL_TITULAR`, `CUIL_NO_CORRESPONDE_AL_DNI`, `DOCUMENTO_NO_ES_ARGENTINO`.
+- **Habilitacion**: `DOCUMENTO_VENCIDO`, `LICENCIA_VENCIDA`, `LICENCIA_CLASE_NO_HABILITA`, `LICENCIA_PRINCIPIANTE`, `DNI_VENCIDO`.
+
+Las filas viejas guardan el motivo completo (codigo + mensaje) dentro de
+`matchReport`, asi que se siguen mostrando aunque su codigo ya no este en el
+catalogo.
 
 Antifraude: `User.dni` y `User.cuil` son unicos, la aprobacion revalida dentro
 de la transaccion que el documento no verifique ya otra cuenta, y los campos
@@ -1272,16 +1358,28 @@ aprobado.
 #### La lectura automatica de documentos
 
 Vive en `docverify-api/`, **fuera de este backend**: es un servicio de Python
-(FastAPI) que se deploya aparte, no comparte base ni configuracion, y al que
-este backend no le pega. Recibe una foto y devuelve lo que pudo leer; quien lo
-llame decide que hacer con eso.
+(FastAPI) que se deploya aparte y no comparte base. Recibe fotos, dice que leyo
+en cada una y con cuanta confianza, y avisa si las distintas lecturas de un
+mismo dato coinciden entre si. **No sabe quien es el usuario y no decide si una
+verificacion se aprueba**: eso lo hace este backend, que es el unico lado que
+conoce la cuenta.
 
-Un endpoint por cara del documento, porque cada cara se lee distinto:
+Se deploya en Render (hay un `render.yaml` en la raiz del repo). No puede ir en
+Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y el tope de una
+funcion serverless son 250 MB.
+
+El endpoint que usa este backend:
+
+| Endpoint | Que hace |
+| --- | --- |
+| `POST /analizar/documento` | Las DOS caras juntas. Contesta 202 y avisa al terminar por el `callback_url`. Es el unico modo que puede cruzar una cara contra la otra |
+
+Y los de una cara suelta, para mirar una foto y ver que se leyo:
 
 | Endpoint | Origenes |
 | --- | --- |
 | `POST /analizar/dni-frente` | `ocr` + `pdf417` (el codigo del RENAPER) |
-| `POST /analizar/dni-dorso` | `ocr` (domicilio, lugar de nacimiento, CUIL) + `mrz` (TD1 ICAO con sus digitos verificadores) |
+| `POST /analizar/dni-dorso` | `ocr` (CUIL) + `mrz` (TD1 ICAO con sus digitos verificadores) |
 | `POST /analizar/licencia-frente` | `ocr` (no tiene codigos) |
 | `POST /analizar/licencia-dorso` | `ocr` + `pdf417` + el codigo de barras lineal del borde |
 
@@ -1289,11 +1387,30 @@ Antes de leer nada encuadra el documento: detecta sus bordes, corrige la
 perspectiva y lo endereza a un rectangulo ID-1 de tamano fijo. Eso es lo que
 permite despues buscar cada dato POR SU POSICION, ademas de por su rotulo.
 
-El JSON es el mismo en los cuatro endpoints, organizado por origen, con cada
+El JSON es el mismo en todos los endpoints, organizado por origen, con cada
 dato normalizado y crudo, y un bloque `coincidencias` que dice si lo impreso y
 lo codificado dicen lo mismo — que es lo que delata una tarjeta adulterada. Un
-dato que no se pudo leer viene vacio, nunca ausente. El contrato completo esta
-en `docverify-api/README.md` y se puede consultar en vivo en `GET /contrato`.
+dato que no se pudo leer viene vacio, nunca ausente.
+
+**Devuelve 14 campos, no todo lo que el documento trae.** Los documentos tienen
+impreso bastante mas (nacionalidad, ejemplar, numero de tramite, oficina
+identificadora, domicilio, lugar de nacimiento, codigo de control, jurisdiccion,
+responsable) y todo eso se leia bien; se dejo de leer porque un dato que no
+decide nada igual ocupa una zona de OCR, agrega un valor mas que puede salir mal
+y engorda un JSON que alguien tiene que mirar. Queda lo que SE CRUZA (apellido,
+nombre, sexo, numero de documento, nacimiento, CUIL, numero de licencia) y lo
+que HABILITA (vencimiento, otorgamiento, clase, principiante), mas
+`tipo_documento` y `pais_emisor` de la MRZ.
+
+Dos se sacaron por una razon mas fuerte: **el grupo sanguineo y las
+observaciones de la licencia son datos de salud**, sensibles bajo la Ley 25.326.
+No hacen falta para alquilar un auto, y no tenerlos es la unica forma segura de
+no filtrarlos. El **domicilio** se saco por una razon practica: el del documento
+casi nunca coincide con el que la persona cargo, asi que cruzarlo produce
+rechazos falsos sin detectar ningun fraude.
+
+El contrato completo esta en `docverify-api/README.md` y se puede consultar en
+vivo en `GET /contrato`.
 
 ### Flujo De Reserva Actual
 
@@ -1552,9 +1669,13 @@ SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
 # CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
 CORS_STRICT=""
-# Verificacion documental: no se configura. Los documentos los revisa un admin
-# a mano. La lectura automatica corre en docverify-api/, que tiene su propio
-# .env y se deploya aparte.
+# Lectura automatica de documentos (docverify-api/, deployado aparte en Render).
+# Sin esto todo sigue funcionando: las fotos se guardan y las revisa un admin.
+DOCVERIFY_URL=""
+DOCVERIFY_TOKEN=""
+# A donde le avisa la API de lectura cuando termina. En Vercel no hace falta
+# (se arma con VERCEL_URL); fuera de Vercel, sin esto el analisis ni se pide.
+PUBLIC_URL=""
 # Requeridas para subir documentos (sin ellas el submit devuelve 503)
 CLOUDINARY_CLOUD_NAME=""
 CLOUDINARY_API_KEY=""

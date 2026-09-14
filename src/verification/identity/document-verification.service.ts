@@ -1,6 +1,13 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { createHash, randomBytes } from "crypto";
+import {
+  DocumentAnalysisStatus,
   DocumentVerification,
   DocumentVerificationStatus,
   Prisma,
@@ -22,10 +29,22 @@ import {
   IdentityDocumentsService,
   IdentityUrlInspection,
 } from "./identity-documents.service";
+import {
+  DocverifyClient,
+  DocverifyDocument,
+  DocverifyResult,
+} from "./docverify.client";
+import { ExtractedFacts, IdentityMatchService } from "./identity-match.service";
 
 const KIND_TO_TYPE: Record<DocumentKind, VerifiedDocumentType> = {
   dni: VerifiedDocumentType.DNI,
   license: VerifiedDocumentType.LICENSE,
+};
+
+/** Cómo nombra cada documento la API que los lee. */
+const KIND_TO_DOCVERIFY: Record<DocumentKind, DocverifyDocument> = {
+  dni: "dni",
+  license: "licencia",
 };
 
 /**
@@ -53,6 +72,19 @@ export interface DocumentVerificationView {
   canResubmit: boolean;
   /** El usuario puede pedir que un admin revise este documento. */
   canRequestManualReview: boolean;
+  /**
+   * En qué anda la lectura automática. El front lo usa para mostrar
+   * "revisando tus documentos…" y para dejar de preguntar cuando terminó.
+   */
+  analysis: {
+    status: DocumentAnalysisStatus;
+    /** Si vale la pena volver a preguntar dentro de unos segundos. */
+    pending: boolean;
+    /** Por qué no se pudo leer, en castellano. Vacío si no falló. */
+    error: string | null;
+  };
+  /** Cuándo vence este documento, si se pudo leer. */
+  expiresAt: Date | null;
   reviewRequestedAt: Date | null;
   reviewedAt: Date | null;
   createdAt: Date;
@@ -60,12 +92,30 @@ export interface DocumentVerificationView {
 }
 
 /**
- * EL FLUJO DE VERIFICACIÓN DE UN DOCUMENTO — REVISIÓN MANUAL
+ * EL FLUJO DE VERIFICACIÓN DE UN DOCUMENTO
  *
- * Este backend NO analiza las fotos: solo las recibe, las guarda y las pone a
- * disposición de un admin. La lectura automática de documentos vive en un
- * servicio aparte (ver docverify-api/), que se deploya por su cuenta y no está
- * conectado con este: acá no hay ningún cliente que lo llame.
+ * Las fotos las LEE un servicio aparte, escrito en Python, que se deploya por
+ * su cuenta (ver docverify-api/). Este backend le manda las dos caras, recibe
+ * lo que leyó, lo CRUZA contra los datos de la cuenta y decide.
+ *
+ * ── La lectura es asíncrona, y el usuario no espera ─────────────────────────
+ * Analizar un documento son varios segundos por cara y los análisis no pueden
+ * correr en paralelo. Así que el submit guarda las fotos, dispara el análisis
+ * y contesta enseguida; cuando la lectura termina, el servicio nos pega de
+ * vuelta a `applyAnalysis` y ahí se aplica el veredicto. Mientras tanto el
+ * documento está PENDING con `analysisStatus` en QUEUED, que es lo que el
+ * front muestra como "revisando tus documentos".
+ *
+ * ── Aprueba solo; rechazar es de personas ───────────────────────────────────
+ * Si todo coincide, el documento queda APPROVED sin que intervenga nadie. Si
+ * algo no cierra —un dato que no coincide, una foto que no se pudo leer, el
+ * servicio de lectura caído— va a MANUAL_REVIEW con el informe ya armado, para
+ * que el admin resuelva en segundos en vez de leer cuatro fotos. Lo que NUNCA
+ * pasa es un rechazo automático: un OCR equivocándose no puede ser la última
+ * palabra sobre la identidad de una persona.
+ *
+ * Corolario: que la lectura automática falle no bloquea a nadie. Es un
+ * acelerador, no un requisito.
  *
  * DNI y licencia son flujos separados: cada uno tiene su fila viva en
  * DocumentVerification y se puede enviar solo o junto con el otro. La cuenta
@@ -73,7 +123,10 @@ export interface DocumentVerificationView {
  * teléfono si REQUIRE_PHONE_VERIFICATION lo exige).
  *
  * Ciclo de vida de una submission:
- *   submit → PENDING            (fotos guardadas, todavía sin revisar)
+ *   submit → PENDING + análisis QUEUED     (fotos guardadas, lectura pedida)
+ *   análisis DONE  → APPROVED  (todo cruzó)
+ *                  → PENDING   (algo no cerró; el usuario puede pedir revisión)
+ *   análisis FAILED→ PENDING   (no se pudo leer; camino manual, con el motivo)
  *   PENDING → (pedir revisión) MANUAL_REVIEW → admin: APPROVED | REJECTED
  *   PENDING → (reenviar fotos: reemplaza y borra las anteriores)
  *   REJECTED → los archivos se borran; se puede volver a empezar.
@@ -87,13 +140,18 @@ export class DocumentVerificationService {
     private readonly documents: IdentityDocumentsService,
     private readonly auditLog: AuditLogService,
     private readonly config: ConfigService,
+    private readonly docverify: DocverifyClient,
+    private readonly matcher: IdentityMatchService,
   ) {}
 
   // ── Flujo del usuario ──────────────────────────────────────────────────
 
   /**
-   * Guarda las dos fotos de un documento y lo deja PENDING. No se analiza
-   * nada acá: el siguiente paso lo da el usuario pidiendo la revisión.
+   * Guarda las dos fotos de un documento, dispara su lectura y contesta.
+   *
+   * No espera el análisis: la respuesta sale con el documento en PENDING y el
+   * análisis QUEUED, y el front consulta `GET /verification/identity/me` hasta
+   * que cambie. Ver la nota de la clase sobre por qué es asíncrono.
    */
   async submit(
     userId: string,
@@ -138,7 +196,186 @@ export class DocumentVerificationService {
       metadata: { type, status: row.status },
     });
 
-    return this.toPublicView(row);
+    return this.toPublicView(await this.startAnalysis(row, kind, urls));
+  }
+
+  /**
+   * Le pide a la API de lectura que analice este documento.
+   *
+   * Devuelve la fila actualizada y NO LANZA NUNCA: cuando no se puede pedir el
+   * análisis —el servicio está caído, no está configurado, está saturado— el
+   * documento queda igual de válido, en PENDING y con el motivo guardado, y
+   * sigue por revisión manual. Que nuestra lectura automática no ande no es
+   * problema del usuario y no le puede trabar la cuenta.
+   */
+  private async startAnalysis(
+    row: DocumentVerification,
+    kind: DocumentKind,
+    urls: { frontUrl: string; backUrl: string },
+  ): Promise<DocumentVerification> {
+    // El token viaja al servicio de lectura y vuelve en el aviso; acá se
+    // guarda solo su hash. Es de un solo uso: se borra al consumirlo, así que
+    // un aviso repetido —o uno de un análisis viejo, después de que el usuario
+    // reenviara fotos— no encuentra a quién aplicarse.
+    const token = randomBytes(32).toString("hex");
+
+    await this.prisma.documentVerification.update({
+      where: { id: row.id },
+      data: {
+        analysisStatus: DocumentAnalysisStatus.QUEUED,
+        analysisRequestedAt: new Date(),
+        analysisTokenHash: hashToken(token),
+        analysisError: null,
+      },
+    });
+
+    const result = await this.docverify.requestAnalysis({
+      document: KIND_TO_DOCVERIFY[kind],
+      frontUrl: urls.frontUrl,
+      backUrl: urls.backUrl,
+      reference: row.id,
+      callbackUrl: `${this.publicUrl()}/verification/identity/analysis-callback`,
+      callbackToken: token,
+    });
+
+    if (result.accepted) {
+      return this.prisma.documentVerification.findUniqueOrThrow({
+        where: { id: row.id },
+      });
+    }
+
+    this.logger.warn(
+      `no se pudo pedir el análisis de ${row.id} ` +
+        `(${result.failure.problem}): ${result.failure.detail}`,
+    );
+
+    // El mensaje va a `analysisError` y NO a `reasonCodes`.
+    //
+    // La diferencia importa: `reasons` es "qué está mal con TU documento" y el
+    // front lo muestra como tal. Que nuestro servicio de lectura esté caído, o
+    // que este deploy no tenga ninguno configurado, no es nada que el usuario
+    // haya hecho mal ni algo que pueda arreglar reenviando fotos. Meterlo ahí
+    // le mostraría un problema en su documento que no existe.
+    //
+    // Va a `analysisError`, que el front recibe en `analysis.error` y muestra
+    // como lo que es: un aviso de que esto lo va a mirar una persona.
+    const reason = verificationReason(
+      result.failure.problem === "NO_CONFIGURADO"
+        ? "LECTURA_NO_DISPONIBLE"
+        : "LECTURA_FALLIDA",
+      { detail: shortDetail(result.failure.detail) },
+    );
+
+    return this.prisma.documentVerification.update({
+      where: { id: row.id },
+      data: {
+        analysisStatus: DocumentAnalysisStatus.FAILED,
+        // El token se borra: el análisis no arrancó, así que ningún aviso
+        // legítimo puede llegar con él.
+        analysisTokenHash: null,
+        analysisError: reason.message,
+      },
+    });
+  }
+
+  /**
+   * EL AVISO DE QUE UN ANÁLISIS TERMINÓ.
+   *
+   * Entra sin sesión: lo llama la API de lectura, que no es un usuario. Lo
+   * único que la autentica es el token de un solo uso que le dimos al pedir el
+   * análisis, y que solo ella conoce.
+   *
+   * Un token que no matchea es un 401 y nada más: no se dice si la referencia
+   * existe ni en qué estado está, porque quien pregunta no demostró tener
+   * derecho a saberlo.
+   */
+  async applyAnalysis(
+    token: string,
+    result: DocverifyResult,
+  ): Promise<{ applied: true; status: DocumentVerificationStatus }> {
+    const row = await this.prisma.documentVerification.findUnique({
+      where: { analysisTokenHash: hashToken(token) },
+    });
+    if (!row) {
+      // Pasa legítimamente cuando el usuario reenvió fotos mientras el
+      // análisis anterior corría: ese análisis ya no describe las fotos que
+      // hay guardadas, así que descartarlo es lo correcto.
+      throw new UnauthorizedException({
+        statusCode: 401,
+        code: "ANALYSIS_TOKEN_INVALID",
+        message:
+          "El token del análisis no corresponde a ningún pedido vigente. " +
+          "Puede que las fotos se hayan reemplazado mientras se analizaba.",
+      });
+    }
+
+    const user = await this.getUser(row.userId);
+    const report = this.matcher.evaluate(row.type, result, user);
+
+    this.logger.log(
+      `análisis de ${row.type} de ${row.userId}: ${report.verdict}` +
+        (report.reasons.length
+          ? ` · ${report.reasons.map((r) => r.code).join(", ")}`
+          : ""),
+    );
+
+    const aprobar = report.verdict === "APPROVE";
+    // El antifraude corre también acá: sin esto, la aprobación automática
+    // sería el camino para verificar dos cuentas con el mismo documento, que
+    // es justo lo que el control del admin impide.
+    const duplicado = aprobar
+      ? await this.findDuplicate(row, report.facts.documentNumber ?? user.dni)
+      : false;
+
+    const reasons = duplicado
+      ? [...report.reasons, verificationReason("DOCUMENTO_YA_VERIFICADO")]
+      : report.reasons;
+    const status =
+      aprobar && !duplicado
+        ? DocumentVerificationStatus.APPROVED
+        : DocumentVerificationStatus.PENDING;
+
+    const updated = await this.prisma.documentVerification.update({
+      where: { id: row.id },
+      data: {
+        status,
+        analysisStatus: DocumentAnalysisStatus.DONE,
+        // Consumido: el aviso vale una sola vez.
+        analysisTokenHash: null,
+        analysisError: null,
+        expiresAt: report.facts.expiresAt,
+        documentNumber: report.facts.documentNumber ?? row.documentNumber,
+        extracted: JSON.parse(JSON.stringify(report)) as Prisma.InputJsonValue,
+        matchReport: JSON.parse(
+          JSON.stringify({ reasons }),
+        ) as Prisma.InputJsonValue,
+        reasonCodes: reasons.map((r) => r.code),
+        ...(status === DocumentVerificationStatus.APPROVED
+          ? { reviewedBy: null, reviewedAt: new Date() }
+          : {}),
+      },
+    });
+
+    if (status === DocumentVerificationStatus.APPROVED) {
+      await this.applyFactsToUser(row.userId, row.type, report.facts);
+    }
+
+    await this.recomputeAccountStatus(row.userId);
+
+    await this.auditLog.create({
+      targetUserId: row.userId,
+      action: "identity.document.analyzed",
+      entityType: "DocumentVerification",
+      entityId: row.id,
+      metadata: {
+        type: row.type,
+        verdict: report.verdict,
+        status,
+        reasons: reasons.map((r) => r.code),
+      },
+    });
+
+    return { applied: true, status: updated.status };
   }
 
   /**
@@ -204,23 +441,41 @@ export class DocumentVerificationService {
   }
 
   /**
-   * Cómo revisa documentos este servidor. Quedó como un endpoint de una sola
-   * respuesta —siempre manual— para que el front no tenga que ramificar por
-   * versión de backend: antes acá se informaba el modo de la verificación
-   * automática, que ya no existe.
+   * Cómo revisa documentos este servidor.
+   *
+   * Sirve para saber, sin subir una foto, si este deploy tiene configurada la
+   * lectura automática. Un deploy sin DOCVERIFY_URL funciona igual —todo pasa
+   * por revisión manual— y esto es lo que lo dice en voz alta, en vez de que
+   * se note porque las verificaciones tardan días.
    */
   diagnostics(): {
-    mode: "manual";
-    canVerifyAutomatically: false;
+    mode: "automatic" | "manual";
+    canVerifyAutomatically: boolean;
     detail: string;
   } {
+    const automatico = this.docverify.isConfigured();
+    const conCallback = Boolean(this.publicUrl());
+
+    if (automatico && conCallback) {
+      return {
+        mode: "automatic",
+        canVerifyAutomatically: true,
+        detail:
+          "Las fotos se leen automáticamente y se cruzan contra los datos de " +
+          "la cuenta. Si todo coincide el documento se aprueba solo; si algo " +
+          "no cierra, lo revisa un administrador.",
+      };
+    }
     return {
       mode: "manual",
       canVerifyAutomatically: false,
-      detail:
-        "Este backend no analiza las fotos: las guarda y un administrador las " +
-        "revisa. La lectura automática de documentos corre en un servicio " +
-        "aparte, que se deploya por su cuenta y no está conectado con este.",
+      detail: !automatico
+        ? "Este deploy no tiene configurada la lectura automática " +
+          "(falta DOCVERIFY_URL): los documentos los revisa un administrador."
+        : "La lectura automática está configurada pero este deploy no sabe su " +
+          "propia URL pública (falta PUBLIC_URL o VERCEL_URL), así que no " +
+          "podría recibir el resultado: los documentos los revisa un " +
+          "administrador.",
     };
   }
 
@@ -280,23 +535,13 @@ export class DocumentVerificationService {
     let updated: DocumentVerification;
     if (decision === "APPROVED") {
       // Antifraude: una misma identidad no puede verificar dos cuentas.
-      if (row.documentNumber) {
-        const clash = await this.prisma.documentVerification.findFirst({
-          where: {
-            documentNumber: row.documentNumber,
-            type: row.type,
-            status: DocumentVerificationStatus.APPROVED,
-            userId: { not: row.userId },
-          },
-          select: { id: true },
+      if (await this.findDuplicate(row, row.documentNumber)) {
+        const reason = verificationReason("DOCUMENTO_YA_VERIFICADO");
+        throw new BadRequestException({
+          statusCode: 400,
+          code: "DOCUMENT_ALREADY_VERIFIED",
+          message: reason.message,
         });
-        if (clash) {
-          throw new BadRequestException({
-            statusCode: 400,
-            code: "DOCUMENT_ALREADY_VERIFIED",
-            message: "Este documento ya está verificado en otra cuenta",
-          });
-        }
       }
       updated = await this.prisma.documentVerification.update({
         where: { id: row.id },
@@ -308,6 +553,12 @@ export class DocumentVerificationService {
           reviewedAt: new Date(),
         },
       });
+      // Un admin puede estar aprobando un documento que la lectura automática
+      // no pudo resolver sola, pero que igual leyó: el vencimiento y la clase
+      // están guardados y son los que después habilitan a manejar. Sin esto,
+      // toda licencia aprobada a mano quedaría sin vencimiento conocido y no
+      // habilitaría nada.
+      await this.applyFactsToUser(row.userId, row.type, factsOf(updated));
     } else {
       // Rechazo manual: la documentación se borra del storage.
       await this.documents.deleteDocuments([row.frontUrl, row.backUrl]);
@@ -318,6 +569,11 @@ export class DocumentVerificationService {
           status: DocumentVerificationStatus.REJECTED,
           frontUrl: null,
           backUrl: null,
+          expiresAt: null,
+          extracted: Prisma.JsonNull,
+          analysisStatus: DocumentAnalysisStatus.NOT_REQUESTED,
+          analysisTokenHash: null,
+          analysisError: null,
           reasonCodes: [reason.code],
           matchReport: JSON.parse(
             JSON.stringify({ reasons: [reason] }),
@@ -327,6 +583,11 @@ export class DocumentVerificationService {
           reviewedAt: new Date(),
         },
       });
+      // Rechazar es también la vía para REVOCAR un documento ya aprobado. Lo
+      // que ese documento habilitaba se va con él: si no, una licencia
+      // revocada seguiría dejando alquilar autos hasta su fecha de
+      // vencimiento.
+      await this.applyFactsToUser(row.userId, row.type, VACIO);
     }
 
     await this.recomputeAccountStatus(row.userId);
@@ -422,6 +683,76 @@ export class DocumentVerificationService {
   // ── Internos ───────────────────────────────────────────────────────────
 
   /**
+   * ¿Esta misma identidad ya está verificada en OTRA cuenta?
+   *
+   * Es el control antifraude de fondo, y corre tanto en la aprobación
+   * automática como en la del admin. Un documento sin número leído no se puede
+   * contrastar: en ese caso no se bloquea —no hay evidencia de nada— y la
+   * decisión queda en manos de quien revisa.
+   */
+  private async findDuplicate(
+    row: DocumentVerification,
+    documentNumber: string | null,
+  ): Promise<boolean> {
+    if (!documentNumber) return false;
+    const clash = await this.prisma.documentVerification.findFirst({
+      where: {
+        documentNumber,
+        type: row.type,
+        status: DocumentVerificationStatus.APPROVED,
+        userId: { not: row.userId },
+      },
+      select: { id: true },
+    });
+    return Boolean(clash);
+  }
+
+  /**
+   * Copia al usuario lo que el documento aportó y el formulario no tenía.
+   *
+   * ESTÁ DUPLICADO A PROPÓSITO. Los mismos datos ya viven en la fila de
+   * DocumentVerification; se copian al usuario porque son los que se consultan
+   * en CADA pedido para saber si puede alquilar un auto, y JwtStrategy ya trae
+   * el usuario entero. Tenerlos acá convierte ese control en cero consultas
+   * extra, y el único precio es acordarse de limpiarlos cuando el documento se
+   * revoca — que es lo que hace la llamada con VACIO desde el rechazo.
+   */
+  private async applyFactsToUser(
+    userId: string,
+    type: VerifiedDocumentType,
+    facts: ExtractedFacts,
+  ): Promise<void> {
+    const data =
+      type === VerifiedDocumentType.LICENSE
+        ? {
+            licenseExpiresAt: facts.expiresAt,
+            licenseClass: facts.licenseClass,
+            licenseIssuedAt: facts.licenseIssuedAt,
+            licenseBeginnerUntil: facts.licenseBeginnerUntil,
+          }
+        : { dniExpiresAt: facts.expiresAt };
+
+    await this.prisma.user.update({ where: { id: userId }, data });
+  }
+
+  /**
+   * De dónde sale la URL pública de este backend, que es la que se le pasa al
+   * servicio de lectura para que nos avise.
+   *
+   * Tiene que ser alcanzable desde afuera: en Vercel la arma sola con
+   * VERCEL_URL (que no trae protocolo), y PUBLIC_URL la pisa cuando hay un
+   * dominio propio. Sin ninguna de las dos el callback no puede llegar y el
+   * análisis, aunque se haga, no nos vuelve nunca — por eso el pedido ni se
+   * intenta y el documento va derecho a revisión manual.
+   */
+  private publicUrl(): string {
+    const explicita = this.config.get<string>("PUBLIC_URL")?.trim();
+    if (explicita) return explicita.replace(/\/+$/, "");
+    const vercel = this.config.get<string>("VERCEL_URL")?.trim();
+    return vercel ? `https://${vercel.replace(/\/+$/, "")}` : "";
+  }
+
+  /**
    * Reemplaza (o crea) la fila viva del documento, en PENDING. Antes de pisar
    * una submission anterior se borran sus archivos del storage: no deben
    * quedar documentos huérfanos.
@@ -454,10 +785,22 @@ export class DocumentVerificationService {
       status: DocumentVerificationStatus.PENDING,
       frontUrl: urls.frontUrl,
       backUrl: urls.backUrl,
+      // Provisorio: el número que el usuario declaró. Cuando la lectura
+      // termine se reemplaza por el que dice el documento, que es el que
+      // tiene que sostener el control antifraude — el declarado lo elige el
+      // usuario, el leído no.
       documentNumber: user.dni,
       expiresAt: null,
       matchReport: Prisma.JsonNull,
       reasonCodes: [],
+      // Fotos nuevas, análisis nuevo: lo que se había leído de las anteriores
+      // no describe a estas. El token del análisis viejo se borra acá, y eso
+      // es lo que hace que su aviso —si llega tarde— no se aplique.
+      extracted: Prisma.JsonNull,
+      analysisStatus: DocumentAnalysisStatus.NOT_REQUESTED,
+      analysisRequestedAt: null,
+      analysisTokenHash: null,
+      analysisError: null,
       reviewRequestedAt: null,
       reviewedBy: null,
       reviewedAt: null,
@@ -512,6 +855,12 @@ export class DocumentVerificationService {
       canRequestManualReview:
         row.status === DocumentVerificationStatus.PENDING ||
         row.status === DocumentVerificationStatus.FAILED,
+      analysis: {
+        status: row.analysisStatus,
+        pending: row.analysisStatus === DocumentAnalysisStatus.QUEUED,
+        error: row.analysisError,
+      },
+      expiresAt: row.expiresAt,
       reviewRequestedAt: row.reviewRequestedAt,
       reviewedAt: row.reviewedAt,
       createdAt: row.createdAt,
@@ -524,6 +873,77 @@ export class DocumentVerificationService {
     assertFound(user, "User not found");
     return user;
   }
+}
+
+/**
+ * El token del callback, hasheado.
+ *
+ * SHA-256 pelado y no bcrypt, a diferencia de una contraseña, y el motivo es
+ * que acá no hace falta el costo: el token son 32 bytes aleatorios, no algo
+ * que alguien pueda adivinar probando. Lo que se busca es que quien lea la
+ * base no pueda falsificar un aviso, y para eso un hash rápido alcanza. Encima
+ * tiene que ser determinístico, porque la búsqueda es POR el hash.
+ */
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Lo que habilita un documento del que no se leyó nada. */
+const VACIO: ExtractedFacts = {
+  expiresAt: null,
+  licenseClass: null,
+  licenseIssuedAt: null,
+  licenseBeginnerUntil: null,
+  documentNumber: null,
+};
+
+/**
+ * Lo que la lectura sacó de un documento, recuperado de la fila.
+ *
+ * Se lee de `extracted`, que es donde lo dejó el análisis, y se cae a `VACIO`
+ * cuando no hay nada: es el caso de un documento que un admin aprobó sin que
+ * la lectura automática hubiera podido correr. Ahí no se sabe cuándo vence la
+ * licencia, y no saberlo es distinto de que esté vigente — lo que hace el
+ * control de habilitación con un vencimiento desconocido está explicado en
+ * driving-eligibility.ts.
+ *
+ * `expiresAt` sale de la columna y no del JSON porque es la columna la que se
+ * mantiene al día: un admin puede corregirla sin tocar el informe.
+ */
+function factsOf(row: DocumentVerification): ExtractedFacts {
+  const report = row.extracted as { facts?: Partial<ExtractedFacts> } | null;
+  const facts = report?.facts;
+  return {
+    expiresAt: row.expiresAt,
+    licenseClass: facts?.licenseClass ?? null,
+    licenseIssuedAt: aDate(facts?.licenseIssuedAt),
+    licenseBeginnerUntil: aDate(facts?.licenseBeginnerUntil),
+    documentNumber: row.documentNumber,
+  };
+}
+
+/**
+ * Las fechas guardadas en JSON vuelven como texto ISO, no como Date: Prisma
+ * serializa la columna Json tal cual y no reconstruye tipos. Sin esto, lo que
+ * se escribiría en User.licenseIssuedAt sería un string y Prisma lo rechazaría
+ * en runtime, mucho después de compilar.
+ */
+function aDate(valor: Date | string | null | undefined): Date | null {
+  if (!valor) return null;
+  const fecha = valor instanceof Date ? valor : new Date(valor);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+/**
+ * Recorta un detalle técnico antes de meterlo en un mensaje para el usuario.
+ *
+ * Los detalles del cliente pueden traer el cuerpo de una respuesta ajena. Al
+ * usuario le sirve saber que el problema fue "timeout" y no el HTML de error
+ * de un proxy.
+ */
+function shortDetail(detail: string): string {
+  const limpio = detail.replace(/\s+/g, " ").trim();
+  return limpio.length > 160 ? `${limpio.slice(0, 157)}…` : limpio;
 }
 
 /** Motivos guardados en matchReport, tolerando filas sin reporte. */

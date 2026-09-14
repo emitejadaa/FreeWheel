@@ -21,6 +21,7 @@ import { assertFound } from "../common/utils/entity.util";
 import { UploadSignatureDto } from "./dto/upload-signature.dto";
 import { IdentityDocumentsService } from "./identity/identity-documents.service";
 import { DocumentVerificationService } from "./identity/document-verification.service";
+import { evaluateDrivingEligibility } from "./identity/driving-eligibility";
 import {
   consumeVerificationCode,
   generateNumericCode,
@@ -101,12 +102,29 @@ export class VerificationService {
 
   /**
    * Estado completo para el front: el estado de la cuenta, el checklist
-   * derivado y el estado de cada flujo de documento (DNI y licencia por
-   * separado). Los motivos vienen en códigos estables + mensajes aptos para
-   * mostrar; el detalle de la extracción es dato personal y solo lo ve un
-   * admin.
+   * derivado, el estado de cada flujo de documento (DNI y licencia por
+   * separado) y si la persona puede alquilar un auto hoy. Los motivos vienen
+   * en códigos estables + mensajes aptos para mostrar; el detalle de la
+   * extracción es dato personal y solo lo ve un admin.
    */
   async getMyStatus(userId: string) {
+    // RECALCULAR ANTES DE LEER, y no es por las dudas.
+    //
+    // `verificationStatus` es estado DERIVADO: sale del email, del teléfono y
+    // de los dos documentos. Pero se guarda, y se escribe desde siete lugares
+    // distintos, ninguno de los cuales lo hace en la misma transacción que el
+    // cambio que lo motivó. O sea que un corte entre las dos escrituras —el
+    // documento queda APPROVED y el recálculo no llega a correr— deja la
+    // cuenta clavada en ID_SUBMITTED con todo aprobado: la persona no puede
+    // reservar, no hay nada que pueda hacer para destrabarse, y desde afuera
+    // se ve como un bug sin causa.
+    //
+    // Recalcular acá lo vuelve auto-reparable, porque esta es justamente la
+    // pantalla que mira quien se está verificando. Y es barato: el recálculo
+    // solo ESCRIBE cuando el valor cambió, así que en el caso normal es una
+    // consulta de más y ninguna escritura.
+    await this.documentVerification.recomputeAccountStatus(userId);
+
     const user = await this.getUser(userId);
     const documents = await this.documentVerification.getMyDocuments(userId);
 
@@ -130,6 +148,11 @@ export class VerificationService {
       // qué canal va a llegar el código, para explicarlo en pantalla.
       phoneRequired: this.documentVerification.isPhoneVerificationRequired(),
       phoneCodeChannel: this.smsService.isMock ? "email" : "sms",
+      // Si HOY puede alquilar un auto, y si no, por qué. Es una cosa distinta
+      // de `fullyVerified`: una cuenta verificada con la licencia vencida
+      // sigue verificada, pero no puede alquilar. Se calcula acá y no se
+      // guarda porque depende de la fecha de hoy.
+      driving: evaluateDrivingEligibility(user),
     };
   }
 
