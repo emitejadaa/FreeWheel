@@ -764,6 +764,7 @@ Query soportada en catalogo:
 | POST | `/verification/identity/inspect-url` | JWT | Diagnostica UNA url subida sin verificar nada (200 siempre) |
 | POST | `/verification/identity/:document/submit` | JWT | Envia las 2 fotos de un documento (`dni`\|`license`), dispara su lectura y responde ya (no espera el analisis) |
 | POST | `/verification/identity/:document/request-review` | JWT | Pide que un admin revise a mano un documento en `PENDING` o `FAILED` |
+| POST | `/verification/identity/:document/retry-analysis` | JWT | Vuelve a pedir la lectura sin reenviar las fotos. Para el servicio dormido: el pedido que se cayo fue el que lo desperto |
 | POST | `/verification/identity/analysis-callback` | Token de un solo uso | Lo llama la API de lectura cuando termino. SIN sesion: lo autentica el token que se le dio al pedir el analisis |
 | GET | `/verification/identity/me` | JWT | Solicitudes propias (sin URLs ni datos extraidos) |
 
@@ -1303,10 +1304,19 @@ Pasos:
    que el front muestra como "revisando tus documentos".
 
    Si no se pudo pedir el analisis (no hay `DOCVERIFY_URL`, el servicio esta
-   caido o saturado), `analysisStatus` queda en `FAILED` con el motivo en
-   `analysisError` y el documento sigue por revision manual. **Eso no va a
+   caido, dormido o saturado), `analysisStatus` queda en `FAILED` con el motivo
+   en `analysisError` y el documento sigue por revision manual. **Eso no va a
    `reasonCodes`**: `reasons` es "que esta mal con TU documento", y un problema
    nuestro no lo es.
+
+   Cuando el fallo puede salir bien reintentando, la vista trae
+   `analysis.canRetry: true` y el front puede llamar a `retry-analysis` sin
+   reenviar las fotos. **Es lo que hace viable un plan gratuito**: ahi el
+   servicio de lectura se apaga por inactividad y despertarlo tarda mas de lo
+   que una funcion serverless puede esperar (60 s en total, incluida la descarga
+   de las dos fotos), asi que el primer pedido despues de un rato se cae
+   siempre. Ese pedido es el que lo desperto, y el siguiente lo encuentra
+   andando. Subir el timeout no sirve: no hay lugar dentro de los 60 s.
 
 6. Cuando la lectura termina, la API le pega a
    `POST /verification/identity/analysis-callback` con el token de un solo uso.
@@ -1364,9 +1374,11 @@ mismo dato coinciden entre si. **No sabe quien es el usuario y no decide si una
 verificacion se aprueba**: eso lo hace este backend, que es el unico lado que
 conoce la cuenta.
 
-Se deploya en Render (hay un `render.yaml` en la raiz del repo). No puede ir en
-Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y el tope de una
-funcion serverless son 250 MB.
+Se deploya en Render (hay un `render.yaml` en la raiz del repo, en plan `free`).
+No puede ir en Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y
+el tope de una funcion serverless son 250 MB. Las alternativas gratuitas
+—Hugging Face Spaces, Cloud Run, Oracle Always Free— estan comparadas en
+`docverify-api/README.md`.
 
 El endpoint que usa este backend:
 

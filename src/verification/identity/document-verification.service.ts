@@ -82,6 +82,16 @@ export interface DocumentVerificationView {
     pending: boolean;
     /** Por qué no se pudo leer, en castellano. Vacío si no falló. */
     error: string | null;
+    /**
+     * Si volver a pedir el análisis puede salir bien
+     * (`POST /verification/identity/:document/retry-analysis`).
+     *
+     * Es true sobre todo en el caso del servicio dormido: el pedido que se
+     * cayó fue el que lo despertó, así que el siguiente lo encuentra andando.
+     * El front puede reintentar solo una vez y, si vuelve a fallar, dejar que
+     * siga por revisión manual.
+     */
+    canRetry: boolean;
   };
   /** Cuándo vence este documento, si se pudo leer. */
   expiresAt: Date | null;
@@ -435,6 +445,59 @@ export class DocumentVerificationService {
       entityType: "DocumentVerification",
       entityId: row.id,
       metadata: { type },
+    });
+
+    return this.toPublicView(updated);
+  }
+
+  /**
+   * Vuelve a pedir el análisis de un documento que ya está enviado.
+   *
+   * EXISTE POR EL SERVICIO DORMIDO. En un plan gratuito el servicio de lectura
+   * se apaga por inactividad, y despertarlo tarda más de lo que una función
+   * serverless puede esperar: el primer pedido después de un rato se cae
+   * SIEMPRE. Pero ese pedido fallido es justamente el que lo despertó, así que
+   * el siguiente lo encuentra andando. Sin esta vía, cada rato de inactividad
+   * se traducía en una verificación que iba a revisión manual sin necesidad.
+   *
+   * No reenvía las fotos ni las toca: son las mismas que ya están guardadas.
+   */
+  async retryAnalysis(
+    userId: string,
+    kind: DocumentKind,
+  ): Promise<DocumentVerificationView> {
+    const type = KIND_TO_TYPE[kind];
+    const row = await this.prisma.documentVerification.findUnique({
+      where: { userId_type: { userId, type } },
+    });
+    assertFound(row, "No hay documentos enviados para analizar");
+
+    if (!canRetryAnalysis(row)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "ANALYSIS_RETRY_NOT_AVAILABLE",
+        message:
+          row.analysisStatus === DocumentAnalysisStatus.QUEUED
+            ? "El análisis de este documento ya está en curso: esperá el resultado."
+            : row.status === DocumentVerificationStatus.APPROVED
+              ? "Este documento ya está verificado."
+              : !row.frontUrl || !row.backUrl
+                ? "Este documento ya no tiene fotos guardadas: volvé a enviarlas."
+                : "No hay nada que reintentar en este documento.",
+      });
+    }
+
+    const updated = await this.startAnalysis(row, kind, {
+      frontUrl: row.frontUrl as string,
+      backUrl: row.backUrl as string,
+    });
+
+    await this.auditLog.create({
+      targetUserId: userId,
+      action: "identity.document.analysis_retried",
+      entityType: "DocumentVerification",
+      entityId: row.id,
+      metadata: { type, status: updated.analysisStatus },
     });
 
     return this.toPublicView(updated);
@@ -859,6 +922,7 @@ export class DocumentVerificationService {
         status: row.analysisStatus,
         pending: row.analysisStatus === DocumentAnalysisStatus.QUEUED,
         error: row.analysisError,
+        canRetry: canRetryAnalysis(row),
       },
       expiresAt: row.expiresAt,
       reviewRequestedAt: row.reviewRequestedAt,
@@ -873,6 +937,35 @@ export class DocumentVerificationService {
     assertFound(user, "User not found");
     return user;
   }
+}
+
+/**
+ * Si volver a pedir el análisis de este documento puede servir de algo.
+ *
+ * Hacen falta tres cosas, y cada una descarta un caso distinto:
+ *
+ *   · que el último intento haya FALLADO — si está QUEUED ya hay uno corriendo
+ *     y pedir otro duplicaría el trabajo del servicio de lectura, que es
+ *     justamente el recurso escaso; si está DONE, ya hay un veredicto;
+ *   · que las fotos sigan guardadas — un documento rechazado ya no las tiene,
+ *     así que no hay nada para analizar;
+ *   · que el documento no esté resuelto — aprobado o rechazado, la lectura ya
+ *     no cambia nada.
+ *
+ * No se mira si el fallo fue "reintentable": eso lo decide el cliente al
+ * momento de fallar y queda reflejado en que la fila haya quedado o no en
+ * FAILED con las fotos intactas. Un token mal configurado deja la fila igual,
+ * sí — y reintentarlo cuesta un request que vuelve a fallar en un segundo,
+ * mucho menos que explicarle a alguien por qué el botón no aparece.
+ */
+function canRetryAnalysis(row: DocumentVerification): boolean {
+  return (
+    row.analysisStatus === DocumentAnalysisStatus.FAILED &&
+    Boolean(row.frontUrl) &&
+    Boolean(row.backUrl) &&
+    row.status !== DocumentVerificationStatus.APPROVED &&
+    row.status !== DocumentVerificationStatus.REJECTED
+  );
 }
 
 /**

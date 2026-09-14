@@ -65,6 +65,17 @@ export interface DocverifyFailure {
   problem: DocverifyProblem;
   /** Explicación técnica, para el log y para `analysisError`. */
   detail: string;
+  /**
+   * Si volver a intentar el MISMO pedido puede salir bien.
+   *
+   * Existe por el caso más común de un deploy gratuito: el servicio se duerme
+   * por inactividad y despertarlo tarda más de lo que podemos esperar, así que
+   * el primer pedido después de un rato SIEMPRE se cae. Pero ese pedido lo
+   * despertó, y el siguiente encuentra el servicio andando.
+   *
+   * Un token mal configurado, en cambio, va a seguir mal la próxima vez.
+   */
+  retryable: boolean;
 }
 
 export type DocverifyRequestResult =
@@ -115,8 +126,20 @@ export interface DocverifyResult {
   error?: string;
 }
 
-/** Cuánto esperamos a que la API ACEPTE el pedido (no a que lo termine). */
-const TIMEOUT_MS = 30_000;
+/**
+ * Cuánto esperamos a que la API ACEPTE el pedido (no a que lo termine).
+ *
+ * NO SE PUEDE SUBIR MUCHO, y conviene entender por qué antes de tocarlo. Este
+ * request corre dentro de una función serverless con un tope duro de 60
+ * segundos, que además tiene que cubrir la descarga de las dos fotos de
+ * Cloudinary. Pasados esos 60 segundos la plataforma mata la función y el
+ * usuario recibe un error, que es peor que este timeout controlado.
+ *
+ * Por eso un servicio dormido NO se resuelve esperándolo más: se resuelve
+ * volviendo a intentar (ver `retryable` y el endpoint de reintento). El primer
+ * pedido lo despierta aunque se caiga.
+ */
+const TIMEOUT_MS = Number(process.env.DOCVERIFY_TIMEOUT_MS ?? 30_000);
 
 @Injectable()
 export class DocverifyClient {
@@ -156,6 +179,8 @@ export class DocverifyClient {
           detail:
             "DOCVERIFY_URL no está configurada: este deploy no tiene lectura " +
             "automática de documentos",
+          // Reintentar no va a hacer aparecer una variable de entorno.
+          retryable: false,
         },
       };
     }
@@ -173,6 +198,9 @@ export class DocverifyClient {
         failure: {
           problem: "DESCARGA_FALLIDA",
           detail: `no se pudieron bajar las fotos del documento: ${describe(error)}`,
+          // Puede ser un hipo de red de Cloudinary, o que el archivo no esté.
+          // Lo primero se arregla solo; lo segundo lo resuelve un admin.
+          retryable: true,
         },
       };
     }
@@ -218,6 +246,8 @@ export class DocverifyClient {
             detail:
               "la API de lectura rechazó el token: revisá que DOCVERIFY_TOKEN " +
               "sea el mismo de los dos lados",
+            // Un token mal puesto va a seguir mal la próxima vez.
+            retryable: false,
           },
         };
       }
@@ -227,6 +257,8 @@ export class DocverifyClient {
           failure: {
             problem: "SATURADO",
             detail: `la API de lectura está saturada: ${cuerpo}`,
+            // Es exactamente "ahora no, probá más tarde".
+            retryable: true,
           },
         };
       }
@@ -235,6 +267,8 @@ export class DocverifyClient {
         failure: {
           problem: "RESPUESTA_INESPERADA",
           detail: `la API de lectura respondió ${response.status}: ${cuerpo}`,
+          // No sabemos qué pasó; dar otra oportunidad es barato.
+          retryable: true,
         },
       };
     } catch (error) {
@@ -247,10 +281,14 @@ export class DocverifyClient {
           ? {
               problem: "TIMEOUT",
               detail: `la API de lectura no respondió en ${TIMEOUT_MS / 1000}s`,
+              // EL CASO DEL PLAN GRATUITO: el servicio estaba dormido y este
+              // pedido lo despertó. Se cayó, pero no en vano.
+              retryable: true,
             }
           : {
               problem: "INALCANZABLE",
               detail: `no se pudo llegar a la API de lectura: ${describe(error)}`,
+              retryable: true,
             },
       };
     } finally {

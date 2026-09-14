@@ -179,8 +179,34 @@ export class VerificationController {
   }
 
   /**
-   * Cómo revisa documentos este servidor. Siempre a mano: el análisis
-   * automático vive en un servicio aparte que no está conectado con este.
+   * Vuelve a pedir el análisis de un documento ya enviado, sin reenviar las
+   * fotos.
+   *
+   * Es para el servicio de lectura dormido, que es lo que pasa todo el tiempo
+   * en un plan gratuito: se apaga por inactividad y el primer pedido después
+   * de un rato se cae esperándolo. Ese pedido lo despertó, así que este
+   * segundo lo encuentra andando. El front lo puede llamar solo cuando
+   * `analysis.canRetry` viene en true.
+   *
+   * El límite es bajo a propósito: cada análisis ocupa la fila de un servicio
+   * que procesa de a uno, así que reintentar sin freno le saca el turno a
+   * otro.
+   */
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @Post("identity/:document/retry-analysis")
+  retryAnalysis(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("document") document: string,
+  ) {
+    return this.documentVerification.retryAnalysis(
+      user.id,
+      parseKind(document),
+    );
+  }
+
+  /**
+   * Cómo revisa documentos este servidor: si tiene lectura automática
+   * configurada o si todo pasa por un administrador.
    */
   @Get("identity/diagnostics")
   getDiagnostics() {

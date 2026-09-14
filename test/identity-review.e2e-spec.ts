@@ -76,6 +76,73 @@ describe("Verificación documental (revisión manual)", () => {
       .post(`/verification/identity/${kind}/request-review`)
       .set("Authorization", auth(token));
 
+  const reintentarAnalisis = (token: string, kind: "dni" | "license") =>
+    http()
+      .post(`/verification/identity/${kind}/retry-analysis`)
+      .set("Authorization", auth(token));
+
+  // ── El reintento del análisis ──────────────────────────────────────────
+
+  describe("reintentar el análisis", () => {
+    // En un plan gratuito el servicio de lectura se apaga por inactividad y
+    // despertarlo tarda más de lo que el backend puede esperar: el primer
+    // pedido después de un rato se cae SIEMPRE. Ese pedido es el que lo
+    // despierta, así que poder reintentar es lo que evita que cada rato de
+    // inactividad mande una verificación a revisión manual sin necesidad.
+
+    it("se puede reintentar sobre un documento cuyo análisis falló", async () => {
+      const { token, id } = await cuentaCompleta();
+      await submit(token, id, "dni").expect(201);
+
+      const res = await reintentarAnalisis(token, "dni").expect(201);
+
+      // Sigue sin haber servicio de lectura, así que vuelve a fallar — pero
+      // por la vía correcta, y las fotos siguen donde estaban.
+      expect(res.body.analysis.status).toBe("FAILED");
+      expect(res.body.analysis.canRetry).toBe(true);
+      expect(res.body.documents).toEqual({ front: true, back: true });
+      expect(res.body.status).toBe("PENDING");
+    });
+
+    it("no se reintenta sobre un documento que no se envió", async () => {
+      const { token } = await cuentaCompleta();
+
+      const res = await reintentarAnalisis(token, "dni").expect(404);
+
+      expect(res.body.message).toContain("No hay documentos");
+    });
+
+    it("no se reintenta sobre un documento ya aprobado", async () => {
+      const { token, id } = await cuentaCompleta();
+      await submit(token, id, "dni").expect(201);
+      await prisma.documentVerification.updateMany({
+        where: { userId: id, type: "DNI" },
+        data: { status: "APPROVED" },
+      });
+
+      const res = await reintentarAnalisis(token, "dni").expect(400);
+
+      expect(res.body.code).toBe("ANALYSIS_RETRY_NOT_AVAILABLE");
+      expect(res.body.message).toContain("ya está verificado");
+    });
+
+    it("no se reintenta mientras hay un análisis en curso", async () => {
+      // Pedir otro duplicaría el trabajo del servicio de lectura, que procesa
+      // de a uno: sería sacarle el turno a otra persona.
+      const { token, id } = await cuentaCompleta();
+      await submit(token, id, "dni").expect(201);
+      await prisma.documentVerification.updateMany({
+        where: { userId: id, type: "DNI" },
+        data: { analysisStatus: "QUEUED" },
+      });
+
+      const res = await reintentarAnalisis(token, "dni").expect(400);
+
+      expect(res.body.code).toBe("ANALYSIS_RETRY_NOT_AVAILABLE");
+      expect(res.body.message).toContain("ya está en curso");
+    });
+  });
+
   // ── El envío ───────────────────────────────────────────────────────────
 
   it("sin lectura automática, enviar las fotos deja el documento PENDING y avisa por qué", async () => {
@@ -105,6 +172,9 @@ describe("Verificación documental (revisión manual)", () => {
     expect(row.documentNumber).toBe(dni);
     expect(row.reviewRequestedAt).toBeNull();
     expect(row.reasonCodes).toEqual([]);
+    // Y se puede volver a pedir el análisis sin reenviar las fotos: es lo que
+    // hace viable un servicio de lectura que se duerme por inactividad.
+    expect(res.body.analysis.canRetry).toBe(true);
 
     // La cuenta registra que hay documentación cargada.
     const user = await prisma.user.findUniqueOrThrow({ where: { id } });

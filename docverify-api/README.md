@@ -329,11 +329,51 @@ un servicio `freewheel-docverify`. **Apply**.
 > Path `./docverify-api/Dockerfile`, Docker Build Context Directory
 > `./docverify-api`, Health Check Path `/health`.
 
-**2 · El plan.** El blueprint pide **Starter**. Es a propósito: el plan **Free
-se apaga a los 15 minutos sin tráfico** y despertarlo tarda ~50 segundos, que
-espera el usuario que está subiendo su documento. Si el servicio se reinicia
-con *out of memory*, subilo a **Standard**: el OCR sobre ONNX ronda los 400-500
-MB residentes y en los 512 MB de Starter entra sin mucho aire.
+**2 · El plan.** El blueprint arranca en **Free**, y el sistema está hecho para
+que alcance. Lo que se paga son dos cosas:
+
+- **Se apaga a los 15 minutos sin tráfico**, y despertar esta imagen tarda ~50
+  segundos. Eso es más de lo que el backend puede esperar, así que el primer
+  análisis después de un rato **siempre se cae**. No es un problema: ese pedido
+  es el que lo despierta, el documento queda igual de válido, y el front
+  reintenta con `POST /verification/identity/:document/retry-analysis`, que ya
+  lo encuentra andando. Si nadie reintenta, lo revisa un admin.
+- **0,1 CPU** contra los 0,5 de Starter: el análisis tarda varias veces más.
+  Tampoco bloquea a nadie, porque es asíncrono; el usuario solo ve "revisando
+  tus documentos" más tiempo.
+
+La **memoria es la misma** en los dos planes (512 MB), y es el recurso que de
+verdad podría no alcanzar: el OCR sobre ONNX ronda los 400-500 MB residentes.
+O sea que si anda en Free, el problema de Starter era solo la velocidad.
+
+Para pasar a **Starter** (US$ 7/mes) cambiá `plan:` en `render.yaml` o el plan
+desde el dashboard. Conviene cuando la espera empiece a molestar, no antes. Si
+el servicio se reinicia con *out of memory*, el salto que hace falta es a
+**Standard** (2 GB), que es otro problema y otra solución.
+
+### Otras opciones gratuitas
+
+Render Free es la de menos trabajo porque el `render.yaml` ya está escrito. Si
+la velocidad no alcanza, estas dan bastante más sin costo:
+
+| Dónde | RAM | CPU | Se duerme | Qué hay que tocar |
+|---|---|---|---|---|
+| **Render Free** | 512 MB | 0,1 | 15 min | nada |
+| **Hugging Face Spaces** | 16 GB | 2 vCPU | 48 h | escuchar en el puerto 7860 y agregar el header YAML del Space |
+| **Google Cloud Run** | 1-2 GB | 1-2 | escala a cero | cuenta de GCP con tarjeta; 180.000 vCPU-segundos por mes gratis |
+| **Oracle Cloud Always Free** | 24 GB | 4 (ARM) | no | es una VM: la administrás vos. Las wheels de numpy, opencv y onnxruntime tienen build para aarch64, así que corre |
+
+Dos advertencias honestas:
+
+- **Hugging Face Spaces** es la que más potencia da gratis y está pensada
+  justamente para servir modelos, pero es una plataforma de demos: los Spaces
+  son públicos por defecto. Por acá pasan documentos de identidad de personas
+  reales, así que ahí `DOCVERIFY_TOKEN` deja de ser recomendable y pasa a ser
+  obligatorio. Este servicio no guarda ninguna imagen, que es lo que hace la
+  idea defendible.
+- **Cloud Run** es la más parecida a producción de las gratuitas, pero el
+  arranque en frío de una imagen de 1 GB también se pasa de lo que el backend
+  espera: el reintento sigue haciendo falta igual.
 
 **3 · El token.** Render genera `DOCVERIFY_TOKEN` solo. Copialo de la pestaña
 **Environment**: es el que hay que poner en el backend. Sin él la API responde
