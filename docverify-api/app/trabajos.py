@@ -40,6 +40,7 @@ DOS DECISIONES QUE PARECEN DETALLES Y NO LO SON:
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import time
 from dataclasses import dataclass
@@ -122,8 +123,23 @@ def analizar(pedido: Pedido) -> dict:
             )
             continue
         caras[lado] = analizador_base.analizar(datos, analizador)
+        # Recolectar ENTRE las dos caras, no solo al final.
+        #
+        # Analizar una cara deja atrás decenas de matrices grandes: la foto, el
+        # recorte enderezado, y las copias al doble y al triple que hace el
+        # lector de códigos. Python las liberaría solas, pero cuando le venga
+        # bien — y en el medio arranca la segunda cara y los dos picos se
+        # suman. En una instancia chica esa suma es la diferencia entre
+        # terminar y que el sistema mate el proceso.
+        gc.collect()
 
     ms = int((time.perf_counter() - arranque) * 1000)
+    log.info(
+        "%s analizado en %d ms · %s",
+        pedido.documento,
+        ms,
+        " · ".join(f"{lado}={'ok' if c.get('ok') else 'sin datos'}" for lado, c in caras.items()),
+    )
     return contrato.respuesta_documento(pedido.documento, caras, ms)
 
 

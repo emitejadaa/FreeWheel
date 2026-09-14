@@ -70,3 +70,21 @@ services:
       # espera para el último: mejor contestar "ahora no" que aceptar y tardar.
       - key: DOCVERIFY_COLA_MAXIMA
         value: "4"
+      # Un solo hilo en las librerías numéricas.
+      #
+      # El plan gratuito da 0,15 de un núcleo: repartir ese pedacito entre
+      # varios hilos no acelera nada —no hay paralelismo real que ganar— y cada
+      # hilo de ONNX Runtime reserva su propia memoria de trabajo. En una
+      # instancia de 512 MB eso es memoria que se paga sin recibir nada a
+      # cambio. Con más CPU disponible, subirlo tiene sentido; acá no.
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      # Tope del lado más largo de la foto que entra al análisis. Ver
+      # LADO_MAXIMO en encuadre.py: es lo que acota la memoria de todo el
+      # pipeline, porque el tamaño de entrada se multiplica hacia abajo.
+      - key: DOCVERIFY_LADO_MAXIMO
+        value: "2000"

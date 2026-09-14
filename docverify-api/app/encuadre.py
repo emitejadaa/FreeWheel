@@ -26,11 +26,20 @@ from __future__ import annotations
 
 import io
 import math
+import os
 from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+
+
+def _entero_de_entorno(nombre: str, defecto: int) -> int:
+    crudo = os.environ.get(nombre, "").strip()
+    try:
+        return int(crudo) if crudo else defecto
+    except ValueError:
+        return defecto
 
 # Relación de aspecto de una tarjeta ID-1 (ISO/IEC 7810): 85.6 × 54 mm. Es la
 # del DNI argentino y la de la licencia nacional de conducir.
@@ -50,6 +59,22 @@ AREA_MINIMA_RELATIVA = 0.12
 # Ancho al que se reduce la imagen para BUSCAR los bordes. Detectar sobre la
 # foto entera de 12 Mpx no mejora el contorno y multiplica el tiempo.
 ANCHO_DETECCION = 1000
+
+# Lado máximo de la foto que entra al análisis, en píxeles.
+#
+# ESTO ES LO QUE ACOTA LA MEMORIA DE TODO EL PIPELINE, y no es una
+# micro-optimización: medido en una instancia de 512 MB, un análisis llegaba a
+# 510 MB y el sistema mataba el proceso. La razón es que el tamaño de entrada se
+# MULTIPLICA hacia abajo — el lector de códigos reescala la imagen entera al
+# doble y al triple, busca en varias regiones y prueba varios preparados—, así
+# que cada píxel de más se paga muchas veces.
+#
+# Una foto de teléfono ronda los 4000 px de lado: 4000×3000 en RGB son 36 MB
+# por copia, antes de que nadie la toque. A 2400 px son 13 MB, y el documento
+# se sigue leyendo igual de bien: una tarjeta que ocupa esos 2400 px deja el
+# PDF417 con unos 15 píxeles por módulo, cuando el decodificador se conforma
+# con 3 o 4. O sea que lo que se recorta acá es margen que no se usaba.
+LADO_MAXIMO = _entero_de_entorno("DOCVERIFY_LADO_MAXIMO", 2400)
 
 
 @dataclass
@@ -94,17 +119,34 @@ class Encuadre:
 
 def leer_imagen(datos: bytes) -> np.ndarray:
     """
-    Bytes → matriz BGR de OpenCV, respetando la orientación EXIF.
+    Bytes → matriz BGR de OpenCV, respetando la orientación EXIF y acotada a
+    LADO_MAXIMO.
 
-    Se pasa por Pillow y no por `cv2.imdecode` directo justamente por el EXIF:
-    OpenCV ignora ese flag, así que una foto vertical de teléfono entraba
-    acostada y el resto del pipeline tenía que adivinar un giro que ya estaba
-    declarado en el archivo.
+    Se pasa por Pillow y no por `cv2.imdecode` directo por dos razones, y las
+    dos importan:
+
+    EL EXIF. OpenCV ignora ese flag, así que una foto vertical de teléfono
+    entraba acostada y el resto del pipeline tenía que adivinar un giro que ya
+    estaba declarado en el archivo.
+
+    EL MODO BORRADOR. `draft()` le pide a libjpeg que decodifique a la mitad, a
+    un cuarto o a un octavo mientras lee el archivo, sin materializar nunca la
+    imagen completa en memoria. Achicar después de decodificar también
+    funcionaría, pero habría que pagar el pico: una foto de 4000×3000 son 36 MB
+    que en una instancia de 512 MB alcanzan para matar el proceso. Así ese pico
+    no existe. Solo aplica a JPEG —que es lo que sacan los teléfonos—; para PNG
+    o WebP queda el `thumbnail` de abajo.
     """
     try:
         with Image.open(io.BytesIO(datos)) as imagen:
+            imagen.draft("RGB", (LADO_MAXIMO, LADO_MAXIMO))
             imagen = ImageOps.exif_transpose(imagen)
             imagen = imagen.convert("RGB")
+            if max(imagen.size) > LADO_MAXIMO:
+                # LANCZOS y no el default: al achicar una foto de documento, un
+                # remuestreo pobre emborrona los trazos finos del texto y las
+                # barras del código, que es justo lo que hay que leer.
+                imagen.thumbnail((LADO_MAXIMO, LADO_MAXIMO), Image.LANCZOS)
             rgb = np.array(imagen)
     except Exception as error:  # noqa: BLE001 - el motivo se le devuelve al cliente
         raise ValueError(f"no se pudo abrir la imagen: {error}") from error
