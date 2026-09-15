@@ -1374,11 +1374,16 @@ mismo dato coinciden entre si. **No sabe quien es el usuario y no decide si una
 verificacion se aprueba**: eso lo hace este backend, que es el unico lado que
 conoce la cuenta.
 
-Se deploya en Render (hay un `render.yaml` en la raiz del repo, en plan `free`).
+Se deploya en **Hugging Face Spaces** (Docker, CPU basic: 2 vCPU y 16 GB,
+gratis). El workflow `.github/workflows/deploy-docverify.yml` publica
+`docverify-api/` en el Space en cada push a main, asi que el repo sigue siendo
+la unica fuente de verdad.
+
 No puede ir en Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y
-el tope de una funcion serverless son 250 MB. Las alternativas gratuitas
-—Hugging Face Spaces, Cloud Run, Oracle Always Free— estan comparadas en
-`docverify-api/README.md`.
+el tope de una funcion serverless son 250 MB. Y NECESITA 2 GB de RAM: esta
+medido que en 512 MB un analisis de dos caras no termina —el proceso muere a los
+2-3 minutos, sin traceback—, asi que los planes chicos de Render quedaron
+descartados. La comparacion completa esta en `docverify-api/README.md`.
 
 El endpoint que usa este backend:
 
@@ -1681,10 +1686,14 @@ SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
 # CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
 CORS_STRICT=""
-# Lectura automatica de documentos (docverify-api/, deployado aparte en Render).
+# Lectura automatica de documentos (docverify-api/, en Hugging Face Spaces).
 # Sin esto todo sigue funcionando: las fotos se guardan y las revisa un admin.
 DOCVERIFY_URL=""
 DOCVERIFY_TOKEN=""
+# Solo si el Space es PRIVADO: el token de Hugging Face. Un Space privado ocupa
+# el header Authorization con SU token, asi que el nuestro viaja en
+# X-Docverify-Token y los dos conviven.
+DOCVERIFY_PLATFORM_TOKEN=""
 # A donde le avisa la API de lectura cuando termina. En Vercel no hace falta
 # (se arma con VERCEL_URL); fuera de Vercel, sin esto el analisis ni se pide.
 PUBLIC_URL=""

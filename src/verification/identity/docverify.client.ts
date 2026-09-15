@@ -206,6 +206,14 @@ export class DocverifyClient {
     }
 
     const token = this.config.get<string>("DOCVERIFY_TOKEN")?.trim();
+    // El token de la PLATAFORMA, cuando la hay. Un Space privado de Hugging
+    // Face se protege con el suyo, que viaja en `Authorization`; el nuestro va
+    // aparte, en `X-Docverify-Token`, para que los dos quepan en el mismo
+    // pedido. Sin esta variable —un Space público— `Authorization` queda libre
+    // y se manda ahí el nuestro, que es lo que espera cualquier otro host.
+    const tokenPlataforma = this.config
+      .get<string>("DOCVERIFY_PLATFORM_TOKEN")
+      ?.trim();
     // AbortController y no solo el timeout de fetch: sin esto, un servicio que
     // acepta la conexión y después se queda callado deja el request colgado
     // hasta que lo mate la plataforma, y con él al usuario esperando.
@@ -218,7 +226,12 @@ export class DocverifyClient {
         signal: corte.signal,
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(token ? { "X-Docverify-Token": token } : {}),
+          ...(tokenPlataforma
+            ? { Authorization: `Bearer ${tokenPlataforma}` }
+            : token
+              ? { Authorization: `Bearer ${token}` }
+              : {}),
         },
         body: JSON.stringify({
           documento: input.document,
@@ -245,7 +258,11 @@ export class DocverifyClient {
             problem: "NO_AUTORIZADO",
             detail:
               "la API de lectura rechazó el token: revisá que DOCVERIFY_TOKEN " +
-              "sea el mismo de los dos lados",
+              "sea el mismo de los dos lados" +
+              (tokenPlataforma
+                ? ", y que DOCVERIFY_PLATFORM_TOKEN siga siendo válido"
+                : ". Si el servicio está en un Space privado, hace falta " +
+                  "además DOCVERIFY_PLATFORM_TOKEN"),
             // Un token mal puesto va a seguir mal la próxima vez.
             retryable: false,
           },

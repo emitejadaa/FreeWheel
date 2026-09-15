@@ -39,6 +39,7 @@ import asyncio
 import base64
 import binascii
 import logging
+import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -47,7 +48,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import contrato, trabajos
-from .config import ajustes
+from .config import ajustes, verificar
 from .documentos import REGISTRO
 from .documentos import base as analizador_base
 
@@ -74,6 +75,8 @@ async def ciclo_de_vida(_app: FastAPI):
     documento mientras tanto, `ocr.motor()` está bajo candado y simplemente
     espera a que termine de cargar, sin abrir un segundo motor.
     """
+    verificar(ajustes)
+
     from . import ocr
 
     tarea = asyncio.create_task(asyncio.to_thread(ocr.motor))
@@ -158,19 +161,44 @@ class PedidoDocumento(BaseModel):
     )
 
 
-def autorizar(authorization: str | None = Header(default=None)) -> None:
+def autorizar(
+    authorization: str | None = Header(default=None),
+    x_docverify_token: str | None = Header(default=None),
+) -> None:
     """
     Comprueba el token compartido, si hay uno configurado.
 
     Sin DOCVERIFY_TOKEN la API queda abierta, que es lo que se quiere en local.
-    En un deploy expuesto a internet conviene ponerlo: por acá pasan documentos
-    de identidad de personas reales, y sin token alcanza con conocer la URL.
+    Publicada en internet no arranca sin él (ver config.verificar): por acá
+    pasan documentos de identidad de personas reales.
+
+    SE ACEPTA EN DOS HEADERS, y la razón es concreta. Un Space PRIVADO de
+    Hugging Face se protege con el token de la plataforma, que viaja en
+    `Authorization: Bearer ...` — o sea que ese header ya está ocupado antes de
+    que el request llegue hasta acá. `X-Docverify-Token` deja lugar para el
+    nuestro, y así las dos protecciones conviven en vez de excluirse: la de la
+    plataforma decide quién llega al contenedor, la nuestra quién puede
+    analizar documentos.
+
+    En un Space público solo hace falta la nuestra, y entonces cualquiera de los
+    dos headers sirve.
     """
     esperado = ajustes.token
     if not esperado:
         return
-    if authorization != f"Bearer {esperado}":
-        raise HTTPException(status_code=401, detail="token inválido o ausente")
+    # `compare_digest` y no `==`: comparar secretos con el operador normal corta
+    # en el primer carácter distinto, y ese tiempo de más se puede medir desde
+    # afuera para adivinar el token de a un carácter por vez.
+    presentados = [x_docverify_token or "", (authorization or "").removeprefix("Bearer ")]
+    if any(secrets.compare_digest(dado, esperado) for dado in presentados):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(
+            "token inválido o ausente: mandalo en el header "
+            "'X-Docverify-Token' o como 'Authorization: Bearer <token>'"
+        ),
+    )
 
 
 @app.get("/health")

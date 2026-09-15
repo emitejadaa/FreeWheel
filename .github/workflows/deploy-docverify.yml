@@ -1,0 +1,102 @@
+# Publica docverify-api/ en su Space de Hugging Face en cada push a main.
+#
+# ── Por qué hace falta un workflow ───────────────────────────────────────────
+# Un Space es un repo git propio, alojado en huggingface.co. No se puede
+# "conectar" a un repo de GitHub como hace Vercel o Render: alguien tiene que
+# empujar el código. Si ese alguien es una persona, tarde o temprano el Space
+# queda con una versión distinta de la del repo y nadie se entera hasta que algo
+# no coincide. Este workflow hace que el repo siga siendo la única fuente de
+# verdad.
+#
+# ── Qué se publica ───────────────────────────────────────────────────────────
+# SOLO el contenido de docverify-api/, y en la RAÍZ del Space: Hugging Face
+# busca el Dockerfile y el README ahí, no en una subcarpeta. El resto del
+# proyecto —el backend, la base, las credenciales de Vercel— no tiene por qué
+# viajar a una plataforma de terceros.
+#
+# ── Lo que hay que configurar una sola vez ───────────────────────────────────
+#   · Secret HF_TOKEN en GitHub (Settings → Secrets → Actions), con un token de
+#     Hugging Face de tipo WRITE.
+#   · Variable HF_SPACE en GitHub (Settings → Variables → Actions), con el
+#     nombre del Space: "usuario/freewheel-docverify".
+# Sin alguna de las dos el workflow no corre y lo dice; no falla en silencio.
+name: deploy docverify
+
+on:
+  push:
+    branches: [main]
+    # Un push que solo toca el backend no tiene por qué redeployar la API de
+    # lectura: cada deploy del Space reconstruye una imagen de ~1 GB.
+    paths:
+      - "docverify-api/**"
+      - ".github/workflows/deploy-docverify.yml"
+  # Para poder republicar a mano desde la pestaña Actions sin tener que inventar
+  # un commit (por ejemplo, después de cambiar un secreto en el Space).
+  workflow_dispatch:
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar la configuración
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          # Se chequean las dos juntas y con un mensaje que dice qué hacer: el
+          # modo de fallar más caro es un workflow verde que no publicó nada.
+          faltan=""
+          [ -z "$HF_TOKEN" ] && faltan="$faltan HF_TOKEN(secret)"
+          [ -z "$HF_SPACE" ] && faltan="$faltan HF_SPACE(variable)"
+          if [ -n "$faltan" ]; then
+            echo "::error::Falta configurar:$faltan. Ver el encabezado de este archivo."
+            exit 1
+          fi
+
+      - name: Armar el README del Space
+        env:
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          # Hugging Face configura el Space leyendo un bloque YAML al principio
+          # del README. Se genera acá y no se guarda en el repo para que el
+          # README de docverify-api/ se siga leyendo como documentación normal
+          # en GitHub, sin un bloque de metadatos de otra plataforma arriba.
+          cd docverify-api
+          {
+            echo "---"
+            echo "title: FreeWheel docverify"
+            echo "emoji: 🪪"
+            echo "colorFrom: blue"
+            echo "colorTo: gray"
+            echo "sdk: docker"
+            echo "app_port: 7860"
+            echo "pinned: false"
+            echo "short_description: Lectura de DNI y licencia argentinos"
+            echo "---"
+            echo
+            cat README.md
+          } > README.space.md
+          mv README.space.md README.md
+
+      - name: Publicar en el Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          cd docverify-api
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -A
+          git commit -q -m "deploy desde ${GITHUB_SHA::7}"
+          # --force porque acá no se colabora: el historial del Space es un
+          # espejo del de este repo, no una rama con vida propia. Lo que vale
+          # siempre es lo que está en main.
+          #
+          # La URL lleva el token, así que se arma en la misma línea del push y
+          # nunca se guarda en la config de git: un `git remote -v` en un log de
+          # Actions no puede filtrarlo.
+          git push --force "https://oauth:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" \
+            HEAD:refs/heads/main 2>&1 | sed "s/${HF_TOKEN}/***/g"

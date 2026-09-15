@@ -68,6 +68,10 @@ const OPCIONALES: Grupo[] = [
       "los documentos no se leen solos: se guardan igual, pero cada " +
       "verificación espera a que la mire un administrador",
   },
+  // DOCVERIFY_PLATFORM_TOKEN no está en la lista a propósito: solo hace falta
+  // si el servicio de lectura vive detrás de la autenticación de su plataforma
+  // (un Space PRIVADO de Hugging Face). Pedirla siempre haría que este reporte
+  // marque como "incompleto" un deploy que está perfecto.
   {
     // Sin esto la API de lectura no tiene a dónde devolver el resultado, así
     // que el análisis ni se pide: es una de esas fallas silenciosas que este

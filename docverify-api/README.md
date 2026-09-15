@@ -296,8 +296,17 @@ Todo opcional — sin `.env` el servicio levanta y funciona. Ver `.env.example`.
 | `DOCVERIFY_COLA_MAXIMA` | Cuántos análisis se aceptan sin terminar antes de contestar 503 (default 8). |
 | `DOCVERIFY_CALLBACK_TIMEOUT` | Segundos de espera al avisar que un análisis terminó (default 20). |
 
-En un deploy expuesto a internet **poné el token**: por acá pasan documentos de
-identidad de personas reales, y sin token alcanza con conocer la URL.
+| `DOCVERIFY_LADO_MAXIMO` | Tope del lado más largo de la foto que entra (default 2400 px). |
+| `DOCVERIFY_EXPUESTO` | Forzar el modo "publicado" (ver abajo). Normalmente no hace falta. |
+
+**El token no es opcional cuando esto está publicado**: el servicio se niega a
+arrancar sin él. Lo detecta solo, por las variables que ponen las plataformas
+(`SPACE_ID` en Hugging Face, `RENDER_SERVICE_ID` en Render); `DOCVERIFY_EXPUESTO`
+está para forzarlo en cualquier otra. En local, sin ninguna de esas, arranca
+abierto — que es lo cómodo para probar.
+
+Publicado cambian dos defaults, los dos hacia el lado seguro: el token pasa a
+ser obligatorio y CORS queda cerrado.
 
 ---
 
@@ -315,91 +324,84 @@ wheels y el tope de una función de Vercel son 250 MB descomprimidos: no entra. 
 aunque entrara, cada arranque en frío volvería a cargar los modelos de OCR. Esto
 necesita un proceso que viva entre pedidos.
 
-### En Render, paso a paso
+**Y necesita memoria de verdad.** Está medido, no estimado: en una instancia de
+512 MB un análisis de dos caras NO TERMINA. El proceso muere a los 2-3 minutos,
+sin traceback y con `/health` contestando 200 hasta el final; una muestra llegó
+a 510 MB contra el límite de 512. El pico está en la búsqueda de códigos de
+barras, que trabaja sobre el encuadre canónico —1600×1009, un tamaño FIJO— y
+saca copias al doble y al triple; por eso achicar la foto de entrada no lo baja.
 
-La raíz del repo tiene un `render.yaml` que ya describe este servicio. Toma
-entre 8 y 15 minutos, casi todo esperando el primer build: la imagen pesa ~1 GB
-y precarga los modelos. Los builds siguientes reusan las capas de `pip` y bajan
-a 2-3 minutos.
+Contar **2 GB o más**. Con eso, las opciones razonables:
 
-**1 · Crear el servicio.** En el dashboard de Render → **New** → **Blueprint** →
-repo `emitejadaa/FreeWheel`, rama `main`. Render lee el `render.yaml` y muestra
-un servicio `freewheel-docverify`. **Apply**.
+| Dónde | RAM | CPU | Costo |
+|---|---|---|---|
+| **Hugging Face Spaces** | 16 GB | 2 vCPU | gratis |
+| Google Cloud Run | 1-2 GB | 1-2 | gratis hasta 180.000 vCPU-s/mes |
+| Oracle Cloud Always Free | 24 GB | 4 (ARM) | gratis, pero es una VM que administrás vos |
+| Render **Standard** | 2 GB | 1 | US$ 25/mes |
 
-> A mano (New → Web Service) los valores son: Language **Docker**, Dockerfile
-> Path `./docverify-api/Dockerfile`, Docker Build Context Directory
-> `./docverify-api`, Health Check Path `/health`.
+Render `free` y `starter` quedan afuera: los dos tienen 512 MB y entre ellos
+solo cambia la CPU, así que pagar los US$ 7 de `starter` compraría velocidad
+para un análisis que igual no termina.
 
-**2 · El plan.** El blueprint arranca en **Free**, pero hay que saber esto antes
-de probar:
+---
 
-> **Medido en el deploy real: en Free un análisis NO TERMINA.** Tres corridas,
-> tres veces lo mismo: el proceso muere a los 2-3 minutos de empezar, sin
-> traceback y sin que `/health` deje de contestar 200. Una muestra de memoria
-> llegó a **510 MB contra el límite de 512**, y el resto del patrón es el de un
-> OOM. El pico está en la búsqueda de códigos de barras, que trabaja sobre el
-> encuadre canónico —1600×1009, un tamaño FIJO— y saca copias al doble y al
-> triple; por eso achicar la foto de entrada no lo baja.
->
-> **`starter` tampoco sirve**: tiene los mismos 512 MB y solo cambia la CPU. Lo
-> que hace falta es memoria: **`standard` (2 GB)** en Render, o un host gratuito
-> con RAM de sobra (ver abajo).
->
-> Mientras tanto el sistema **funciona igual**: cada documento queda en PENDING
-> con su motivo y lo revisa un administrador, que es como funcionaba antes de
-> que esto existiera. La lectura automática acelera; no habilita.
+### En Hugging Face Spaces, paso a paso
 
-Además, en Free se pagan otras dos cosas:
+Es la opción elegida: 16 GB y 2 vCPU gratis, y la plataforma está hecha
+justamente para servir modelos.
 
-- **Se apaga a los 15 minutos sin tráfico**, y despertar esta imagen tarda ~50
-  segundos. Eso es más de lo que el backend puede esperar, así que el primer
-  análisis después de un rato **siempre se cae**. No es un problema: ese pedido
-  es el que lo despierta, el documento queda igual de válido, y el front
-  reintenta con `POST /verification/identity/:document/retry-analysis`, que ya
-  lo encuentra andando. Si nadie reintenta, lo revisa un admin.
-- **0,1 CPU** contra los 0,5 de Starter: el análisis tarda varias veces más.
-  Tampoco bloquea a nadie, porque es asíncrono; el usuario solo ve "revisando
-  tus documentos" más tiempo.
+**1 · Crear el Space.** En <https://huggingface.co/new-space>:
 
-La **memoria es la misma** en Free y en Starter (512 MB), y es exactamente el
-recurso que no alcanza. Por eso el salto útil es a **Standard** (2 GB) y no a
-Starter: pagar US$ 7 compraría velocidad para un análisis que igual no termina.
+| Campo | Valor |
+|---|---|
+| Space name | `freewheel-docverify` |
+| License | la que prefieras |
+| SDK | **Docker** → *Blank* |
+| Hardware | **CPU basic** (2 vCPU, 16 GB — gratis) |
+| Visibility | **Private** (recomendado) o Public |
 
-### Otras opciones gratuitas
+**2 · Cargar el secreto.** En el Space → **Settings** → **Variables and
+secrets** → *New secret*:
 
-Render Free es la de menos trabajo porque el `render.yaml` ya está escrito. Si
-la velocidad no alcanza, estas dan bastante más sin costo:
+| Nombre | Valor |
+|---|---|
+| `DOCVERIFY_TOKEN` | una cadena larga y al azar (`openssl rand -base64 32`) |
 
-| Dónde | RAM | CPU | Se duerme | Qué hay que tocar |
-|---|---|---|---|---|
-| **Render Free** | 512 MB | 0,15 | 15 min | nada — pero **no completa un análisis** (ver arriba) |
-| **Hugging Face Spaces** | 16 GB | 2 vCPU | 48 h | escuchar en el puerto 7860 y agregar el header YAML del Space |
-| **Google Cloud Run** | 1-2 GB | 1-2 | escala a cero | cuenta de GCP con tarjeta; 180.000 vCPU-segundos por mes gratis |
-| **Oracle Cloud Always Free** | 24 GB | 4 (ARM) | no | es una VM: la administrás vos. Las wheels de numpy, opencv y onnxruntime tienen build para aarch64, así que corre |
+Va como **secret**, no como variable: las variables se ven en la página del
+Space. Y no es opcional — **el servicio se niega a arrancar sin él cuando
+detecta que está publicado**, justamente para que "lo deployé y me olvidé el
+token" no pueda pasar desapercibido.
 
-Las tres alternativas tienen memoria de sobra para este trabajo; Render Free es
-la única de la lista que no.
+Opcionales, si querés aprovechar los 2 núcleos:
 
-Dos advertencias honestas:
+| Nombre | Valor |
+|---|---|
+| `DOCVERIFY_CONCURRENCIA` | `2` |
+| `OMP_NUM_THREADS` | `2` |
 
-- **Hugging Face Spaces** es la que más potencia da gratis y está pensada
-  justamente para servir modelos, pero es una plataforma de demos: los Spaces
-  son públicos por defecto. Por acá pasan documentos de identidad de personas
-  reales, así que ahí `DOCVERIFY_TOKEN` deja de ser recomendable y pasa a ser
-  obligatorio. Este servicio no guarda ninguna imagen, que es lo que hace la
-  idea defendible.
-- **Cloud Run** es la más parecida a producción de las gratuitas, pero el
-  arranque en frío de una imagen de 1 GB también se pasa de lo que el backend
-  espera: el reintento sigue haciendo falta igual.
+**3 · Conectar el repo.** El Space es un repo de git propio; el workflow
+`.github/workflows/deploy-docverify.yml` lo mantiene sincronizado con
+`docverify-api/` en cada push a `main`. Hace falta configurarlo una vez en
+GitHub (Settings del repo):
 
-**3 · El token.** Render genera `DOCVERIFY_TOKEN` solo. Copialo de la pestaña
-**Environment**: es el que hay que poner en el backend. Sin él la API responde
-401.
+| Dónde | Nombre | Valor |
+|---|---|---|
+| Secrets → Actions | `HF_TOKEN` | un token de Hugging Face con permiso **write** |
+| Variables → Actions | `HF_SPACE` | `tu-usuario/freewheel-docverify` |
 
-**4 · Comprobar.** Cuando quede en **Live**:
+Después, **Actions → deploy docverify → Run workflow** para la primera
+publicación (o simplemente pushear algo que toque `docverify-api/`).
+
+**4 · Esperar el build.** En la pestaña **Logs** del Space. El primer build
+tarda 8-15 minutos: baja ~300 MB de wheels. Cuando el Space quede en
+**Running**, la URL es
+`https://<usuario>-freewheel-docverify.hf.space`.
+
+**5 · Comprobar.**
 
 ```bash
-curl https://<tu-servicio>.onrender.com/health
+curl https://<usuario>-freewheel-docverify.hf.space/health
 ```
 
 El campo que importa es `protegido_con_token: true`: el token quedó puesto.
@@ -412,12 +414,44 @@ solo, en unos segundos. Verlo en `false` recién deployado es normal; verlo en
 `false` minutos después significa que la carga falló, y el motivo está en los
 logs.
 
-**5 · Conectarlo al backend.** En las variables de entorno del backend:
-`DOCVERIFY_URL` con la URL de Render (sin barra final) y `DOCVERIFY_TOKEN` con
-el token del paso 3.
+**6 · Conectarlo al backend.** En las variables de entorno del backend:
+`DOCVERIFY_URL` con la URL del Space (sin barra final) y `DOCVERIFY_TOKEN` con
+el mismo valor del paso 2.
 
 No hace falta base de datos ni disco persistente: esta API no guarda nada, y los
 modelos ya están dentro de la imagen.
+
+---
+
+### Seguridad
+
+Por acá pasan documentos de identidad de personas reales, en una plataforma
+pensada para demos públicas. Lo que hay puesto:
+
+- **El token es obligatorio cuando el servicio está publicado.** No es una
+  recomendación: el proceso **no arranca** sin él si detecta que corre en un
+  Space o en Render. La comparación es de tiempo constante, para que no se pueda
+  adivinar el token midiendo cuánto tarda el 401.
+- **Dos headers para el token.** `X-Docverify-Token` o `Authorization: Bearer`.
+  Existen los dos porque en un Space **privado** el `Authorization` ya lo ocupa
+  el token de Hugging Face; así las dos protecciones conviven —la de la
+  plataforma decide quién llega al contenedor, la nuestra quién puede analizar.
+- **CORS cerrado al publicar.** En local queda abierto para poder usar el HTML
+  de prueba; publicado, ningún navegador puede llamarlo. El backend lo llama
+  desde el servidor, donde CORS no interviene, así que cerrarlo no le saca nada
+  a nadie y deja afuera la página que un tercero arme para que el navegador de
+  una víctima le mande sus documentos.
+- **El proceso no corre como root.** Abre imágenes ajenas con OpenCV, libjpeg y
+  un decodificador de códigos de barras: tres montones de C parseando archivos
+  que manda gente de afuera.
+- **No se guarda nada.** Ni las imágenes, ni lo leído, ni quién llamó. No hay
+  base de datos ni disco: cuando el request termina, no queda rastro.
+- **Los logs no llevan contenido de los documentos.** Solo el tipo de documento,
+  la referencia opaca que mandó el backend y los tiempos.
+
+Con el Space **público**, quien conozca la URL puede ver que existe pero recibe
+401 en todo. Con el Space **privado** ni siquiera llega al contenedor. Si podés,
+privado.
 
 ---
 
