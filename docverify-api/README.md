@@ -373,12 +373,21 @@ Space. Y no es opcional — **el servicio se niega a arrancar sin él cuando
 detecta que está publicado**, justamente para que "lo deployé y me olvidé el
 token" no pueda pasar desapercibido.
 
-Opcionales, si querés aprovechar los 2 núcleos:
+Opcional, para aprovechar los 2 núcleos:
 
 | Nombre | Valor |
 |---|---|
 | `DOCVERIFY_CONCURRENCIA` | `2` |
-| `OMP_NUM_THREADS` | `2` |
+
+> **No intentes fijar `OMP_NUM_THREADS` ni las otras `*_NUM_THREADS` acá.**
+> Hugging Face las tiene RESERVADAS: si las cargás, el Space ni siquiera
+> construye — queda en `CONFIG_ERROR` con el mensaje *"Reserved environment
+> variables"*, que aparece antes del build y por eso no deja ningún log donde
+> buscarlo.
+>
+> Tampoco hacen falta. Limitar los hilos servía en una instancia con 0,15 de un
+> núcleo, donde repartir ese pedacito solo agregaba trabajo; con 2 vCPU lo que
+> se quiere es justamente que las bibliotecas numéricas los usen.
 
 **3 · Conectar el repo.** El Space es un repo de git propio; el workflow
 `.github/workflows/deploy-docverify.yml` lo mantiene sincronizado con
