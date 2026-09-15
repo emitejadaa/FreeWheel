@@ -100,3 +100,41 @@ jobs:
           # Actions no puede filtrarlo.
           git push --force "https://oauth:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" \
             HEAD:refs/heads/main 2>&1 | sed "s/${HF_TOKEN}/***/g"
+
+      - name: Esperar a que el Space quede andando
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          # Sin esto, el workflow termina en verde apenas empuja el código y lo
+          # que pase después es invisible desde acá. Y hay un fallo que además
+          # es invisible del otro lado: cuando el Space queda en CONFIG_ERROR
+          # —por ejemplo porque alguien cargó una variable que Hugging Face se
+          # reserva, como OMP_NUM_THREADS— el error ocurre ANTES del build, así
+          # que no genera ningún log. La página dice "your space is in error" y
+          # nada más. El motivo solo está en la API, y es lo que este paso saca
+          # a la luz.
+          api="https://huggingface.co/api/spaces/${HF_SPACE}"
+          for intento in $(seq 1 60); do
+            respuesta=$(curl -sS --max-time 30 -H "Authorization: Bearer ${HF_TOKEN}" "$api")
+            etapa=$(echo "$respuesta" | python3 -c "import json,sys; print(json.load(sys.stdin).get('runtime',{}).get('stage',''))")
+            motivo=$(echo "$respuesta" | python3 -c "import json,sys; print(json.load(sys.stdin).get('runtime',{}).get('errorMessage') or '')")
+
+            case "$etapa" in
+              RUNNING|RUNNING_APP_STARTING)
+                echo "El Space quedó en $etapa."
+                exit 0 ;;
+              CONFIG_ERROR|BUILD_ERROR|RUNTIME_ERROR)
+                # Se corta enseguida: estos no mejoran esperando.
+                echo "::error::El Space quedó en $etapa. Motivo: ${motivo:-(sin mensaje)}"
+                exit 1 ;;
+              SLEEPING|PAUSED|STOPPED)
+                echo "::warning::El Space está en $etapa: hay que despertarlo desde su página."
+                exit 0 ;;
+              *)
+                echo "[$intento/60] $etapa…"
+                sleep 20 ;;
+            esac
+          done
+          # El build de esta imagen ronda los 8-15 minutos; 20 es de sobra.
+          echo "::warning::20 minutos y el Space sigue construyendo. Mirá sus logs."

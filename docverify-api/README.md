@@ -388,6 +388,17 @@ Opcional, para aprovechar los 2 núcleos:
 > Tampoco hacen falta. Limitar los hilos servía en una instancia con 0,15 de un
 > núcleo, donde repartir ese pedacito solo agregaba trabajo; con 2 vCPU lo que
 > se quiere es justamente que las bibliotecas numéricas los usen.
+>
+> Si aun así el Space queda en error y no hay logs, el motivo está en la API:
+>
+> ```bash
+> curl -s https://huggingface.co/api/spaces/<usuario>/<space> \
+>   | python3 -c "import json,sys; print(json.load(sys.stdin)['runtime'])"
+> ```
+>
+> El workflow de deploy hace exactamente eso al terminar y falla con el mensaje
+> a la vista, así que este comando solo hace falta si el Space se rompió por
+> fuera de un deploy.
 
 **3 · Conectar el repo.** El Space es un repo de git propio; el workflow
 `.github/workflows/deploy-docverify.yml` lo mantiene sincronizado con
