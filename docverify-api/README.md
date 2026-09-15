@@ -330,8 +330,26 @@ un servicio `freewheel-docverify`. **Apply**.
 > Path `./docverify-api/Dockerfile`, Docker Build Context Directory
 > `./docverify-api`, Health Check Path `/health`.
 
-**2 · El plan.** El blueprint arranca en **Free**, y el sistema está hecho para
-que alcance. Lo que se paga son dos cosas:
+**2 · El plan.** El blueprint arranca en **Free**, pero hay que saber esto antes
+de probar:
+
+> **Medido en el deploy real: en Free un análisis NO TERMINA.** Tres corridas,
+> tres veces lo mismo: el proceso muere a los 2-3 minutos de empezar, sin
+> traceback y sin que `/health` deje de contestar 200. Una muestra de memoria
+> llegó a **510 MB contra el límite de 512**, y el resto del patrón es el de un
+> OOM. El pico está en la búsqueda de códigos de barras, que trabaja sobre el
+> encuadre canónico —1600×1009, un tamaño FIJO— y saca copias al doble y al
+> triple; por eso achicar la foto de entrada no lo baja.
+>
+> **`starter` tampoco sirve**: tiene los mismos 512 MB y solo cambia la CPU. Lo
+> que hace falta es memoria: **`standard` (2 GB)** en Render, o un host gratuito
+> con RAM de sobra (ver abajo).
+>
+> Mientras tanto el sistema **funciona igual**: cada documento queda en PENDING
+> con su motivo y lo revisa un administrador, que es como funcionaba antes de
+> que esto existiera. La lectura automática acelera; no habilita.
+
+Además, en Free se pagan otras dos cosas:
 
 - **Se apaga a los 15 minutos sin tráfico**, y despertar esta imagen tarda ~50
   segundos. Eso es más de lo que el backend puede esperar, así que el primer
@@ -343,14 +361,9 @@ que alcance. Lo que se paga son dos cosas:
   Tampoco bloquea a nadie, porque es asíncrono; el usuario solo ve "revisando
   tus documentos" más tiempo.
 
-La **memoria es la misma** en los dos planes (512 MB), y es el recurso que de
-verdad podría no alcanzar: el OCR sobre ONNX ronda los 400-500 MB residentes.
-O sea que si anda en Free, el problema de Starter era solo la velocidad.
-
-Para pasar a **Starter** (US$ 7/mes) cambiá `plan:` en `render.yaml` o el plan
-desde el dashboard. Conviene cuando la espera empiece a molestar, no antes. Si
-el servicio se reinicia con *out of memory*, el salto que hace falta es a
-**Standard** (2 GB), que es otro problema y otra solución.
+La **memoria es la misma** en Free y en Starter (512 MB), y es exactamente el
+recurso que no alcanza. Por eso el salto útil es a **Standard** (2 GB) y no a
+Starter: pagar US$ 7 compraría velocidad para un análisis que igual no termina.
 
 ### Otras opciones gratuitas
 
@@ -359,10 +372,13 @@ la velocidad no alcanza, estas dan bastante más sin costo:
 
 | Dónde | RAM | CPU | Se duerme | Qué hay que tocar |
 |---|---|---|---|---|
-| **Render Free** | 512 MB | 0,1 | 15 min | nada |
+| **Render Free** | 512 MB | 0,15 | 15 min | nada — pero **no completa un análisis** (ver arriba) |
 | **Hugging Face Spaces** | 16 GB | 2 vCPU | 48 h | escuchar en el puerto 7860 y agregar el header YAML del Space |
 | **Google Cloud Run** | 1-2 GB | 1-2 | escala a cero | cuenta de GCP con tarjeta; 180.000 vCPU-segundos por mes gratis |
 | **Oracle Cloud Always Free** | 24 GB | 4 (ARM) | no | es una VM: la administrás vos. Las wheels de numpy, opencv y onnxruntime tienen build para aarch64, así que corre |
+
+Las tres alternativas tienen memoria de sobra para este trabajo; Render Free es
+la única de la lista que no.
 
 Dos advertencias honestas:
 

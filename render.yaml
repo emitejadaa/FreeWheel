@@ -19,9 +19,29 @@ services:
     dockerfilePath: ./docverify-api/Dockerfile
     dockerContext: ./docverify-api
     region: oregon
-    # ARRANCA EN `free`, y el sistema está hecho para que eso alcance.
+    # MEDIDO EN ESTE DEPLOY: en `free` un análisis NO TERMINA.
     #
-    # Lo que se paga en el plan gratuito son dos cosas:
+    # Tres corridas, tres veces lo mismo: el proceso muere a los 2-3 minutos de
+    # empezar a analizar, sin traceback y sin que /health deje de contestar 200.
+    # Una de las muestras de memoria llegó a 510 MB contra el límite de 512, y
+    # el resto del patrón —muerte silenciosa, a mitad de camino— es el de un
+    # OOM. El pico está en la búsqueda de códigos de barras, que trabaja sobre
+    # el encuadre canónico (1600x1009, un tamaño FIJO) y saca copias al doble y
+    # al triple: por eso achicar la foto de entrada no lo bajó.
+    #
+    # Se deja en `free` igual, y no es resignación: la lectura automática es un
+    # acelerador, no un requisito. Con el servicio muriendo, cada documento
+    # queda en PENDING con su motivo y lo revisa un admin, que es exactamente
+    # como funcionaba el sistema antes de que esto existiera. Nadie se queda sin
+    # poder verificarse.
+    #
+    # PARA QUE LA LECTURA AUTOMÁTICA FUNCIONE DE VERDAD hace falta más memoria:
+    # `standard` (2 GB) en Render, o un host gratuito con RAM de sobra —Hugging
+    # Face Spaces da 16 GB, Oracle Always Free 24—. Está comparado en
+    # docverify-api/README.md. Ojo: `starter` NO alcanza, tiene los mismos
+    # 512 MB que `free` y solo cambia la CPU.
+    #
+    # Lo que además se paga en el plan gratuito son dos cosas:
     #
     #   · SE APAGA a los 15 minutos sin tráfico, y despertar esta imagen tarda
     #     ~50 segundos. Eso es MÁS de lo que el backend puede esperar (corre en

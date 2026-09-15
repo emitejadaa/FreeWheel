@@ -478,7 +478,8 @@ export class DocumentVerificationService {
         code: "ANALYSIS_RETRY_NOT_AVAILABLE",
         message:
           row.analysisStatus === DocumentAnalysisStatus.QUEUED
-            ? "El análisis de este documento ya está en curso: esperá el resultado."
+            ? // Un QUEUED reciente: hay uno corriendo de verdad.
+              "El análisis de este documento ya está en curso: esperá el resultado."
             : row.status === DocumentVerificationStatus.APPROVED
               ? "Este documento ya está verificado."
               : !row.frontUrl || !row.backUrl
@@ -920,8 +921,16 @@ export class DocumentVerificationService {
         row.status === DocumentVerificationStatus.FAILED,
       analysis: {
         status: row.analysisStatus,
-        pending: row.analysisStatus === DocumentAnalysisStatus.QUEUED,
-        error: row.analysisError,
+        // Un análisis abandonado ya no está "en curso" por más que la columna
+        // diga QUEUED: nadie lo está haciendo. Decir que sí dejaría al front
+        // esperando un resultado que no va a llegar.
+        pending:
+          row.analysisStatus === DocumentAnalysisStatus.QUEUED &&
+          !analisisAbandonado(row),
+        error: analisisAbandonado(row)
+          ? "La revisión automática de tus documentos se interrumpió. Podés " +
+            "volver a intentarla, o esperar a que un administrador los revise."
+          : row.analysisError,
         canRetry: canRetryAnalysis(row),
       },
       expiresAt: row.expiresAt,
@@ -937,6 +946,35 @@ export class DocumentVerificationService {
     assertFound(user, "User not found");
     return user;
   }
+}
+
+/**
+ * Cuánto se espera un análisis antes de darlo por perdido.
+ *
+ * Diez minutos es holgado incluso para el peor caso conocido —una instancia
+ * chica, con la cola llena y CPU al tope— y a la vez bastante menos de lo que
+ * una persona está dispuesta a mirar una pantalla que dice "revisando".
+ */
+const ANALISIS_ABANDONADO_MS = 10 * 60 * 1000;
+
+/**
+ * Un análisis que se pidió y del que nunca volvimos a saber nada.
+ *
+ * PASA DE VERDAD, y no por un error nuestro: si el proceso que estaba
+ * analizando muere a la mitad —lo mata el sistema por memoria, la plataforma lo
+ * reinicia, se cae la máquina— no queda nadie para avisar que falló. El aviso
+ * que teníamos que recibir no llega nunca.
+ *
+ * Sin esto la fila se quedaba en QUEUED PARA SIEMPRE: el front mostraba
+ * "revisando tus documentos" sin fin, `canRetry` daba false porque el estado no
+ * era FAILED, y la persona no tenía ninguna forma de destrabarse. Un estado del
+ * que solo se sale recibiendo un mensaje necesita, siempre, una salida por
+ * tiempo.
+ */
+function analisisAbandonado(row: DocumentVerification): boolean {
+  if (row.analysisStatus !== DocumentAnalysisStatus.QUEUED) return false;
+  const pedido = row.analysisRequestedAt?.getTime();
+  return pedido !== undefined && Date.now() - pedido > ANALISIS_ABANDONADO_MS;
 }
 
 /**
@@ -960,7 +998,8 @@ export class DocumentVerificationService {
  */
 function canRetryAnalysis(row: DocumentVerification): boolean {
   return (
-    row.analysisStatus === DocumentAnalysisStatus.FAILED &&
+    (row.analysisStatus === DocumentAnalysisStatus.FAILED ||
+      analisisAbandonado(row)) &&
     Boolean(row.frontUrl) &&
     Boolean(row.backUrl) &&
     row.status !== DocumentVerificationStatus.APPROVED &&

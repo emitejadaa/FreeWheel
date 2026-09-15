@@ -141,6 +141,37 @@ describe("Verificación documental (revisión manual)", () => {
       expect(res.body.code).toBe("ANALYSIS_RETRY_NOT_AVAILABLE");
       expect(res.body.message).toContain("ya está en curso");
     });
+
+    it("destraba un análisis del que nunca volvimos a saber nada", async () => {
+      // PASA DE VERDAD: si el proceso que estaba analizando muere a la mitad
+      // —lo mata el sistema por memoria, la plataforma lo reinicia— no queda
+      // nadie para avisar que falló, y el aviso que esperábamos no llega nunca.
+      // Sin una salida por tiempo la fila se quedaba en QUEUED para siempre: el
+      // front mostraba "revisando" sin fin y la persona no tenía forma de
+      // destrabarse.
+      const { token, id } = await cuentaCompleta();
+      await submit(token, id, "dni").expect(201);
+      await prisma.documentVerification.updateMany({
+        where: { userId: id, type: "DNI" },
+        data: {
+          analysisStatus: "QUEUED",
+          analysisRequestedAt: new Date(Date.now() - 30 * 60 * 1000),
+        },
+      });
+
+      // Deja de estar "en curso", aunque la columna siga diciendo QUEUED.
+      const estado = await http()
+        .get("/verification/identity/me")
+        .set("Authorization", auth(token))
+        .expect(200);
+      expect(estado.body.dni.analysis.pending).toBe(false);
+      expect(estado.body.dni.analysis.canRetry).toBe(true);
+      expect(estado.body.dni.analysis.error).toContain("interrumpió");
+
+      // Y se puede reintentar.
+      const res = await reintentarAnalisis(token, "dni").expect(201);
+      expect(res.body.status).toBe("PENDING");
+    });
   });
 
   // ── El envío ───────────────────────────────────────────────────────────
