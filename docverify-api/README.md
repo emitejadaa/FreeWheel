@@ -301,9 +301,14 @@ Todo opcional — sin `.env` el servicio levanta y funciona. Ver `.env.example`.
 
 **El token no es opcional cuando esto está publicado**: el servicio se niega a
 arrancar sin él. Lo detecta solo, por las variables que ponen las plataformas
-(`SPACE_ID` en Hugging Face, `RENDER_SERVICE_ID` en Render); `DOCVERIFY_EXPUESTO`
-está para forzarlo en cualquier otra. En local, sin ninguna de esas, arranca
-abierto — que es lo cómodo para probar.
+—`SPACE_ID` (Hugging Face), `RENDER_SERVICE_ID` (Render), `K_SERVICE` (Cloud
+Run), `FLY_APP_NAME` (Fly)—, y `DOCVERIFY_EXPUESTO` está para forzarlo en
+cualquier otra. En local, sin ninguna de esas, arranca abierto, que es lo cómodo
+para probar.
+
+Se mira eso y no una variable propia porque el olvido que hay que atrapar es
+justamente el de una variable: una señal que pone la plataforma sola no se puede
+olvidar.
 
 Publicado cambian dos defaults, los dos hacia el lado seguro: el token pasa a
 ser obligatorio y CORS queda cerrado.

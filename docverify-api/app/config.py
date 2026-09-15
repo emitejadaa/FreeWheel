@@ -9,6 +9,28 @@ import os
 from dataclasses import dataclass
 
 
+# Variables que ponen las plataformas de hosting, y que delatan que este proceso
+# NO está corriendo en la máquina de alguien.
+#
+# Se mira esto y no una variable propia porque el olvido que hay que atrapar es
+# justamente el de una variable: "deployé y no puse el token". Una señal que
+# pone la plataforma sola no se puede olvidar.
+#
+# La lista tiene que cubrir CUALQUIER lado donde esto pueda terminar corriendo.
+# Una plataforma que falte no da un error: da algo peor, un servicio publicado
+# que acepta documentos de identidad sin pedir token y sin que nadie lo note.
+# Por eso están las cuatro candidatas y no solo la que se usa hoy —este servicio
+# ya se mudó una vez— y por eso existe además DOCVERIFY_EXPUESTO, para forzarlo
+# a mano en la quinta.
+SEÑALES_DE_PUBLICADO = (
+    "SPACE_ID",           # Hugging Face Spaces
+    "RENDER_SERVICE_ID",  # Render
+    "K_SERVICE",          # Google Cloud Run
+    "FLY_APP_NAME",       # Fly.io
+    "DOCVERIFY_EXPUESTO",  # cualquier otra, a mano
+)
+
+
 def _entero(nombre: str, defecto: int) -> int:
     crudo = os.environ.get(nombre, "").strip()
     if not crudo:
@@ -54,10 +76,7 @@ class Ajustes:
 
 def _cargar() -> Ajustes:
     origenes = os.environ.get("DOCVERIFY_ORIGENES", "").strip()
-    publicado = any(
-        os.environ.get(nombre)
-        for nombre in ("SPACE_ID", "RENDER_SERVICE_ID", "DOCVERIFY_EXPUESTO")
-    )
+    publicado = any(os.environ.get(nombre) for nombre in SEÑALES_DE_PUBLICADO)
     return Ajustes(
         token=os.environ.get("DOCVERIFY_TOKEN", "").strip(),
         max_bytes=_entero("DOCVERIFY_MAX_KB", 15_000) * 1024,
