@@ -1374,10 +1374,21 @@ mismo dato coinciden entre si. **No sabe quien es el usuario y no decide si una
 verificacion se aprueba**: eso lo hace este backend, que es el unico lado que
 conoce la cuenta.
 
-Se deploya en **Hugging Face Spaces** (Docker, CPU basic: 2 vCPU y 16 GB,
-gratis). El workflow `.github/workflows/deploy-docverify.yml` publica
-`docverify-api/` en el Space en cada push a main, asi que el repo sigue siendo
-la unica fuente de verdad.
+HOY CORRE EN LOCAL, junto con el backend: `DOCVERIFY_URL="http://127.0.0.1:8000"`.
+Un analisis completo tarda ~10 segundos las dos caras en una maquina comun.
+
+Hostearlo salio mal dos veces y por motivos distintos, los dos medidos: en los
+planes chicos de Render (512 MB) el proceso muere a mitad del analisis, y la
+cuenta de Hugging Face tiene cupo cero para Spaces de CPU. El workflow
+`.github/workflows/deploy-docverify.yml` sigue en el repo y publica
+`docverify-api/` en un Space en cada push a main, listo para cuando ese cupo se
+destrabe.
+
+CUIDADO con una cosa: un backend en Vercel NO puede alcanzar una API en
+127.0.0.1 ni en 192.168.x.y. Son direcciones privadas y no hay ruta desde
+internet. O el backend corre local tambien, o hace falta un tunel, o hay que dar
+vuelta el flujo (que la API pregunte por trabajo en vez de esperar a que la
+llamen). Esta explicado en docverify-api/README.md.
 
 No puede ir en Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y
 el tope de una funcion serverless son 250 MB. Y NECESITA 2 GB de RAM: esta

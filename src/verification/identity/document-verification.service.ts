@@ -812,8 +812,26 @@ export class DocumentVerificationService {
   private publicUrl(): string {
     const explicita = this.config.get<string>("PUBLIC_URL")?.trim();
     if (explicita) return explicita.replace(/\/+$/, "");
+
     const vercel = this.config.get<string>("VERCEL_URL")?.trim();
-    return vercel ? `https://${vercel.replace(/\/+$/, "")}` : "";
+    if (vercel) return `https://${vercel.replace(/\/+$/, "")}`;
+
+    // Corriendo en la máquina de alguien, la URL propia se puede deducir y no
+    // hace falta que nadie la configure: es localhost y el puerto en el que
+    // estamos escuchando. Sin esto, levantar el proyecto entero en local dejaba
+    // la lectura automática apagada por una variable que no era evidente que
+    // faltara — y el síntoma era silencioso: los documentos se guardaban y se
+    // quedaban esperando a un admin.
+    //
+    // Va acotado a NODE_ENV !== production para que en un deploy sin PUBLIC_URL
+    // ni VERCEL_URL esto devuelva "" y el análisis directamente no se pida.
+    // Adivinar "localhost" ahí sería peor que no configurar nada: la API de
+    // lectura mandaría el resultado a su propio localhost y se perdería en
+    // silencio, cada vez.
+    if (this.config.get<string>("NODE_ENV") !== "production") {
+      return `http://localhost:${this.config.get<string>("PORT") ?? "3000"}`;
+    }
+    return "";
   }
 
   /**

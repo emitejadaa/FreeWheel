@@ -351,100 +351,78 @@ para un análisis que igual no termina.
 
 ---
 
-### En Hugging Face Spaces, paso a paso
+### En tu máquina, junto con el backend
 
-Es la opción elegida: 16 GB y 2 vCPU gratis, y la plataforma está hecha
-justamente para servir modelos.
+Es lo que está andando hoy, y no es un modo degradado: el análisis tarda **~10
+segundos las dos caras** en una máquina común, contra los 2-3 minutos (y el
+proceso muerto) de una instancia chica.
 
-**1 · Crear el Space.** En <https://huggingface.co/new-space>:
-
-| Campo | Valor |
-|---|---|
-| Space name | `freewheel-docverify` |
-| License | la que prefieras |
-| SDK | **Docker** → *Blank* |
-| Hardware | **CPU basic** (2 vCPU, 16 GB — gratis) |
-| Visibility | **Private** (recomendado) o Public |
-
-**2 · Cargar el secreto.** En el Space → **Settings** → **Variables and
-secrets** → *New secret*:
-
-| Nombre | Valor |
-|---|---|
-| `DOCVERIFY_TOKEN` | una cadena larga y al azar (`openssl rand -base64 32`) |
-
-Va como **secret**, no como variable: las variables se ven en la página del
-Space. Y no es opcional — **el servicio se niega a arrancar sin él cuando
-detecta que está publicado**, justamente para que "lo deployé y me olvidé el
-token" no pueda pasar desapercibido.
-
-Opcional, para aprovechar los 2 núcleos:
-
-| Nombre | Valor |
-|---|---|
-| `DOCVERIFY_CONCURRENCIA` | `2` |
-
-> **No intentes fijar `OMP_NUM_THREADS` ni las otras `*_NUM_THREADS` acá.**
-> Hugging Face las tiene RESERVADAS: si las cargás, el Space ni siquiera
-> construye — queda en `CONFIG_ERROR` con el mensaje *"Reserved environment
-> variables"*, que aparece antes del build y por eso no deja ningún log donde
-> buscarlo.
->
-> Tampoco hacen falta. Limitar los hilos servía en una instancia con 0,15 de un
-> núcleo, donde repartir ese pedacito solo agregaba trabajo; con 2 vCPU lo que
-> se quiere es justamente que las bibliotecas numéricas los usen.
->
-> Si aun así el Space queda en error y no hay logs, el motivo está en la API:
->
-> ```bash
-> curl -s https://huggingface.co/api/spaces/<usuario>/<space> \
->   | python3 -c "import json,sys; print(json.load(sys.stdin)['runtime'])"
-> ```
->
-> El workflow de deploy hace exactamente eso al terminar y falla con el mensaje
-> a la vista, así que este comando solo hace falta si el Space se rompió por
-> fuera de un deploy.
-
-**3 · Conectar el repo.** El Space es un repo de git propio; el workflow
-`.github/workflows/deploy-docverify.yml` lo mantiene sincronizado con
-`docverify-api/` en cada push a `main`. Hace falta configurarlo una vez en
-GitHub (Settings del repo):
-
-| Dónde | Nombre | Valor |
-|---|---|---|
-| Secrets → Actions | `HF_TOKEN` | un token de Hugging Face con permiso **write** |
-| Variables → Actions | `HF_SPACE` | `tu-usuario/freewheel-docverify` |
-
-Después, **Actions → deploy docverify → Run workflow** para la primera
-publicación (o simplemente pushear algo que toque `docverify-api/`).
-
-**4 · Esperar el build.** En la pestaña **Logs** del Space. El primer build
-tarda 8-15 minutos: baja ~300 MB de wheels. Cuando el Space quede en
-**Running**, la URL es
-`https://<usuario>-freewheel-docverify.hf.space`.
-
-**5 · Comprobar.**
+**1 · Levantar la API.**
 
 ```bash
-curl https://<usuario>-freewheel-docverify.hf.space/health
+cd docverify-api
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt                    # ~300 MB, una sola vez
+uvicorn app.main:app --port 8000
 ```
 
-El campo que importa es `protegido_con_token: true`: el token quedó puesto.
+`http://127.0.0.1:8000/health` tiene que contestar. En local **no pide token**:
+el servicio solo lo exige cuando detecta que está publicado.
 
-`ocr_cargado` dice si el motor está abierto **en el proceso que está
-corriendo**, no si los modelos están instalados —eso lo están siempre, porque
-`rapidocr` los trae adentro del paquete y no se bajan nunca—. Al arrancar, el
-servicio dispara esa carga en segundo plano, así que el campo pasa a `true`
-solo, en unos segundos. Verlo en `false` recién deployado es normal; verlo en
-`false` minutos después significa que la carga falló, y el motivo está en los
-logs.
+**2 · Apuntar el backend.** En el `.env` del backend:
 
-**6 · Conectarlo al backend.** En las variables de entorno del backend:
-`DOCVERIFY_URL` con la URL del Space (sin barra final) y `DOCVERIFY_TOKEN` con
-el mismo valor del paso 2.
+```bash
+DOCVERIFY_URL="http://127.0.0.1:8000"
+```
 
-No hace falta base de datos ni disco persistente: esta API no guarda nada, y los
-modelos ya están dentro de la imagen.
+Y nada más. `DOCVERIFY_TOKEN` se deja vacío —la API local no lo pide— y
+`PUBLIC_URL` tampoco hace falta: fuera de producción el backend deduce su propia
+URL como `http://localhost:<PORT>`, que es lo que necesita para recibir el aviso
+cuando el análisis termina.
+
+**3 · Levantar el backend** (`npm run start:dev`) y listo. Subís un documento y
+a los ~10 segundos el estado cambia solo.
+
+#### Por qué la misma dirección siempre
+
+Usá **`127.0.0.1`**, no la IP de tu red. `127.0.0.1` es la misma en todas las
+máquinas, en todas las redes y para siempre: no depende del router, no cambia al
+reconectarte al wifi ni al pasar de casa a otro lado. La IP de tu red (`192.168.
+x.y`) la asigna el router y puede cambiar sola.
+
+Eso alcanza **si la API y el backend corren en la misma máquina**, que es el
+caso normal. Si de verdad necesitás llamarla desde OTRA máquina de la misma red:
+
+1. Levantá la API con `--host 0.0.0.0` (si no, solo escucha en loopback).
+2. Fijá la IP en el ROUTER, no en la máquina: casi todos tienen "DHCP
+   reservation" o "IP estática por MAC". Atarla ahí sobrevive a reinstalar el
+   sistema y no se pelea con el DHCP, que es lo que pasa cuando se configura del
+   lado de la máquina.
+3. Poné el token: en una red compartida, una API sin token que acepta documentos
+   de identidad la puede usar cualquiera que esté conectado. Con
+   `DOCVERIFY_TOKEN` en las dos puntas alcanza.
+
+#### Lo que NO funciona: backend en Vercel + API en tu máquina
+
+Y conviene tenerlo claro antes de intentarlo. `127.0.0.1` y `192.168.x.y` son
+direcciones **privadas**: no existen fuera de tu red. Un servidor de Vercel que
+intente conectarse ahí se está apuntando a sí mismo, no a tu computadora. No es
+cuestión de configurarlo bien; no hay ruta.
+
+Las salidas reales son tres:
+
+- **Backend local también.** Lo de arriba. Para desarrollar y mostrar, es lo más
+  simple y lo más rápido.
+- **Un túnel.** `cloudflared tunnel --url http://localhost:8000` (o `ngrok http
+  8000`) le da a tu API local una URL pública; esa es la que va en
+  `DOCVERIFY_URL`. Sirve para probar el deploy de Vercel contra tu máquina, pero
+  la URL vive mientras el túnel esté abierto y la máquina prendida.
+- **Dar vuelta el flujo.** Que la API, desde tu máquina, le PREGUNTE al backend
+  si hay documentos para analizar, en vez de esperar a que la llamen. Tu máquina
+  sí puede salir a internet; lo que no puede es recibir. Es como funciona un
+  runner de CI, y es la solución de fondo para "no tengo dónde hostear esto",
+  pero es trabajo: hace falta una cola, tomar y devolver trabajos, y un token de
+  worker.
 
 ---
 
