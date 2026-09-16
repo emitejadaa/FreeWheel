@@ -15,10 +15,22 @@ ofrezca — texto impreso por posición, PDF417, MRZ y códigos de barras lineal
 ```bash
 cd docverify-api
 python -m venv .venv
-.venv/Scripts/activate          # Linux/Mac: source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+
+# Windows (PowerShell o cmd)
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
+
+# Linux / Mac
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
 ```
+
+No hace falta "activar" el entorno: se llama directo al Python del `.venv`, y
+ese Python ya busca los paquetes al lado suyo. Activar es solo un atajo para no
+escribir la ruta — un atajo que se rompe distinto en cada shell (`activate` vs
+`Activate.ps1` vs `activate.bat`) y que, cuando falla en silencio, hace que
+`pip install` vaya al Python del sistema y que después `uvicorn` no aparezca por
+ningún lado. Con la ruta explícita eso no puede pasar.
 
 Al arrancar, el servicio abre las tres sesiones de ONNX del motor de OCR en
 segundo plano (los modelos vienen dentro del paquete `rapidocr`: no se baja
@@ -37,6 +49,9 @@ python probar_imagenes.py --json          # el JSON completo
 python depurar.py licencia-dorso --guardar   # renglones con coordenadas,
                                              # códigos, y el encuadre en .debug/
 ```
+
+(Estos dos también van con el Python del entorno: `.venv/bin/python
+probar_imagenes.py`, o `.venv\Scripts\python probar_imagenes.py` en Windows.)
 
 `depurar.py` es la herramienta para **calibrar las zonas**: imprime qué leyó el
 OCR y en qué coordenadas (0..1) del documento encuadrado, que es el sistema en
@@ -361,10 +376,19 @@ proceso muerto) de una instancia chica.
 
 ```bash
 cd docverify-api
-python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt                    # ~300 MB, una sola vez
-uvicorn app.main:app --port 8000
+python -m venv .venv
+
+# Windows (PowerShell o cmd)
+.venv\Scripts\python -m pip install -r requirements.txt   # ~300 MB, una sola vez
+.venv\Scripts\python -m uvicorn app.main:app --port 8000
+
+# Linux / Mac
+.venv/bin/python -m pip install -r requirements.txt        # ~300 MB, una sola vez
+.venv/bin/python -m uvicorn app.main:app --port 8000
 ```
+
+Se llama al Python del `.venv` por su ruta, sin activar nada: es la forma que
+funciona igual en PowerShell, en cmd y en bash.
 
 `http://127.0.0.1:8000/health` tiene que contestar. En local **no pide token**:
 el servicio solo lo exige cuando detecta que está publicado.
@@ -382,6 +406,24 @@ cuando el análisis termina.
 
 **3 · Levantar el backend** (`npm run start:dev`) y listo. Subís un documento y
 a los ~10 segundos el estado cambia solo.
+
+#### Si dice `uvicorn: no se encontró` / `command not found`
+
+Es siempre lo mismo: se está ejecutando el `uvicorn` del PATH, que no existe,
+en vez del que está adentro del `.venv`. La solución es no depender del PATH —
+`.venv/bin/python -m uvicorn ...` (o `.venv\Scripts\python -m uvicorn ...` en
+Windows), como está arriba.
+
+Para confirmar que el entorno quedó bien:
+
+```bash
+.venv/bin/python -m uvicorn --version        # Windows: .venv\Scripts\python -m ...
+# Running uvicorn 0.40.0 with CPython 3.11.x
+```
+
+Si eso también falla, entonces el `pip install` no llegó a este entorno:
+repetilo con el mismo Python (`.venv/bin/python -m pip install -r
+requirements.txt`) y volvé a probar.
 
 #### Por qué la misma dirección siempre
 
