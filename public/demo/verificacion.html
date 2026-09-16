@@ -180,6 +180,7 @@
   <button class="sm" onclick="probarConexion()">Probar conexión</button>
   <span id="conn" class="badge b-mute">sin probar</span>
   <div style="min-width:200px"><input id="ocrUrl" placeholder="lector · http://localhost:8000"></div>
+  <div style="min-width:170px"><input id="ocrToken" class="mono" placeholder="lector · DOCVERIFY_TOKEN" title="La clave compartida del lector. Es la misma que DOCVERIFY_TOKEN del backend: sin ella, un lector publicado contesta 401."></div>
   <span id="connOcr" class="badge b-mute">lector sin probar</span>
   <div class="grow"></div>
   <button class="sm ghost" onclick="if(confirm('¿Borrar sesiones, URLs y log guardados?')){try{localStorage.clear()}catch(e){};location.reload()}">Reset</button>
@@ -303,7 +304,8 @@
     <summary><span class="n">5</span> Lectura automática <span class="muted">— API de Python, un endpoint por cara</span></summary>
     <div class="body">
       <div class="note">Este paso <b>no pasa por el backend</b>: el navegador le manda la foto directo al lector (<code id="ocrUrlEco">http://localhost:8000</code>). Son dos servicios sin ninguna conexión entre sí, deployados por separado — acá conviven solo porque es la misma pantalla de prueba.</div>
-      <p class="hint">Usa las mismas fotos que elegiste arriba. Cada cara va a su endpoint y se lee por todos los medios que ese documento tenga: texto por posición, PDF417, MRZ y códigos de barras. Lo que no se pudo leer vuelve <b>vacío</b>, nunca ausente.</p>
+      <p class="hint">Usa las mismas fotos que elegiste arriba. Cada cara va a su endpoint y se lee por todos los medios que ese documento tenga: texto por posición, el código del documento (PDF417 o QR), MRZ y códigos de barras. Lo que no se pudo leer vuelve <b>vacío</b>, nunca ausente.</p>
+      <p class="hint"><b>El lector publicado pide token.</b> Cargalo en <code>lector · DOCVERIFY_TOKEN</code> arriba a la derecha: es el mismo valor que la variable <code>DOCVERIFY_TOKEN</code> del backend y la del propio lector. Sin él contesta <code>401</code>, y así tiene que ser — por ahí pasan documentos de identidad. Corriendo en tu máquina, sin token configurado, el campo va vacío. Además el lector solo acepta llamadas del navegador desde los orígenes de <code>DOCVERIFY_ORIGENES</code>: para usar esta página hay que incluir el suyo.</p>
       <div class="btns" style="margin-bottom:12px">
         <button class="primary" onclick="analizarTodo(this)">Leer las 4 fotos</button>
         <button onclick="verContrato(this)" title="GET /contrato — qué campos devuelve cada endpoint">Ver el contrato del lector</button>
@@ -392,7 +394,7 @@ const VERSION = "v5 · backend manual + lector Python aparte";
 const $ = (id) => document.getElementById(id);
 const val = (id) => $(id).value.trim();
 $("version").textContent = VERSION;
-const PERSIST = ["baseUrl","ocrUrl","email","password","firstName","lastName","dateOfBirth","phone",
+const PERSIST = ["baseUrl","ocrUrl","ocrToken","email","password","firstName","lastName","dateOfBirth","phone",
                  "token","adminToken","adminEmail","adminPassword","dni","cuil","address"];
 
 // Esta página está pensada para abrirse TAMBIÉN como archivo suelto (doble
@@ -419,6 +421,29 @@ if (!val("email")) nuevoEmail();
 
 /** La URL del lector de documentos, normalizada igual que la del backend. */
 const ocrBase = () => base("ocrUrl") || "http://localhost:8000";
+
+/**
+ * Las cabeceras con las que esta página le habla al lector.
+ *
+ * EL TOKEN VA SIEMPRE QUE ESTÉ CARGADO. El lector publicado en internet se
+ * niega a arrancar sin `DOCVERIFY_TOKEN` —por ahí pasan documentos de
+ * identidad de personas reales— y contesta 401 a todo el que no lo traiga. Con
+ * el lector corriendo en la máquina de uno la variable suele estar vacía y
+ * entonces acá tampoco se manda nada: el campo en blanco es el caso normal en
+ * local, no un olvido.
+ *
+ * Viaja en `X-Docverify-Token` y no en `Authorization` porque ese otro header
+ * se lo lleva la plataforma cuando el lector está en un Space privado de
+ * Hugging Face. Se manda igual en los dos, que es lo que hace el backend, para
+ * que ande contra cualquiera de las dos configuraciones.
+ */
+function cabecerasLector(extra = {}) {
+  const clave = val("ocrToken");
+  return {
+    ...extra,
+    ...(clave ? { "X-Docverify-Token": clave, "Authorization": "Bearer " + clave } : {}),
+  };
+}
 
 function nuevoEmail() {
   $("email").value = "verif-" + Date.now() + "@test.local";
@@ -576,7 +601,7 @@ async function probarLector() {
   const insignia = $("connOcr");
   $("ocrUrlEco").textContent = ocrBase();
   try {
-    const res = await fetch(ocrBase() + "/health", { headers: { accept: "application/json" } });
+    const res = await fetch(ocrBase() + "/health", { headers: cabecerasLector({ accept: "application/json" }) });
     const cuerpo = await res.json();
     registrar({ method: "GET", url: ocrBase() + "/health", status: res.status, ms: 0, data: cuerpo });
     insignia.className = "badge " + (res.ok ? "b-ok" : "b-err");
@@ -1025,7 +1050,7 @@ async function analizarCara(cara) {
   try {
     // Sin Content-Type a mano: el navegador tiene que ponerlo él para poder
     // agregarle el `boundary` del multipart. Fijándolo se rompe la subida.
-    const res = await fetch(url, { method: "POST", body: cuerpo });
+    const res = await fetch(url, { method: "POST", body: cuerpo, headers: cabecerasLector() });
     const datos = await res.json();
     const ms = Math.round(performance.now() - t0);
     registrar({ method: "POST", url, status: res.status, ms, body: "(imagen)", data: datos });
@@ -1130,7 +1155,7 @@ async function verContrato(boton) {
   ocupado(boton, true);
   const url = ocrBase() + "/contrato";
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: cabecerasLector() });
     const datos = await res.json();
     registrar({ method: "GET", url, status: res.status, ms: 0, data: datos });
     $("lector").innerHTML = `<div class="verdict">

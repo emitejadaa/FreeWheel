@@ -367,7 +367,7 @@ Una cuenta queda **verificada** —requisito para publicar, reservar y pagar—
 sólo cuando el backend comprueba que sus documentos son reales, están vigentes
 y describen a la misma persona que cargó los datos.
 
-El usuario carga en su perfil `dni`, `cuil` y `address` (`PATCH /users/me`,
+El usuario carga en su perfil `dni` y `cuil` (`PATCH /users/me`,
 con validación de checksum del CUIL), pide una firma por cada archivo
 (`POST /verification/identity/upload-signature` con `{ document: "dni"|"license",
 side: "front"|"back" }`), sube cada foto **directo a Cloudinary** con esos
@@ -422,13 +422,19 @@ backend** — no comparten base, ni configuración, ni llamadas. Encuadra el
 documento, lo endereza y lo lee por todos los medios que tenga, con un endpoint
 por cara:
 
-- **DNI frente** — `ocr` + `pdf417` (el código del RENAPER). El vencimiento es
-  el único campo que no está codificado: sólo existe impreso.
+- **DNI frente** — `ocr` + `pdf417` (el código del RENAPER) o `qr` (las
+  emisiones nuevas lo traen en su lugar; para el cruce valen igual y hace falta
+  alguno de los dos). El vencimiento es el único campo que no está codificado:
+  sólo existe impreso.
 - **DNI dorso** — `ocr` (domicilio, lugar de nacimiento y CUIL, que no están en
   ningún código) + `mrz` (TD1 ICAO, con sus dígitos verificadores: la única
   lectura que puede demostrar por sí sola que se leyó bien).
 - **Licencia frente** — `ocr`. No tiene códigos.
 - **Licencia dorso** — `ocr` + `pdf417` + el código de barras lineal del borde.
+  Los dos códigos se leen y se devuelven, pero **el backend no los cruza**: no
+  decodifican de forma confiable en una foto de teléfono y contradecían al
+  frente, mandando licencias auténticas a revisión manual (ver
+  `ORIGENES_IGNORADOS` en `identity-match.service.ts`).
 
 Devuelve el mismo JSON en los cuatro endpoints, organizado **por origen**, con
 cada dato normalizado y crudo, y un bloque `coincidencias` que dice si lo que
@@ -436,7 +442,29 @@ está impreso y lo que dice el código coinciden — que es lo que delata una
 tarjeta adulterada. Lo que no se pudo leer vuelve vacío, nunca ausente.
 
 El paso 5 del demo le pega directo desde el navegador, sin pasar por el
-backend.
+backend. Para eso hace falta que el lector lo deje entrar, y son dos cosas
+distintas: la **clave compartida** (`DOCVERIFY_TOKEN`, la misma en el lector,
+en este backend y pegada a mano en el campo «lector · DOCVERIFY_TOKEN» del
+encabezado del demo) y el **origen** desde el que se abre el demo, que tiene
+que estar en la lista `DOCVERIFY_ORIGENES` del lector. Sin la clave contesta
+`401`; sin el origen, el navegador ni llega a mandar el pedido. Los dos únicos
+que tienen que poder entrar son este backend y esa página.
+
+### Qué NO se cruza contra el documento
+
+- **El domicilio.** El de la cuenta lo escribe una persona y el del documento
+  lo devuelve un OCR sobre letra chica: describen el mismo lugar y casi nunca
+  son el mismo texto. Cruzarlo producía un desacuerdo casi siempre, sobre
+  documentos correctos, sin detectar ningún fraude — y un domicilio tampoco
+  prueba identidad, porque las personas se mudan. Tampoco se pide para poder
+  enviar documentos.
+- **Los códigos del dorso de la licencia**, por lo de arriba.
+
+El resto se compara **por el dato y no por el texto**: `49.380.010` y
+`49380010` son el mismo número, `28/10/2026` y `2026-10-28` el mismo día,
+`20-49380010-9` y `20493800109` el mismo CUIL, y un nombre al que un origen le
+suma el segundo nombre que otro no trae sigue siendo la misma persona (el
+orden, en cambio, importa: `TEJADA ARAGON` y `ARAGON TEJADA` no son lo mismo).
 
 ## QR Tokens
 

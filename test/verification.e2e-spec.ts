@@ -258,9 +258,10 @@ describe("Verification", () => {
       .send(documentUrls(user.id, "dni"))
       .expect(400);
     expect(res.body.code).toBe("PERFIL_INCOMPLETO");
-    expect(res.body.missing).toEqual(
-      expect.arrayContaining(["DNI", "CUIL", "domicilio"]),
-    );
+    expect(res.body.missing).toEqual(expect.arrayContaining(["DNI", "CUIL"]));
+    // El domicilio NO se exige: no se cruza contra el documento, así que
+    // pedirlo solo frenaba el envío por un dato que después no decide nada.
+    expect(res.body.missing).not.toContain("domicilio");
   });
 
   it("keeps the identity/ folder off the generic media signature endpoint", async () => {

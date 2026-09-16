@@ -10,10 +10,7 @@ import {
   setIdentityProfile,
   uniqueDni,
 } from "./helpers/factory";
-import {
-  documentUrls,
-  FakeCloudinaryService,
-} from "./helpers/cloudinary.fake";
+import { documentUrls, FakeCloudinaryService } from "./helpers/cloudinary.fake";
 
 /**
  * LA VERIFICACIÓN AUTOMÁTICA, DE PUNTA A PUNTA.
@@ -272,7 +269,10 @@ describe("Verificación automática de documentos", () => {
     const token = await enviarYPrepararAviso(user, "dni");
 
     const adulterado = dniQueCierra(user.dni, user.cuil) as {
-      caras: Record<string, { origenes: Record<string, { campos: Record<string, unknown> }> }>;
+      caras: Record<
+        string,
+        { origenes: Record<string, { campos: Record<string, unknown> }> }
+      >;
     };
     adulterado.caras.frente.origenes.pdf417.campos.fecha_nacimiento =
       campo("2011-04-06");
@@ -323,6 +323,74 @@ describe("Verificación automática de documentos", () => {
     // de alguien: lo peor que puede pasar es que lo mire una persona.
     expect(res.body.status).toBe("PENDING");
     expect(res.body.status).not.toBe("REJECTED");
+  });
+
+  // ── Corregir los datos y volver a revisar, sin resubir las fotos ───────
+
+  it("deja volver a revisar el mismo documento después de corregir el perfil", async () => {
+    // EL CASO QUE ESTO ARREGLA: el cruce no es solo contra la foto, es contra
+    // los datos de la cuenta. Cuando el veredicto fue "la fecha de nacimiento
+    // del documento no coincide con la de tu cuenta", lo que hay que corregir
+    // está en el perfil — y con el perfil corregido, el MISMO análisis da otro
+    // resultado. Mientras el reintento exigía que el análisis hubiera FALLADO,
+    // esa persona quedaba con un botón que contestaba "no hay nada que
+    // reintentar" y sin más salida que volver a sacar las cuatro fotos.
+    const user = await cuenta();
+    const token = await enviarYPrepararAviso(user, "dni");
+
+    // El documento dice un DNI que la cuenta no tiene: no cruza.
+    await avisar(token, dniQueCierra("30111222", cuilFor("30111222"))).expect(
+      201,
+    );
+
+    const trabado = await http()
+      .get("/verification/identity/me")
+      .set("Authorization", auth(user.token))
+      .expect(200);
+    expect(trabado.body.dni.status).toBe("PENDING");
+    expect(trabado.body.dni.analysis.status).toBe("DONE");
+    // Las fotos siguen guardadas, así que se puede volver a revisar: es
+    // exactamente lo que el front le promete a la persona.
+    expect(trabado.body.dni.documents).toEqual({ front: true, back: true });
+    expect(trabado.body.dni.analysis.canRetry).toBe(true);
+
+    // Y el endpoint lo acepta en vez de contestar 400.
+    const reintento = await http()
+      .post("/verification/identity/dni/retry-analysis")
+      .set("Authorization", auth(user.token))
+      .expect(201);
+    expect(reintento.body.documents).toEqual({ front: true, back: true });
+  });
+
+  it("no le saca el lugar en la cola a quien ya había pedido revisión", async () => {
+    // Volver a pedir la lectura estando en la cola del admin no puede
+    // devolverte a PENDING: perderías el pedido de revisión que ya hiciste por
+    // haber intentado destrabarte solo.
+    const user = await cuenta();
+    const token = await enviarYPrepararAviso(user, "dni");
+    await avisar(token, dniQueCierra("30111222", cuilFor("30111222"))).expect(
+      201,
+    );
+
+    await http()
+      .post("/verification/identity/dni/request-review")
+      .set("Authorization", auth(user.token))
+      .expect(201);
+
+    // Segunda lectura, que tampoco cruza.
+    const otroToken = `token-de-prueba-dni-2-${user.id}`;
+    await prisma.documentVerification.updateMany({
+      where: { userId: user.id, type: "DNI" },
+      data: {
+        analysisTokenHash: createHash("sha256").update(otroToken).digest("hex"),
+      },
+    });
+    const res = await avisar(
+      otroToken,
+      dniQueCierra("30111222", cuilFor("30111222")),
+    ).expect(201);
+
+    expect(res.body.status).toBe("MANUAL_REVIEW");
   });
 
   // ── Habilitación para conducir ─────────────────────────────────────────

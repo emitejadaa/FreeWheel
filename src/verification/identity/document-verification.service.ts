@@ -49,8 +49,15 @@ const KIND_TO_DOCVERIFY: Record<DocumentKind, DocverifyDocument> = {
 
 /**
  * Datos del perfil que hacen falta para poder revisar un documento: son
- * exactamente los que el admin tiene que poder contrastar contra la foto.
- * Sin ellos la revisión no tiene contra qué comparar.
+ * exactamente los que el cruce automático —y el admin, si le toca mirar— van a
+ * contrastar contra la foto. Sin ellos la revisión no tiene contra qué
+ * comparar.
+ *
+ * EL DOMICILIO NO ESTÁ, y no es un olvido. No se cruza contra nada (ver la
+ * cabecera de identity-match.service.ts: el de la cuenta lo escribe una
+ * persona y el del documento lo devuelve un OCR sobre letra chica, así que
+ * casi nunca son el mismo texto aunque sean el mismo lugar). Exigirlo
+ * frenaba el envío de documentos por un dato que después no decide nada.
  */
 const REQUIRED_PROFILE_FIELDS: { field: keyof User; label: string }[] = [
   { field: "firstName", label: "nombre" },
@@ -58,7 +65,6 @@ const REQUIRED_PROFILE_FIELDS: { field: keyof User; label: string }[] = [
   { field: "dateOfBirth", label: "fecha de nacimiento" },
   { field: "dni", label: "DNI" },
   { field: "cuil", label: "CUIL" },
-  { field: "address", label: "domicilio" },
 ];
 
 /** Lo que ve el propio usuario sobre uno de sus documentos. */
@@ -340,10 +346,17 @@ export class DocumentVerificationService {
     const reasons = duplicado
       ? [...report.reasons, verificationReason("DOCUMENTO_YA_VERIFICADO")]
       : report.reasons;
+    // Un análisis que no aprueba deja el documento donde estaba, y eso importa
+    // cuando el documento YA estaba en la cola del admin: la persona corrigió
+    // sus datos, volvió a pedir la lectura y volvió a no cerrar. Bajarlo a
+    // PENDING ahí lo sacaría de la cola —perdería su lugar, y el pedido de
+    // revisión que ya había hecho— por haber intentado destrabarse solo.
     const status =
       aprobar && !duplicado
         ? DocumentVerificationStatus.APPROVED
-        : DocumentVerificationStatus.PENDING;
+        : row.status === DocumentVerificationStatus.MANUAL_REVIEW
+          ? DocumentVerificationStatus.MANUAL_REVIEW
+          : DocumentVerificationStatus.PENDING;
 
     const updated = await this.prisma.documentVerification.update({
       where: { id: row.id },
@@ -482,9 +495,9 @@ export class DocumentVerificationService {
               "El análisis de este documento ya está en curso: esperá el resultado."
             : row.status === DocumentVerificationStatus.APPROVED
               ? "Este documento ya está verificado."
-              : !row.frontUrl || !row.backUrl
-                ? "Este documento ya no tiene fotos guardadas: volvé a enviarlas."
-                : "No hay nada que reintentar en este documento.",
+              : row.status === DocumentVerificationStatus.REJECTED
+                ? "Este documento fue rechazado: volvé a enviar las fotos."
+                : "Este documento ya no tiene fotos guardadas: volvé a enviarlas.",
       });
     }
 
@@ -515,24 +528,39 @@ export class DocumentVerificationService {
   diagnostics(): {
     mode: "automatic" | "manual";
     canVerifyAutomatically: boolean;
+    /**
+     * Si este backend tiene con qué autenticarse contra el servicio de
+     * lectura. Se informa aparte de `mode` porque un deploy con la URL puesta
+     * y el token vacío se ve "automático" desde afuera y no lo es: el lector
+     * publicado lo rechaza con 401 y todo termina en revisión manual, sin que
+     * nada diga por qué.
+     */
+    readerTokenConfigured: boolean;
     detail: string;
   } {
     const automatico = this.docverify.isConfigured();
     const conCallback = Boolean(this.publicUrl());
+    const conToken = this.docverify.hasToken();
 
     if (automatico && conCallback) {
       return {
         mode: "automatic",
         canVerifyAutomatically: true,
+        readerTokenConfigured: conToken,
         detail:
           "Las fotos se leen automáticamente y se cruzan contra los datos de " +
           "la cuenta. Si todo coincide el documento se aprueba solo; si algo " +
-          "no cierra, lo revisa un administrador.",
+          "no cierra, lo revisa un administrador." +
+          (conToken
+            ? ""
+            : " OJO: falta DOCVERIFY_TOKEN, así que los pedidos salen sin la " +
+              "clave compartida y un lector publicado los va a rechazar."),
       };
     }
     return {
       mode: "manual",
       canVerifyAutomatically: false,
+      readerTokenConfigured: conToken,
       detail: !automatico
         ? "Este deploy no tiene configurada la lectura automática " +
           "(falta DOCVERIFY_URL): los documentos los revisa un administrador."
@@ -1000,13 +1028,23 @@ function analisisAbandonado(row: DocumentVerification): boolean {
  *
  * Hacen falta tres cosas, y cada una descarta un caso distinto:
  *
- *   · que el último intento haya FALLADO — si está QUEUED ya hay uno corriendo
- *     y pedir otro duplicaría el trabajo del servicio de lectura, que es
- *     justamente el recurso escaso; si está DONE, ya hay un veredicto;
+ *   · que no haya un análisis CORRIENDO — si está QUEUED y todavía es reciente
+ *     ya hay uno en curso, y pedir otro duplicaría el trabajo del servicio de
+ *     lectura, que es justamente el recurso escaso;
  *   · que las fotos sigan guardadas — un documento rechazado ya no las tiene,
  *     así que no hay nada para analizar;
  *   · que el documento no esté resuelto — aprobado o rechazado, la lectura ya
  *     no cambia nada.
+ *
+ * UN ANÁLISIS TERMINADO (DONE) TAMBIÉN SE PUEDE VOLVER A PEDIR, y ese es el
+ * caso que más se usa: el cruce no es solo contra la foto, es contra los datos
+ * de la cuenta. Cuando el veredicto fue "la fecha de nacimiento del documento
+ * no coincide con la de tu cuenta", lo que hay que corregir está en el perfil,
+ * no en la foto — y después de corregirlo el MISMO análisis da otro resultado.
+ * Exigir que el análisis hubiera FALLADO dejaba a esa persona con un botón que
+ * contestaba "no hay nada que reintentar" y sin más salida que volver a sacar
+ * y subir las cuatro fotos, que era exactamente lo que el front le prometía
+ * que no hacía falta.
  *
  * No se mira si el fallo fue "reintentable": eso lo decide el cliente al
  * momento de fallar y queda reflejado en que la fila haya quedado o no en
@@ -1015,9 +1053,12 @@ function analisisAbandonado(row: DocumentVerification): boolean {
  * mucho menos que explicarle a alguien por qué el botón no aparece.
  */
 function canRetryAnalysis(row: DocumentVerification): boolean {
+  const corriendo =
+    row.analysisStatus === DocumentAnalysisStatus.QUEUED &&
+    !analisisAbandonado(row);
+
   return (
-    (row.analysisStatus === DocumentAnalysisStatus.FAILED ||
-      analisisAbandonado(row)) &&
+    !corriendo &&
     Boolean(row.frontUrl) &&
     Boolean(row.backUrl) &&
     row.status !== DocumentVerificationStatus.APPROVED &&

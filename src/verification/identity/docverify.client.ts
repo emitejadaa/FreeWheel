@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { CloudinaryService } from "../../media/cloudinary.service";
 
@@ -142,7 +142,7 @@ export interface DocverifyResult {
 const TIMEOUT_MS = Number(process.env.DOCVERIFY_TIMEOUT_MS ?? 30_000);
 
 @Injectable()
-export class DocverifyClient {
+export class DocverifyClient implements OnModuleInit {
   private readonly logger = new Logger(DocverifyClient.name);
 
   constructor(
@@ -150,9 +150,49 @@ export class DocverifyClient {
     private readonly cloudinary: CloudinaryService,
   ) {}
 
+  /**
+   * AVISA AL ARRANCAR SI EL LECTOR QUEDÓ SIN LLAVE.
+   *
+   * La API de lectura no tiene usuarios ni sesiones: lo único que separa "solo
+   * la llama este backend" de "la llama cualquiera que sepa la URL" es la
+   * clave compartida. El servicio publicado se niega a arrancar sin ella
+   * (docverify-api/app/config.py), pero de este lado faltarla no rompía nada
+   * visible: los pedidos salían sin el header, el servicio contestaba 401 y el
+   * síntoma era "todos los documentos van a revisión manual", que no se parece
+   * en nada a la causa.
+   *
+   * Por eso el aviso es al arrancar y nombra la variable: el error se ve en el
+   * primer deploy y no tres días después, leyendo por qué nadie se verifica.
+   *
+   * No lanza. Un backend sin lectura automática funciona —todo pasa por
+   * revisión manual— y tirar abajo el proceso entero por eso dejaría la
+   * plataforma sin reservas, sin chat y sin pagos para arreglar un acelerador.
+   */
+  onModuleInit(): void {
+    if (!this.isConfigured()) return;
+    if (this.hasToken()) return;
+    this.logger.warn(
+      "DOCVERIFY_URL está configurada pero DOCVERIFY_TOKEN está vacía: los " +
+        "pedidos van a salir sin la clave compartida. Un lector publicado los " +
+        "va a rechazar con 401 (y si no los rechaza, es que está abierto a " +
+        "internet y por ahí pasan documentos de identidad). Poné la MISMA " +
+        "clave en este backend y en el servicio de lectura.",
+    );
+  }
+
   /** ¿Este deploy tiene lectura automática configurada? */
   isConfigured(): boolean {
     return Boolean(this.baseUrl());
+  }
+
+  /**
+   * ¿Y tiene con qué autenticarse contra ella?
+   *
+   * Se expone para que el diagnóstico lo pueda contar: un deploy con la URL
+   * puesta y el token vacío parece configurado desde afuera y no lo está.
+   */
+  hasToken(): boolean {
+    return Boolean(this.config.get<string>("DOCVERIFY_TOKEN")?.trim());
   }
 
   /**

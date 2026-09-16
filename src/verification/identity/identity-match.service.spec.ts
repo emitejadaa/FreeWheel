@@ -173,6 +173,12 @@ describe("IdentityMatchService · DNI", () => {
         fecha_nacimiento: "2009-04-06",
         fecha_vencimiento: "2039-04-06",
       },
+      "frente.pdf417": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
     });
 
     const report = matcher.evaluate(
@@ -261,6 +267,141 @@ describe("IdentityMatchService · DNI", () => {
 
     expect(report.verdict).toBe("MANUAL_REVIEW");
     expect(report.reasons.length).toBeGreaterThan(1);
+  });
+
+  it("da igual el formato en el que cada origen escriba el mismo dato", () => {
+    // LO QUE ESTE TEST CUIDA: que la comparación mire el DATO y no el texto.
+    // Cada origen escribe a su manera —el OCR copia los puntos del impreso, el
+    // código trae el número pelado, las fechas llegan con barras o en ISO— y
+    // tratar esas diferencias como desacuerdos mandaba a revisión manual
+    // documentos que cierran perfecto.
+    const mismosDatosOtroFormato = lectura({
+      "frente.ocr": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "49.380.010",
+        fecha_nacimiento: "06/04/2009",
+        sexo: "MASCULINO",
+      },
+      "frente.pdf417": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "049380010",
+        fecha_nacimiento: "2009-04-06",
+        sexo: "M",
+      },
+      "dorso.ocr": { cuil: "20493800109" },
+    });
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      mismosDatosOtroFormato,
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+    expect(report.reasons).toEqual([]);
+    expect(report.fields.fecha_nacimiento.agrees).toBe(true);
+    expect(report.fields.numero_documento.agrees).toBe(true);
+    expect(report.fields.sexo.agrees).toBe(true);
+    // El CUIL de la cuenta tiene guiones y el del documento no: mismo CUIL.
+    expect(report.fields.cuil.matchesAccount).toBe(true);
+  });
+
+  it("acepta un nombre al que un origen le suma lo que el otro no trae", () => {
+    // El formulario de la cuenta tiene un solo nombre de pila y el documento
+    // trae los dos. Es una diferencia de formato del origen, no dos personas.
+    const conSegundoNombre = lectura({
+      "frente.ocr": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO JOSE",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+      "frente.pdf417": {
+        apellido: "TEJADA",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+    });
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      conSegundoNombre,
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+    expect(report.fields.nombre.matchesAccount).toBe(true);
+    expect(report.fields.apellido.agrees).toBe(true);
+  });
+
+  it("sigue distinguiendo dos apellidos con las mismas partes al revés", () => {
+    // La tolerancia de arriba no puede llegar tan lejos: "TEJADA ARAGON" y
+    // "ARAGON TEJADA" son apellidos de personas distintas.
+    const invertido = lectura({
+      "frente.ocr": {
+        apellido: "ARAGON TEJADA",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+      "frente.pdf417": { apellido: "ARAGON TEJADA" },
+    });
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      invertido,
+      CUENTA,
+    );
+
+    expect(codigos(report)).toContain("DATO_NO_COINCIDE_CON_LA_CUENTA");
+  });
+
+  it("acepta el QR en lugar del PDF417: las emisiones nuevas lo traen así", () => {
+    const conQr = lectura({
+      "frente.ocr": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+      "frente.qr": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+    });
+
+    const report = matcher.evaluate(VerifiedDocumentType.DNI, conQr, CUENTA);
+
+    expect(report.verdict).toBe("APPROVE");
+    expect(codigos(report)).not.toContain("CODIGO_NO_LEIDO");
+  });
+
+  it("no aprueba un DNI del que no se pudo leer ni el PDF417 ni el QR", () => {
+    // Sin código solo queda el texto impreso, que es justamente lo que retoca
+    // quien falsifica una tarjeta: no hay contra qué cruzarlo.
+    const soloImpreso = lectura({
+      "frente.ocr": {
+        apellido: "TEJADA ARAGON",
+        nombre: "EMILIANO",
+        numero_documento: "49380010",
+        fecha_nacimiento: "2009-04-06",
+      },
+      "dorso.mrz": { tipo_documento: "ID", pais_emisor: "ARG" },
+    });
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      soloImpreso,
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("MANUAL_REVIEW");
+    expect(codigos(report)).toContain("CODIGO_NO_LEIDO");
   });
 
   it("no explota con un análisis vacío", () => {
@@ -384,12 +525,57 @@ describe("IdentityMatchService · licencia", () => {
     }
   });
 
+  it("ignora el código del dorso, que lee mal y contradice al frente", () => {
+    // EL CASO REAL: el PDF417 del dorso decodifica a medias y el código lineal
+    // del borde no contiene el número de licencia. Mientras se los miraba,
+    // cada licencia auténtica llegaba con un desacuerdo inventado encima.
+    const report = matcher.evaluate(
+      VerifiedDocumentType.LICENSE,
+      lectura({
+        "frente.ocr": licenciaBase,
+        "dorso.pdf417": { apellido: "TEJADA A:60/N@H", numero_documento: "9" },
+        "dorso.codigo_1d": { numero_licencia: "046909121" },
+      }),
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+    expect(report.reasons).toEqual([]);
+    // Y no aparecen entre las fuentes del informe: se descartan en la entrada.
+    expect(report.fields.apellido.sources).toEqual(["frente.ocr"]);
+  });
+
+  it("no exige código en la licencia, justamente porque no se lee", () => {
+    const report = matcher.evaluate(
+      VerifiedDocumentType.LICENSE,
+      lectura({ "frente.ocr": licenciaBase }),
+      CUENTA,
+    );
+
+    expect(codigos(report)).not.toContain("CODIGO_NO_LEIDO");
+  });
+
+  it("no cree que la licencia sea de otro por los puntos del DNI impreso", () => {
+    // El dorso trae el DNI con puntos y el frente el número de licencia
+    // pelado: es el MISMO número, y compararlos crudos decía lo contrario.
+    const report = matcher.evaluate(
+      VerifiedDocumentType.LICENSE,
+      lectura({
+        "frente.ocr": { ...licenciaBase, numero_documento: "49.380.010" },
+      }),
+      CUENTA,
+    );
+
+    expect(codigos(report)).not.toContain("LICENCIA_NO_ES_DEL_TITULAR");
+    expect(report.verdict).toBe("APPROVE");
+  });
+
   it("con desacuerdo se queda con la lectura de más confianza", () => {
     const report = matcher.evaluate(
       VerifiedDocumentType.LICENSE,
       lectura({
         "frente.ocr": { ...licenciaBase, apellido: ["TEJADA ARAGÓN", 0.4] },
-        "dorso.pdf417": { apellido: ["TEJADA ARAGON", 1.0] },
+        "dorso.ocr": { apellido: ["TEJADA ARAGON", 1.0] },
       }),
       CUENTA,
     );

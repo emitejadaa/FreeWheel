@@ -135,7 +135,11 @@ export class VerificationService {
         emailVerified: Boolean(user.emailVerifiedAt),
         phoneVerified: Boolean(user.phoneVerifiedAt),
         dateOfBirthProvided: Boolean(user.dateOfBirth),
-        identityDataProvided: Boolean(user.dni && user.cuil && user.address),
+        // El domicilio no entra: no se cruza contra el documento (ver
+        // identity-match.service.ts) y tampoco frena el envío, así que
+        // marcarlo como pendiente acá le mostraría a la persona un paso que
+        // no existe.
+        identityDataProvided: Boolean(user.dni && user.cuil),
         dniApproved:
           documents.dni?.status === DocumentVerificationStatus.APPROVED,
         licenseApproved:

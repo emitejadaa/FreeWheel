@@ -38,6 +38,7 @@ export type VerificationReasonCode =
   | "LECTURA_NO_DISPONIBLE"
   | "LECTURA_FALLIDA"
   | "DATO_ILEGIBLE"
+  | "CODIGO_NO_LEIDO"
   // ── Cruces ──────────────────────────────────────────────────────────────
   | "DATO_NO_COINCIDE_ENTRE_ORIGENES"
   | "DATO_NO_COINCIDE_CON_LA_CUENTA"
@@ -123,6 +124,13 @@ const CATALOG: Record<VerificationReasonCode, (ctx: ReasonContext) => string> =
       ". Un administrador los va a revisar a mano. Si querés acelerarlo, " +
       "podés reenviar fotos más nítidas, con el documento entero dentro de la " +
       "foto y sin reflejos encima.",
+
+    CODIGO_NO_LEIDO: () =>
+      "No pudimos leer el código del documento (el PDF417 o el QR). Es el " +
+      "que prueba que la tarjeta no fue alterada, así que sin él no podemos " +
+      "aprobarla sola. Sacá la foto con el código entero dentro del cuadro, " +
+      "enfocado y sin reflejos encima, o esperá a que un administrador la " +
+      "revise.",
 
     DATO_ILEGIBLE: (c) =>
       `No pudimos leer ${c.label ?? "un dato"} en las fotos que enviaste. ` +
