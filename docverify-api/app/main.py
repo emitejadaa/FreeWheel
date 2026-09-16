@@ -17,10 +17,10 @@ número de licencia del frente contra el del PDF417 del dorso.
 
 **Una cara suelta, al toque** — para mirar una foto y ver qué se leyó:
 
-    POST /analizar/dni-frente        OCR + PDF417
+    POST /analizar/dni-frente        OCR + PDF417 o QR
     POST /analizar/dni-dorso         OCR + MRZ
     POST /analizar/licencia-frente   OCR
-    POST /analizar/licencia-dorso    OCR + PDF417 + código 1D
+    POST /analizar/licencia-dorso    OCR + PDF417 o QR + código 1D
 
 Reciben UNA imagen —archivo multipart o base64 en un JSON— y devuelven el sobre
 de esa cara (ver contrato.py).
@@ -241,12 +241,23 @@ def describir_contrato() -> dict:
     documentos = {}
     for ruta, analizador in sorted(REGISTRO.items()):
         origenes = {}
-        for atributo, nombre in (
-            ("CAMPOS_OCR", "ocr"),
-            ("CAMPOS_CODIGO", "pdf417"),
-            ("CAMPOS_MRZ", "mrz"),
-            ("CAMPOS_1D", "codigo_1d"),
-        ):
+        campos_ocr = getattr(analizador, "CAMPOS_OCR", None)
+        if campos_ocr:
+            origenes["ocr"] = list(campos_ocr)
+
+        # Los campos del código los publica CADA PORTADOR que ese documento
+        # admite. El mismo contenido puede venir en un PDF417 o en un QR —las
+        # emisiones nuevas traen QR en vez de PDF417— y desde afuera hay que
+        # poder saber que los dos orígenes existen y traen lo mismo, en lugar
+        # de descubrirlo cuando aparece uno que el contrato no anunciaba.
+        campos_codigo = getattr(analizador, "CAMPOS_CODIGO", None)
+        if campos_codigo:
+            for _, nombre in getattr(
+                analizador, "PORTADORES_DE_CODIGO", (("PDF417", "pdf417"),)
+            ):
+                origenes[nombre] = list(campos_codigo)
+
+        for atributo, nombre in (("CAMPOS_MRZ", "mrz"), ("CAMPOS_1D", "codigo_1d")):
             campos = getattr(analizador, atributo, None)
             if campos:
                 origenes[nombre] = list(campos)

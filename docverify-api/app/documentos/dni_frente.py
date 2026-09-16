@@ -14,12 +14,23 @@ FRENTE DEL DNI ARGENTINO (RENAPER, tarjeta Mercosur).
     │ 49.380.010 Trámite N°              │  PDF417  │ │
     └─────────────────────────────────────────────────┘
 
-DOS ORÍGENES, y la diferencia entre ellos es el punto de leer los dos:
+DOS FUENTES, y la diferencia entre ellas es el punto de leer las dos:
 
-  · ocr    — lo impreso, incluido el VENCIMIENTO
-  · pdf417 — los datos del titular tal como los grabó el RENAPER
+  · ocr             — lo impreso, incluido el VENCIMIENTO
+  · el CÓDIGO       — los datos del titular tal como los grabó el RENAPER
 
-El PDF417 NO trae el vencimiento: no está codificado ahí. O sea que el
+EL CÓDIGO VIENE EN DOS PORTADORES, Y SE BUSCAN LOS DOS. La tarjeta clásica lo
+trae en un PDF417 abajo a la derecha; hay emisiones nuevas que lo traen en un
+QR EN VEZ del PDF417. El contenido grabado es el mismo texto separado por '@'
+en los dos casos, así que lo único que cambia es a qué código preguntarle: se
+publican como dos orígenes, `pdf417` y `qr`, y el que no esté en esa tarjeta
+queda vacío con su error, como cualquier otra lectura que no se pudo hacer.
+
+Para el cruce vale cualquiera de los dos, pero alguno TIENE que estar: es la
+única parte de la tarjeta que no se puede retocar con un editor de imágenes, y
+sin ella el cruce se queda comparando el texto impreso contra sí mismo.
+
+El código NO trae el vencimiento: no está codificado ahí. O sea que el
 vencimiento solo existe como texto impreso y no se puede contrastar contra
 nada. Al revés, todo lo que sí está en los dos —apellido, nombre, sexo,
 documento, nacimiento— se puede cruzar, y una discrepancia entre el texto y el
@@ -37,7 +48,7 @@ discrepancia que no lo era.
 from __future__ import annotations
 
 from .. import codigos as lector_codigos
-from .. import encuadre, normalizar, ocr, pdf417
+from .. import encuadre, normalizar, ocr
 from ..contrato import Origen, campo
 from . import base
 
@@ -61,10 +72,24 @@ ANCLAS = (
 
 FORMATOS_CODIGO = ("PDF417", "QRCode")
 
-# El PDF417 va abajo a la derecha, al lado del número de documento. La zona se
+# Los dos portadores del mismo contenido, con el nombre del origen que publica
+# cada uno. El orden es el de probabilidad: la enorme mayoría de las tarjetas
+# en circulación traen PDF417.
+#
+# Son dos orígenes y no uno llamado "codigo" porque el nombre del origen es lo
+# que después dice, en un desacuerdo, QUIÉN leyó qué: "frente.qr" y
+# "frente.pdf417" no se diagnostican igual, y fundirlos perdería justamente el
+# dato que hace falta para entender una tarjeta rara.
+PORTADORES_DE_CODIGO = (("PDF417", "pdf417"), ("QRCode", "qr"))
+
+# El código va abajo a la derecha, al lado del número de documento. La zona se
 # declara holgada a propósito: recortar justo le saca al decodificador el
 # margen tranquilo que necesita para encontrar el código, y un poco de sobra
 # no le molesta.
+#
+# Es una PISTA, no un requisito: la búsqueda prueba primero la imagen entera y,
+# si las zonas no dan nada, detecta el código por su textura. Un QR que en una
+# emisión nueva esté en otro lado se encuentra igual.
 ZONAS_CODIGO = ((0.48, 0.68, 0.95, 1.0),)
 
 CAMPOS_OCR = (
@@ -92,7 +117,13 @@ def extraer(
     codigos: list[lector_codigos.Codigo],
     marco: encuadre.Encuadre,
 ) -> list[Origen]:
-    return [_del_texto(lectura), _del_codigo(codigos)]
+    return [
+        _del_texto(lectura),
+        *(
+            _del_codigo(codigos, formato, nombre)
+            for formato, nombre in PORTADORES_DE_CODIGO
+        ),
+    ]
 
 
 def _del_texto(lectura: ocr.Lectura) -> Origen:
@@ -170,36 +201,33 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
     return origen
 
 
-def _del_codigo(codigos: list[lector_codigos.Codigo]) -> Origen:
-    """Los datos del titular grabados en el PDF417."""
-    origen = Origen(
-        nombre="pdf417", disponible=True, campos=base.campos_vacios(*CAMPOS_CODIGO)
+def _del_codigo(
+    codigos: list[lector_codigos.Codigo], formato: str, nombre: str
+) -> Origen:
+    """
+    Los datos del titular grabados en el código, sea el PDF417 o el QR.
+
+    Que este portador no aparezca NO es un fallo del análisis: una tarjeta
+    trae uno de los dos, así que el otro siempre va a faltar. Quien decide
+    —el backend— pide que haya alguno, no los dos.
+    """
+    origen, datos = base.origen_de_codigo(
+        codigos,
+        formato=formato,
+        nombre=nombre,
+        campos=CAMPOS_CODIGO,
+        sin_codigo=(
+            f"no se detectó un código {formato} en el frente. Las tarjetas "
+            "clásicas traen PDF417 y las emisiones nuevas QR: alcanza con que "
+            "esté uno de los dos, entero en la foto, enfocado y sin reflejos "
+            "encima"
+        ),
     )
-
-    codigo = lector_codigos.primero(codigos, "PDF417")
-    if codigo is None:
-        origen.error = (
-            "no se detectó el código PDF417 del frente. Tiene que entrar entero "
-            "en la foto, enfocado y sin reflejos encima"
-        )
+    if datos is None:
         return origen
 
-    datos = pdf417.parsear(codigo.texto)
-    origen.detalle = {
-        "crudo": datos.crudo,
-        "formato_detectado": datos.formato_detectado,
-        "partes": datos.partes,
-        "variante_lectura": codigo.variante,
-        "esquinas": codigo.esquinas,
-    }
-
-    if not datos.encontrado:
-        origen.error = datos.error or "el contenido del código no se pudo interpretar"
-        return origen
-
-    origen.ok = True
-    # Confianza 1.0 y no la del OCR: un código de barras trae corrección de
-    # errores, así que si decodificó, decodificó bien. No hay grises.
+    # Confianza 1.0 y no la del OCR: un código trae corrección de errores, así
+    # que si decodificó, decodificó bien. No hay grises.
     for nombre_campo, valor in (
         ("apellido", datos.apellido),
         ("nombre", datos.nombre),

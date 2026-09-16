@@ -102,12 +102,24 @@ distinto:
 
 | Endpoint | Orígenes que devuelve |
 |---|---|
-| `POST /analizar/dni-frente` | `ocr` · `pdf417` |
+| `POST /analizar/dni-frente` | `ocr` · `pdf417` **o** `qr` |
 | `POST /analizar/dni-dorso` | `ocr` · `mrz` · `qr`* |
 | `POST /analizar/licencia-frente` | `ocr` · `qr`* |
-| `POST /analizar/licencia-dorso` | `ocr` · `pdf417` · `codigo_1d` |
+| `POST /analizar/licencia-dorso` | `ocr` · `pdf417` **o** `qr` · `codigo_1d` |
 
 \* con `disponible: false`: ese documento no tiene ese código. No es un fallo.
+
+**`pdf417` y `qr` son DOS PORTADORES DEL MISMO CONTENIDO.** Los datos que graba
+la autoridad emisora son el mismo texto separado por `@` esté donde esté: la
+tarjeta clásica lo lleva en un PDF417 y hay emisiones nuevas que lo llevan en un
+QR **en vez** del PDF417. Los dos orígenes se publican siempre, con los mismos
+campos; el portador que esa tarjeta no tenga queda `ok: false` con su error, que
+no es un fallo del análisis. En `detalle.portador` viaja cuál de los dos fue el
+que leyó.
+
+Alcanza con que esté **uno de los dos**, y el backend Nest exige eso para el
+DNI: sin ningún código, el cruce se queda comparando el texto impreso contra sí
+mismo, que es justamente lo que una tarjeta adulterada pasa sin despeinarse.
 
 Además: `GET /health` (estado y fila) y `GET /contrato` (qué campos devuelve
 cada endpoint, sin tener que mandar una foto para averiguarlo).
@@ -188,7 +200,15 @@ origen, en su `error`.
       "ok": true,
       "disponible": true,
       "campos": { "apellido": { "valor": "TEJADA ARAGON", "crudo": "TEJADA ARAGON", "confianza": 1.0 } },
-      "detalle": { "crudo": "00708977612@TEJADA ARAGON@EMILIANO@M@…" }
+      "detalle": { "crudo": "00708977612@TEJADA ARAGON@EMILIANO@M@…", "portador": "PDF417" }
+    },
+    // El otro portador del MISMO contenido. Esta tarjeta trae PDF417, así que
+    // el QR no está: no es un fallo, es que no lo tiene.
+    "qr": {
+      "ok": false,
+      "disponible": true,
+      "error": "no se detectó un código QRCode en el frente. Las tarjetas clásicas traen PDF417 y las emisiones nuevas QR: alcanza con que esté uno de los dos…",
+      "campos": { "apellido": { "valor": "", "crudo": "", "confianza": 0.0 } }
     }
   },
 
@@ -260,10 +280,17 @@ sin detectar ningún fraude.
 
 ## Cómo lee cada documento
 
-### DNI frente — OCR + PDF417
+### DNI frente — OCR + el código (PDF417 **o** QR)
 Los dos orígenes traen casi los mismos campos, y ahí está la gracia: se pueden
-cruzar. El **vencimiento es la excepción**: no está codificado en el PDF417, así
+cruzar. El **vencimiento es la excepción**: no está codificado en el código, así
 que solo existe impreso y no se puede contrastar contra nada.
+
+El código se busca en sus **dos portadores**: PDF417 (la tarjeta clásica) y QR
+(emisiones nuevas, que lo traen en vez del PDF417). Se parsean con el mismo
+lector —el contenido grabado es idéntico— y se publican como dos orígenes,
+`pdf417` y `qr`. La zona declarada (`ZONAS_CODIGO`) es una pista, no un
+requisito: la búsqueda prueba primero la imagen entera, así que un QR que en una
+emisión nueva esté en otro lugar de la tarjeta se encuentra igual.
 
 ### DNI dorso — OCR + MRZ
 División tajante. El **CUIL** existe únicamente impreso: no está ni en el PDF417
@@ -275,11 +302,20 @@ sola que se leyó bien.
 ### Licencia frente — solo OCR
 No tiene ningún código. Sus datos solo se pueden contrastar contra el dorso.
 
-### Licencia dorso — OCR + PDF417 + código 1D
+### Licencia dorso — OCR + el código (PDF417 **o** QR) + código 1D
 El más rico. El dato que importa sacar bien es el **período de principiante**
 ("Principiante hasta 28/10/2026"), que determina si la persona puede manejar
 sin acompañante y no está en ningún código: es OCR o nada. De todo el renglón de
 "Observaciones" se extrae solo eso; la frase completa no sale de la función.
+
+Igual que el frente del DNI, el código se busca en sus dos portadores.
+
+> **El backend Nest no cruza los códigos de este dorso** — ni el PDF417, ni un
+> QR, ni el 1D. Se leen y se devuelven (sirven para diagnosticar y para el HTML
+> de prueba), pero ninguno decodifica de forma confiable en una foto de teléfono
+> y sus lecturas a medias contradecían al frente, mandando licencias auténticas
+> a revisión manual. Esta API lee todo lo que la tarjeta ofrezca; qué se cruza
+> lo decide el backend (`ORIGENES_IGNORADOS` en `identity-match.service.ts`).
 
 ---
 
@@ -481,7 +517,9 @@ Dos cosas honestas sobre esa tabla:
   entre sí. Se probaron recortes, escalas, rotaciones, cuatro binarizadores y
   varios preprocesados morfológicos, y ninguno decodifica. Con una foto mejor
   del mismo documento debería salir; la API lo reporta con `ok: false` y el
-  motivo, que es exactamente para lo que está ese campo.
+  motivo, que es exactamente para lo que está ese campo. Y no es un caso
+  aislado: es lo que llevó al backend a dejar de cruzar los códigos de ese
+  dorso (ver "Licencia dorso" más arriba).
 - **`grupo_sanguineo` salía vacío en la licencia y estaba bien:** el documento
   tiene un guion ahí. Hoy ese campo ya no se lee (ver "Qué campos devuelve").
 

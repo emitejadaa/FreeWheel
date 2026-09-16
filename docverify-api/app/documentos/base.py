@@ -26,7 +26,7 @@ from typing import Protocol
 import numpy as np
 
 from .. import codigos as lector_codigos
-from .. import contrato, encuadre as encuadrador, ocr
+from .. import contrato, encuadre as encuadrador, ocr, pdf417
 
 
 class Analizador(Protocol):
@@ -145,6 +145,61 @@ def _puntuar(lectura: ocr.Lectura, anclas: tuple[str, ...]) -> int:
         return 0
     texto = ocr.sin_tildes(lectura.texto_completo).upper()
     return sum(1 for ancla in anclas if ocr.sin_tildes(ancla).upper() in texto)
+
+
+def origen_de_codigo(
+    codigos: list[lector_codigos.Codigo],
+    *,
+    formato: str,
+    nombre: str,
+    campos: tuple[str, ...],
+    sin_codigo: str,
+) -> tuple[contrato.Origen, pdf417.ResultadoPdf417 | None]:
+    """
+    EL ORIGEN DE UN CÓDIGO QUE LLEVA LOS DATOS DEL TITULAR, SEA CUAL SEA EL
+    CÓDIGO.
+
+    El contenido grabado por la autoridad emisora es el mismo texto separado
+    por '@' esté donde esté: el DNI lo trae en un PDF417, y las emisiones
+    nuevas lo traen en un QR. Son dos PORTADORES del mismo dato, no dos datos,
+    así que el parser es uno solo y lo único que cambia es a qué código
+    preguntarle.
+
+    Existe acá arriba, y no copiada en cada documento, porque el frente del DNI
+    y el dorso de la licencia hacían exactamente esto con dos copias que ya
+    habían empezado a divergir. Con dos portadores por documento serían cuatro.
+
+    Devuelve el origen a medio llenar y lo parseado —o `None` cuando no hay
+    nada que mapear— porque los campos que cada documento saca del código no
+    son los mismos, y esa parte sí es de cada uno.
+    """
+    origen = contrato.Origen(
+        nombre=nombre, disponible=True, campos=campos_vacios(*campos)
+    )
+
+    codigo = lector_codigos.primero(codigos, formato)
+    if codigo is None:
+        origen.error = sin_codigo
+        return origen, None
+
+    datos = pdf417.parsear(codigo.texto)
+    # El contenido crudo viaja SIEMPRE, incluso cuando no se pudo interpretar:
+    # sin eso, un formato nuevo sería invisible desde afuera.
+    origen.detalle = {
+        "crudo": datos.crudo,
+        "formato_detectado": datos.formato_detectado,
+        "partes": datos.partes,
+        "portador": codigo.formato,
+        "variante_lectura": codigo.variante,
+        "esquinas": codigo.esquinas,
+    }
+
+    if not datos.encontrado:
+        origen.error = datos.error or "el contenido del código no se pudo interpretar"
+        return origen, None
+
+    origen.ok = True
+    return origen, datos
 
 
 def campos_vacios(*nombres: str) -> dict[str, contrato.Campo]:

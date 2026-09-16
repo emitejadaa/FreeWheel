@@ -13,12 +13,23 @@ DORSO DE LA LICENCIA NACIONAL DE CONDUCIR.
     │  Responsable / in charge      │ uso particular│ │
     └─────────────────────────────────────────────────┘
 
-TRES ORÍGENES — es el documento más rico de los cuatro:
+LOS ORÍGENES DE ESTA CARA:
 
-  · ocr        — CUIL, clase y el período de principiante
-  · pdf417     — los datos del titular grabados por la autoridad emisora
-  · codigo_1d  — el código lineal del borde, que en general repite el número
-                 de licencia
+  · ocr             — CUIL, clase y el período de principiante
+  · pdf417 / qr     — los datos del titular grabados por la autoridad emisora.
+                      Son DOS PORTADORES del mismo contenido: la tarjeta trae
+                      uno o el otro (las emisiones nuevas llevan QR en vez de
+                      PDF417), así que se busca en los dos y el que no esté
+                      queda vacío con su error.
+  · codigo_1d       — el código lineal del borde, que en general repite el
+                      número de licencia
+
+OJO: el backend NO CRUZA los códigos de este dorso. Se leen y se devuelven —
+sirven para diagnosticar y para el HTML de prueba— pero ninguno de los dos
+decodifica de forma confiable en una foto de teléfono, y sus lecturas a medias
+contradecían al frente, mandando licencias auténticas a revisión manual. La
+decisión de qué se cruza es del backend (ver ORIGENES_IGNORADOS en
+identity-match.service.ts); esta API lee todo lo que la tarjeta ofrezca.
 
 El dato que hace falta sacar bien de acá es el PERÍODO DE PRINCIPIANTE. Va en
 "Observaciones" como texto libre ("Principiante hasta 28/10/2026") y determina
@@ -45,7 +56,7 @@ from __future__ import annotations
 import re
 
 from .. import codigos as lector_codigos
-from .. import encuadre, normalizar, ocr, pdf417
+from .. import encuadre, normalizar, ocr
 from ..contrato import Origen, campo
 from . import base
 
@@ -64,6 +75,11 @@ ANCLAS = (
 )
 
 FORMATOS_CODIGO = ("PDF417", "QRCode", "1D")
+
+# Los dos portadores del mismo contenido, con el nombre del origen que publica
+# cada uno. Ver la nota de dni_frente.py: son dos orígenes y no uno fundido
+# porque el nombre es lo que después dice quién leyó qué.
+PORTADORES_DE_CODIGO = (("PDF417", "pdf417"), ("QRCode", "qr"))
 
 # Dos zonas, medidas sobre el documento ya encuadrado: el PDF417 ancho de
 # abajo al centro, y la tira del código lineal pegada al borde izquierdo.
@@ -108,7 +124,14 @@ def extraer(
     codigos: list[lector_codigos.Codigo],
     marco: encuadre.Encuadre,
 ) -> list[Origen]:
-    return [_del_texto(lectura), _del_pdf417(codigos), _del_1d(codigos)]
+    return [
+        _del_texto(lectura),
+        *(
+            _del_codigo(codigos, formato, nombre)
+            for formato, nombre in PORTADORES_DE_CODIGO
+        ),
+        _del_1d(codigos),
+    ]
 
 
 def _del_texto(lectura: ocr.Lectura) -> Origen:
@@ -187,40 +210,34 @@ def _del_texto(lectura: ocr.Lectura) -> Origen:
     return origen
 
 
-def _del_pdf417(codigos: list[lector_codigos.Codigo]) -> Origen:
+def _del_codigo(
+    codigos: list[lector_codigos.Codigo], formato: str, nombre: str
+) -> Origen:
     """
-    El PDF417 del dorso. Su formato cambió entre emisiones y entre
-    jurisdicciones, así que el parser lo ataca por ancla y, si no reconoce la
-    estructura, rescata lo que pueda por forma. El contenido crudo viaja
-    SIEMPRE en `detalle`, incluso cuando no se pudo interpretar: sin eso, un
-    formato nuevo sería invisible desde afuera.
+    El código del dorso, sea el PDF417 clásico o el QR de una emisión nueva.
+
+    Su formato cambió entre emisiones y entre jurisdicciones, así que el parser
+    lo ataca por ancla y, si no reconoce la estructura, rescata lo que pueda
+    por forma. El contenido crudo viaja SIEMPRE en `detalle`, incluso cuando no
+    se pudo interpretar: sin eso, un formato nuevo sería invisible desde
+    afuera — y es exactamente el dato que hace falta para poder empezar a
+    soportarlo.
     """
-    origen = Origen(
-        nombre="pdf417", disponible=True, campos=base.campos_vacios(*CAMPOS_CODIGO)
+    origen, datos = base.origen_de_codigo(
+        codigos,
+        formato=formato,
+        nombre=nombre,
+        campos=CAMPOS_CODIGO,
+        sin_codigo=(
+            f"no se detectó un código {formato} en el dorso. Las licencias "
+            "clásicas traen PDF417 y las emisiones nuevas QR: alcanza con que "
+            "esté uno de los dos, entero en la foto, enfocado y sin reflejos "
+            "encima"
+        ),
     )
-
-    codigo = lector_codigos.primero(codigos, "PDF417")
-    if codigo is None:
-        origen.error = (
-            "no se detectó el código PDF417 del dorso. Tiene que entrar entero "
-            "en la foto, enfocado y sin reflejos encima"
-        )
+    if datos is None:
         return origen
 
-    datos = pdf417.parsear(codigo.texto)
-    origen.detalle = {
-        "crudo": datos.crudo,
-        "formato_detectado": datos.formato_detectado,
-        "partes": datos.partes,
-        "variante_lectura": codigo.variante,
-        "esquinas": codigo.esquinas,
-    }
-
-    if not datos.encontrado:
-        origen.error = datos.error or "el contenido del código no se pudo interpretar"
-        return origen
-
-    origen.ok = True
     # En la licencia argentina el número de licencia ES el número de documento.
     numero_licencia = datos.numero_licencia or datos.numero_documento
     for nombre_campo, valor in (

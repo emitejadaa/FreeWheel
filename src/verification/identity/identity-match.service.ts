@@ -147,13 +147,13 @@ function imprescindibles(type: VerifiedDocumentType): string[] {
 /**
  * LOS ORÍGENES QUE NO SE MIRAN, POR DOCUMENTO.
  *
- * EL CÓDIGO DEL DORSO DE LA LICENCIA NO SE USA. La tarjeta trae ahí dos
- * códigos —un PDF417 y una tira lineal pegada al borde— y ninguno de los dos
- * se lee de forma confiable en una foto de teléfono: el PDF417 cambió de
- * formato entre emisiones y entre jurisdicciones, así que cuando decodifica
- * suele entregar campos a medias, y el lineal no contiene el número de
- * licencia (en la tarjeta con la que se probó dice nueve dígitos que no son
- * el DNI de nadie).
+ * EL CÓDIGO DEL DORSO DE LA LICENCIA NO SE USA, cualquiera sea. La tarjeta
+ * trae ahí un PDF417 —o un QR, en las emisiones nuevas— y una tira lineal
+ * pegada al borde, y ninguno se lee de forma confiable en una foto de
+ * teléfono: el contenido del código cambió de formato entre emisiones y entre
+ * jurisdicciones, así que cuando decodifica suele entregar campos a medias, y
+ * el lineal no contiene el número de licencia (en la tarjeta con la que se
+ * probó dice nueve dígitos que no son el DNI de nadie).
  *
  * El resultado era el peor posible: un dato leído MAL contradecía al dato
  * leído BIEN del frente, y esa contradicción —que es la señal de fraude que
@@ -162,12 +162,16 @@ function imprescindibles(type: VerifiedDocumentType): string[] {
  * corrobora nada: solo ensucia a los que sí leen.
  *
  * La licencia se cruza entonces contra el DNI y contra la cuenta, que es
- * donde el dato viene de una fuente independiente de verdad. El contenido
- * crudo de los dos códigos lo sigue devolviendo la API en `detalle`, así que
- * no se pierde nada para diagnosticar.
+ * donde el dato viene de una fuente independiente de verdad. La API los sigue
+ * leyendo y devolviendo —el contenido crudo va en `detalle`—, así que no se
+ * pierde nada para diagnosticar ni para el HTML de prueba: lo que se decide
+ * acá es solo qué se cruza.
+ *
+ * El día que alguna emisión traiga un código de dorso que lea limpio, sacarlo
+ * de esta lista es cambiar una palabra en el regex de abajo.
  */
 const ORIGENES_IGNORADOS: Partial<Record<VerifiedDocumentType, RegExp>> = {
-  [VerifiedDocumentType.LICENSE]: /^dorso\.(pdf417|codigo_1d)$/,
+  [VerifiedDocumentType.LICENSE]: /^dorso\.(pdf417|qr|codigo_1d)$/,
 };
 
 /**

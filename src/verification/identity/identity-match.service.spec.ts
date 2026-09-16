@@ -547,6 +547,9 @@ describe("IdentityMatchService · licencia", () => {
       lectura({
         "frente.ocr": licenciaBase,
         "dorso.pdf417": { apellido: "TEJADA A:60/N@H", numero_documento: "9" },
+        // Y lo mismo si la emisión trae un QR en vez del PDF417: el portador
+        // cambia, el problema es el mismo.
+        "dorso.qr": { apellido: "TEJADA A", numero_documento: "9" },
         "dorso.codigo_1d": { numero_licencia: "046909121" },
       }),
       CUENTA,
