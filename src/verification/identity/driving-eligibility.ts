@@ -3,6 +3,7 @@ import {
   verificationReason,
 } from "../errors/verification-reasons";
 import { habilitaAuto } from "./identity-match.service";
+import { modoDemo } from "../../common/demo-mode";
 
 /**
  * ¿ESTA PERSONA PUEDE ALQUILAR UN AUTO AHORA MISMO?
@@ -64,8 +65,21 @@ export function evaluateDrivingEligibility(
 ): DrivingEligibility {
   const hoy = comienzoDelDia(now);
   const reasons: VerificationReason[] = [];
-
   const vence = credentials.licenseExpiresAt;
+
+  // ⚠️ TEMPORAL — MODO DEMO: nada impide alquilar. Ni la licencia vencida, ni
+  // la clase, ni el período de principiante. Es lo que permite recorrer el
+  // flujo de reserva con una licencia de prueba cualquiera.
+  // Ver src/common/demo-mode.ts.
+  if (modoDemo()) {
+    return {
+      canRent: true,
+      reasons,
+      licenseExpiresAt: vence,
+      expiresSoon: false,
+    };
+  }
+
   if (vence && comienzoDelDia(vence) < hoy) {
     reasons.push(
       verificationReason("LICENCIA_VENCIDA", { date: isoCorto(vence) }),

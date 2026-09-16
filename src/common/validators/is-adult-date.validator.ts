@@ -1,12 +1,15 @@
 import { registerDecorator, ValidationOptions } from "class-validator";
+import { edadMinima } from "../demo-mode";
 
-const MIN_AGE_YEARS = 18;
 const MAX_AGE_YEARS = 120;
 
 /**
  * Strict `YYYY-MM-DD` birth-date check: real calendar date (round-trips through
- * Date, so 2000-02-31 is rejected), age >= 18 and <= 120, computed in UTC so the
+ * Date, so 2000-02-31 is rejected), age within bounds, computed in UTC so the
  * server timezone can never shift someone across the boundary.
+ *
+ * ⚠️ TEMPORAL: el mínimo lo decide `edadMinima()` — 18 de verdad, 17 mientras
+ * el modo demo esté encendido. Ver src/common/demo-mode.ts.
  */
 export function isAdultDate(value: unknown): boolean {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -27,7 +30,7 @@ export function isAdultDate(value: unknown): boolean {
     age -= 1;
   }
 
-  return age >= MIN_AGE_YEARS && age <= MAX_AGE_YEARS;
+  return age >= edadMinima() && age <= MAX_AGE_YEARS;
 }
 
 /** class-validator decorator for DTO fields carrying an adult birth date. */
@@ -38,8 +41,10 @@ export function IsAdultDate(validationOptions?: ValidationOptions) {
       target: object.constructor,
       propertyName,
       options: {
-        message:
-          "dateOfBirth debe ser una fecha válida (YYYY-MM-DD) de una persona mayor de 18 años",
+        // El mensaje se arma al validar y no al declarar el decorador: si se
+        // fijara acá, seguiría diciendo 18 con el modo demo encendido.
+        message: () =>
+          `dateOfBirth debe ser una fecha válida (YYYY-MM-DD) de una persona mayor de ${edadMinima()} años`,
         ...validationOptions,
       },
       validator: {

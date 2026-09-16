@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { User, VerifiedDocumentType } from "@prisma/client";
 import { DocverifyField, DocverifyResult } from "./docverify.client";
+import { modoDemo } from "../../common/demo-mode";
 import {
   fieldLabel,
   VerificationReason,
@@ -125,6 +126,23 @@ const IMPRESCINDIBLES: Record<VerifiedDocumentType, string[]> = {
   DNI: ["numero_documento", "apellido", "nombre", "fecha_nacimiento"],
   LICENSE: ["apellido", "nombre", "fecha_vencimiento"],
 };
+
+/**
+ * ⚠️ TEMPORAL — MODO DEMO. Ver src/common/demo-mode.ts.
+ *
+ * Probando queda solo lo que dice de QUIÉN es el documento. El vencimiento se
+ * cae porque en este modo no se mira, y la fecha de nacimiento porque es el
+ * campo que peor sale en una foto de prueba y bloquear por él no demuestra
+ * nada: si se llega a leer, igual se cruza contra la cuenta.
+ */
+const IMPRESCINDIBLES_DEMO: Record<VerifiedDocumentType, string[]> = {
+  DNI: ["numero_documento", "apellido", "nombre"],
+  LICENSE: ["apellido", "nombre"],
+};
+
+function imprescindibles(type: VerifiedDocumentType): string[] {
+  return modoDemo() ? IMPRESCINDIBLES_DEMO[type] : IMPRESCINDIBLES[type];
+}
 
 /**
  * LOS ORÍGENES QUE NO SE MIRAN, POR DOCUMENTO.
@@ -275,7 +293,7 @@ export class IdentityMatchService {
     }
 
     // Los campos que hacen falta para que aprobar signifique algo.
-    for (const campo of IMPRESCINDIBLES[type]) {
+    for (const campo of imprescindibles(type)) {
       const leido = fields[campo]?.value || valorDe(lecturas[campo]);
       if (!leido) {
         reasons.push(
@@ -329,7 +347,8 @@ export class IdentityMatchService {
     // de los dos el cruce entre orígenes se queda comparando el texto impreso
     // contra sí mismo — que es precisamente lo que una tarjeta adulterada
     // pasa sin despeinarse. No rechaza: lo mira un admin.
-    if (EXIGEN_CODIGO.has(type) && !hayCodigo(lecturas)) {
+    // ⚠️ TEMPORAL: en modo demo no se exige (ver src/common/demo-mode.ts).
+    if (!modoDemo() && EXIGEN_CODIGO.has(type) && !hayCodigo(lecturas)) {
       reasons.push(verificationReason("CODIGO_NO_LEIDO"));
     }
 
@@ -384,6 +403,11 @@ export class IdentityMatchService {
     facts: ExtractedFacts,
   ): VerificationReason[] {
     const reasons: VerificationReason[] = [];
+    // ⚠️ TEMPORAL — MODO DEMO: probando no se mira ni el vencimiento, ni la
+    // clase, ni el período de principiante. Lo único que tiene que cerrar es
+    // que el documento sea de esta persona. Ver src/common/demo-mode.ts.
+    if (modoDemo()) return reasons;
+
     const hoy = comienzoDelDia(new Date());
 
     if (facts.expiresAt && facts.expiresAt < hoy) {

@@ -1,3 +1,16 @@
+/**
+ * ⚠️ TEMPORAL — MODO DEMO APAGADO. Ver src/common/demo-mode.ts.
+ *
+ * Lo que este archivo describe son las reglas DE VERDAD, y tienen que seguir
+ * cubiertas mientras el andamio del demo esté puesto: con el modo encendido
+ * estos tests afirmarían lo contrario de lo que dicen. El modo se prueba
+ * aparte, en demo-mode.spec.ts.
+ *
+ * Se escribe antes de los imports —y por eso va con `process.env` pelado y no
+ * en un `beforeAll`— porque hay módulos que leen la variable al cargarse.
+ */
+process.env.VERIFICATION_DEMO_MODE = "false";
+
 import { evaluateDrivingEligibility } from "./driving-eligibility";
 
 /**
