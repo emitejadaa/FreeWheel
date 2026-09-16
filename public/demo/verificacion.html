@@ -244,7 +244,7 @@
   <details class="card" open>
     <summary><span class="n">2</span> Datos de la cuenta <span class="muted">— contra esto se cruzan los documentos</span></summary>
     <div class="body">
-      <p class="hint">Sin <code>dni</code>, <code>cuil</code> y <code>address</code> el submit responde <code>400 PERFIL_INCOMPLETO</code>. El CUIL tiene que tener checksum válido <b>y contener el DNI</b>.</p>
+      <p class="hint">Sin <code>dni</code> y <code>cuil</code> el submit responde <code>400 PERFIL_INCOMPLETO</code>. El CUIL tiene que tener checksum válido <b>y contener el DNI</b>. El <b>domicilio es opcional</b>: se guarda en el perfil pero no se cruza contra el documento — el de la cuenta lo escribe una persona y el del documento lo lee un OCR, así que casi nunca son el mismo texto aunque sean el mismo lugar.</p>
       <div class="row c3">
         <div><label>DNI (7-8 dígitos)</label><input id="dni" value="20123456"></div>
         <div>
@@ -1189,7 +1189,7 @@ async function verEstado() {
   const d = r.data;
   const etiquetas = {
     emailVerified: "Email confirmado", phoneVerified: "Teléfono confirmado",
-    dateOfBirthProvided: "Fecha de nacimiento", identityDataProvided: "DNI + CUIL + domicilio",
+    dateOfBirthProvided: "Fecha de nacimiento", identityDataProvided: "DNI + CUIL",
     dniApproved: "DNI verificado", licenseApproved: "Licencia verificada",
   };
   const doc = (x, nombre) => x
