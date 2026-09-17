@@ -407,6 +407,30 @@ cuando el análisis termina.
 **3 · Levantar el backend** (`npm run start:dev`) y listo. Subís un documento y
 a los ~10 segundos el estado cambia solo.
 
+#### Si el backend dice `fetch failed`
+
+Ese mensaje es de Node y significa "no llegué", sin decir por qué: el motivo
+real viaja escondido y las causas son varias, cada una con su arreglo. Para no
+adivinar:
+
+```bash
+npm run check:docverify   # desde la raíz del backend
+```
+
+Prueba la URL, la conexión, el token y la vuelta del resultado, y dice cuál de
+las cuatro falló. Las causas habituales, en orden de frecuencia:
+
+| Lo que pasa | Cómo se arregla |
+| --- | --- |
+| `DOCVERIFY_URL` sin `http://` | Escribirla entera: `http://127.0.0.1:8000` |
+| La API no está levantada, o está en otro puerto | Levantarla, o corregir el puerto |
+| El backend está desplegado y la URL es `127.0.0.1` | Un deploy no llega a tu máquina: ver las alternativas de más arriba |
+| `DOCVERIFY_TOKEN` distinto de los dos lados | Que sea el mismo, o vaciarlo en local |
+
+Desde la versión con diagnóstico, el backend ya no registra `fetch failed` a
+secas: el log y `analysis.error` traen el motivo concreto (`ECONNREFUSED`,
+`ENOTFOUND`, ...) y qué revisar.
+
 #### Si dice `uvicorn: no se encontró` / `command not found`
 
 Es siempre lo mismo: se está ejecutando el `uvicorn` del PATH, que no existe,

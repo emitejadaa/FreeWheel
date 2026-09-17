@@ -24,6 +24,7 @@
     "verify:deployed": "ts-node scripts/endpoint-checker/verify-deployed.ts",
     "cloudinary:limpiar": "ts-node scripts/limpiar-cloudinary.ts",
     "check:env": "ts-node scripts/env-check.ts",
+    "check:docverify": "ts-node scripts/check-docverify.ts",
     "check:prisma": "ts-node scripts/prisma-check.ts",
     "preflight": "ts-node scripts/preflight.ts",
     "commit:smart": "ts-node scripts/smart-commit.ts",

@@ -52,6 +52,8 @@ export type DocverifyProblem =
   | "DESCARGA_FALLIDA"
   /** No se llegó al servicio (caído, dormido, DNS, red). */
   | "INALCANZABLE"
+  /** DOCVERIFY_URL está escrita de una forma que no es una URL. */
+  | "URL_INVALIDA"
   /** Tardó más de lo aceptable en aceptar el pedido. */
   | "TIMEOUT"
   /** El token compartido está mal o falta. */
@@ -220,28 +222,46 @@ export class DocverifyClient {
     const corte = new AbortController();
     const reloj = setTimeout(() => corte.abort(), TIMEOUT_MS);
 
+    const pedido: RequestInit = {
+      method: "POST",
+      signal: corte.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "X-Docverify-Token": token } : {}),
+        ...(tokenPlataforma
+          ? { Authorization: `Bearer ${tokenPlataforma}` }
+          : token
+            ? { Authorization: `Bearer ${token}` }
+            : {}),
+      },
+      body: JSON.stringify({
+        documento: input.document,
+        frente_base64: frente,
+        dorso_base64: dorso,
+        referencia: input.reference,
+        callback_url: input.callbackUrl,
+        callback_token: input.callbackToken,
+      }),
+    };
+
     try {
-      const response = await fetch(`${base}/analizar/documento`, {
-        method: "POST",
-        signal: corte.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { "X-Docverify-Token": token } : {}),
-          ...(tokenPlataforma
-            ? { Authorization: `Bearer ${tokenPlataforma}` }
-            : token
-              ? { Authorization: `Bearer ${token}` }
-              : {}),
-        },
-        body: JSON.stringify({
-          documento: input.document,
-          frente_base64: frente,
-          dorso_base64: dorso,
-          referencia: input.reference,
-          callback_url: input.callbackUrl,
-          callback_token: input.callbackToken,
-        }),
-      });
+      let response: Response | null = null;
+      let ultimoError: unknown;
+
+      // Normalmente una sola vuelta; ver `destinos()` para la de `localhost`.
+      for (const destino of this.destinos(base)) {
+        try {
+          response = await fetch(`${destino}/analizar/documento`, pedido);
+          break;
+        } catch (error) {
+          ultimoError = error;
+          // El timeout ya se agotó, o el problema no es de conexión: probar la
+          // otra dirección solo sumaría espera para fallar igual.
+          if (corte.signal.aborted || !esFalloDeConexion(error)) break;
+        }
+      }
+
+      if (!response) throw ultimoError;
 
       if (response.status === 202) {
         this.logger.log(
@@ -302,11 +322,7 @@ export class DocverifyClient {
               // pedido lo despertó. Se cayó, pero no en vano.
               retryable: true,
             }
-          : {
-              problem: "INALCANZABLE",
-              detail: `no se pudo llegar a la API de lectura: ${describe(error)}`,
-              retryable: true,
-            },
+          : fallaDeRed(error, base),
       };
     } finally {
       clearTimeout(reloj);
@@ -321,9 +337,37 @@ export class DocverifyClient {
    * terminaba pidiendo `https://host//analizar/documento`.
    */
   private baseUrl(): string {
-    return (this.config.get<string>("DOCVERIFY_URL") ?? "")
+    const crudo = (this.config.get<string>("DOCVERIFY_URL") ?? "")
       .trim()
       .replace(/\/+$/, "");
+    return crudo ? conProtocolo(crudo) : "";
+  }
+
+  /**
+   * Las direcciones a probar, en orden.
+   *
+   * Casi siempre es una sola. La excepción es `localhost`, que en una máquina
+   * con IPv6 resuelve a `::1` ANTES que a `127.0.0.1`: uvicorn, por defecto,
+   * escucha solo en `127.0.0.1`, así que el primer intento se va contra un
+   * puerto cerrado. Node 20+ prueba las dos familias solo (Happy Eyeballs),
+   * pero en Node 18 no, y el síntoma es un `ECONNREFUSED ::1:8000` que parece
+   * "el servicio no está corriendo" cuando en realidad está perfecto.
+   *
+   * Por eso, y solo para `localhost`, se guarda `127.0.0.1` como segundo
+   * intento. No se reescribe la variable: si el primero anda, ese se usa.
+   */
+  private destinos(base: string): string[] {
+    let url: URL;
+    try {
+      url = new URL(base);
+    } catch {
+      return [base];
+    }
+    if (url.hostname !== "localhost") return [base];
+
+    const porIp = new URL(base);
+    porIp.hostname = "127.0.0.1";
+    return [base, porIp.toString().replace(/\/+$/, "")];
   }
 
   /** Baja un asset privado de Cloudinary y lo devuelve en base64. */
@@ -339,8 +383,231 @@ export class DocverifyClient {
   }
 }
 
-/** El mensaje de un error desconocido, sin volcar un objeto entero al log. */
+/**
+ * Códigos que garantizan que la conexión NUNCA llegó a abrirse.
+ *
+ * La lista es corta a propósito, porque de esto depende si se reintenta contra
+ * la otra dirección, y reintentar un pedido que el servicio SÍ recibió le hace
+ * analizar el documento dos veces. En una instancia chica no entran dos
+ * análisis a la vez: el duplicado le saca el lugar a otra persona.
+ *
+ * Por eso quedan afuera `ECONNRESET` y `ETIMEDOUT`: los dos pueden pasar
+ * DESPUÉS de que el servicio recibió las fotos y se puso a trabajar.
+ */
+const CODIGOS_SIN_CONEXION = new Set([
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+]);
+
+/** ¿Se puede afirmar que no se abrió la conexión, y entonces vale reintentar? */
+function esFalloDeConexion(error: unknown): boolean {
+  const codigo = codigoDeCadena(error);
+  return codigo !== null && CODIGOS_SIN_CONEXION.has(codigo);
+}
+
+/** ¿Es un host de la misma máquina o de la red local? */
+function esLocal(host: string): boolean {
+  const limpio = host.replace(/^\[|\]$/g, "");
+  return (
+    limpio === "localhost" ||
+    limpio.endsWith(".localhost") ||
+    limpio === "::1" ||
+    limpio === "0.0.0.0" ||
+    /^127\./.test(limpio) ||
+    /^10\./.test(limpio) ||
+    /^192\.168\./.test(limpio) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(limpio)
+  );
+}
+
+/**
+ * Traduce un fallo de red al motivo concreto y a qué hacer al respecto.
+ *
+ * Existe porque `TypeError: fetch failed` —que es literalmente todo lo que
+ * Node dice cuando no llega— no distingue entre un puerto cerrado, un nombre
+ * que no resuelve y una URL mal escrita, y cada uno se arregla distinto. El
+ * código de errno sale de la cadena de `cause` (ver `describe`).
+ */
+function fallaDeRed(error: unknown, base: string): DocverifyFailure {
+  const detalle = describe(error);
+  const codigo = codigoDeCadena(error);
+  const host = hostDe(base);
+  const local = host !== null && esLocal(host);
+
+  // Una URL que ni siquiera se puede parsear. El caso típico es haberla
+  // escrito sin protocolo: `localhost:8000` no es una URL con host
+  // "localhost" y puerto 8000, es una URL con ESQUEMA "localhost", y Node la
+  // rechaza con el mismo "fetch failed" de siempre. `conProtocolo()` ya evita
+  // la mayoría de estos; si igual llegó acá, la variable está mal escrita.
+  if (
+    codigo === "ERR_INVALID_URL" ||
+    /invalid url|failed to parse url|unknown scheme/i.test(detalle)
+  ) {
+    return {
+      problem: "URL_INVALIDA",
+      detail:
+        `DOCVERIFY_URL no es una URL válida ("${base}"): ${detalle}. ` +
+        'Tiene que incluir el protocolo, por ejemplo "http://127.0.0.1:8000".',
+      // Reintentar con la misma variable mal escrita da lo mismo.
+      retryable: false,
+    };
+  }
+
+  if (codigo === "ECONNREFUSED") {
+    return {
+      problem: "INALCANZABLE",
+      detail:
+        `no hay nada escuchando en ${base}: ${detalle}. ` +
+        (local
+          ? "Revisá que la API de lectura (docverify-api/) esté levantada y " +
+            "que escuche en ese mismo puerto. `npm run check:docverify` lo " +
+            "prueba y dice qué falta."
+          : "Revisá que el servicio esté desplegado y que DOCVERIFY_URL " +
+            "apunte a su dirección pública."),
+      retryable: true,
+    };
+  }
+
+  if (codigo === "ENOTFOUND" || codigo === "EAI_AGAIN") {
+    return {
+      problem: "INALCANZABLE",
+      detail:
+        `no se pudo resolver el host de DOCVERIFY_URL ("${base}"): ${detalle}. ` +
+        "Revisá que el nombre esté bien escrito.",
+      // EAI_AGAIN es un DNS que no contestó a tiempo y suele arreglarse solo;
+      // ENOTFOUND con un nombre mal escrito, no. No se puede distinguir acá,
+      // y un reintento es barato.
+      retryable: true,
+    };
+  }
+
+  if (codigo === "EHOSTUNREACH" || codigo === "ENETUNREACH") {
+    return {
+      problem: "INALCANZABLE",
+      detail:
+        `no hay ruta hasta ${base}: ${detalle}. ` +
+        (local
+          ? "DOCVERIFY_URL apunta a una dirección privada: eso solo funciona " +
+            "si este backend corre en la MISMA máquina que la API de lectura. " +
+            "Un backend desplegado no puede alcanzarla."
+          : "Puede ser un firewall o una red sin salida."),
+      retryable: true,
+    };
+  }
+
+  return {
+    problem: "INALCANZABLE",
+    detail: `no se pudo llegar a la API de lectura en ${base}: ${detalle}`,
+    retryable: true,
+  };
+}
+
+/** El host de una URL, o null si no se puede leer. */
+function hostDe(base: string): string | null {
+  try {
+    return new URL(base).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Completa el protocolo cuando la variable viene sin él.
+ *
+ * `DOCVERIFY_URL="localhost:8000"` es el error de tipeo más fácil de cometer y
+ * el más difícil de ver: para `fetch` eso no es "localhost, puerto 8000" sino
+ * una URL con un esquema llamado `localhost`, y falla con el genérico "fetch
+ * failed" sin decir nunca que el problema era la variable.
+ *
+ * Se asume `http` para direcciones de la misma máquina o de la red local
+ * —donde no suele haber TLS— y `https` para cualquier host de internet, que
+ * es lo que usa cualquier servicio desplegado.
+ */
+function conProtocolo(url: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+
+  // Sin `//`, `new URL` interpreta lo de antes de los dos puntos como esquema;
+  // agregándolo se lee como lo que la persona quiso escribir.
+  const host = hostDe(`http://${url}`);
+  return `${host !== null && esLocal(host) ? "http" : "https"}://${url}`;
+}
+
+/**
+ * El mensaje de un error desconocido, sin volcar un objeto entero al log.
+ *
+ * DESARMA LA CADENA DE `cause`, y no es un detalle cosmético. Cuando `fetch`
+ * no llega a destino, Node tira siempre el mismo `TypeError: fetch failed`, y
+ * el motivo real —que el puerto está cerrado, que el host no existe, que la
+ * URL no se entiende— viaja colgado en `error.cause`. Quedarse con el mensaje
+ * de arriba deja el log diciendo "fetch failed" y nada más, que es
+ * exactamente lo que no sirve para arreglar nada.
+ *
+ * El código de errno (`ECONNREFUSED`, `ENOTFOUND`, ...) se agrega cuando el
+ * mensaje no lo trae ya, porque es lo que distingue "no hay nadie escuchando"
+ * de "ese nombre no resuelve".
+ */
 function describe(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const partes: string[] = [];
+  // Un `cause` que se apunte a sí mismo colgaría el bucle; con los vistos
+  // alcanza para no confiar en que nunca pase.
+  const vistos = new Set<unknown>();
+  let actual: unknown = error;
+
+  while (actual instanceof Error && !vistos.has(actual)) {
+    vistos.add(actual);
+
+    const codigo = codigoDe(actual);
+    const texto =
+      codigo && !actual.message.includes(codigo)
+        ? `${actual.message} (${codigo})`
+        : actual.message;
+    if (texto && !partes.includes(texto)) partes.push(texto);
+
+    // Happy Eyeballs prueba IPv6 e IPv4 a la vez y, cuando fallan las dos,
+    // junta los dos errores acá. El primero alcanza para el diagnóstico.
+    const agrupados = (actual as AggregateError).errors;
+    actual =
+      actual.cause ??
+      (Array.isArray(agrupados) && agrupados.length > 0 ? agrupados[0] : null);
+  }
+
+  // Casi siempre `cause` es un Error, pero nada obliga a que lo sea: si quedó
+  // un string con la explicación, entra igual.
+  if (typeof actual === "string" && actual && !partes.includes(actual)) {
+    partes.push(actual);
+  }
+
+  return partes.length > 0 ? partes.join(": ") : String(error);
+}
+
+/** El `code` de un error de Node (`ECONNREFUSED`, ...), si lo tiene. */
+function codigoDe(error: Error): string | null {
+  const codigo = (error as NodeJS.ErrnoException).code;
+  return typeof codigo === "string" && codigo ? codigo : null;
+}
+
+/**
+ * El primer código de errno de toda la cadena.
+ *
+ * Es lo que decide el mensaje que se le muestra a quien tiene que arreglarlo:
+ * el error de arriba es siempre el mismo `TypeError` genérico, así que el
+ * código hay que ir a buscarlo adentro.
+ */
+function codigoDeCadena(error: unknown): string | null {
+  const vistos = new Set<unknown>();
+  let actual: unknown = error;
+
+  while (actual instanceof Error && !vistos.has(actual)) {
+    vistos.add(actual);
+    const codigo = codigoDe(actual);
+    if (codigo) return codigo;
+    const agrupados = (actual as AggregateError).errors;
+    actual =
+      actual.cause ??
+      (Array.isArray(agrupados) && agrupados.length > 0 ? agrupados[0] : null);
+  }
+  return null;
 }

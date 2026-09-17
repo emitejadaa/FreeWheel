@@ -452,6 +452,13 @@ npm run check:prisma
 npm run preflight
 ```
 
+Diagnóstico de la lectura automática de documentos (por qué el backend no llega
+a la API de Python, si es que no llega):
+
+```bash
+npm run check:docverify
+```
+
 Checks de endpoints:
 
 ```bash
