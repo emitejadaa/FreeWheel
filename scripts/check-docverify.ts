@@ -7,11 +7,19 @@ import "dotenv/config";
  * failed"— y las causas son varias y se arreglan distinto: la variable sin
  * protocolo, uvicorn escuchando en otra interfaz, el token que no coincide,
  * un backend desplegado apuntando a una dirección de tu casa. Este script
- * prueba las tres cosas en orden y dice cuál falló y qué cambiar.
+ * prueba la cadena entera en orden y dice cuál eslabón falló y qué cambiar.
  *
  *   npm run check:docverify
  *
- * No toca la base ni manda fotos: solo pega en /health y en /contrato.
+ * Son cuatro cosas, y si falta una la verificación no anda:
+ *
+ *   1. Cloudinary, que es donde viven las fotos del documento.
+ *   2. Que se llegue a la API de lectura.
+ *   3. Que acepte el token.
+ *   4. Que tenga a dónde devolver el resultado cuando termina.
+ *
+ * No toca la base ni manda fotos: pega en /health, en /contrato y en el ping
+ * de Cloudinary.
  */
 
 /** Cuánto se espera a cada pedido. El arranque en frío puede ser lento. */
@@ -74,7 +82,49 @@ async function main(): Promise<void> {
   const token = (process.env.DOCVERIFY_TOKEN ?? "").trim();
   const plataforma = (process.env.DOCVERIFY_PLATFORM_TOKEN ?? "").trim();
 
-  console.log("\nAPI de lectura de documentos (docverify)\n");
+  console.log("\nVerificación de documentos\n");
+
+  // ── 0. Cloudinary ──────────────────────────────────────────────────────────
+  // Va primero porque sin esto no hay verificación posible, ni automática ni
+  // manual: las fotos se suben ahí y de ahí las baja el backend para mandarlas
+  // a analizar. Sin las tres variables, subir un documento devuelve 503.
+  const nube = (process.env.CLOUDINARY_CLOUD_NAME ?? "").trim();
+  const clave = (process.env.CLOUDINARY_API_KEY ?? "").trim();
+  const secreto = (process.env.CLOUDINARY_API_SECRET ?? "").trim();
+
+  if (!nube || !clave || !secreto) {
+    const faltan = [
+      !nube && "CLOUDINARY_CLOUD_NAME",
+      !clave && "CLOUDINARY_API_KEY",
+      !secreto && "CLOUDINARY_API_SECRET",
+    ].filter(Boolean);
+    mal(`falta ${faltan.join(", ")}`);
+    nota("Ahí viven las fotos de los documentos: sin esto no se puede subir");
+    nota("ninguna, y la verificación no arranca. Las tres salen del panel de");
+    nota("Cloudinary (Dashboard → API Keys).");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const credencial = Buffer.from(`${clave}:${secreto}`).toString("base64");
+    const ping = await pedir(`https://api.cloudinary.com/v1_1/${nube}/ping`, {
+      Authorization: `Basic ${credencial}`,
+    });
+    if (ping.ok) {
+      ok(`Cloudinary responde y acepta las credenciales (${nube})`);
+    } else {
+      mal(`Cloudinary rechazó las credenciales (HTTP ${ping.status})`);
+      nota("Revisá CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET, y que sean de");
+      nota(`la cuenta "${nube}".`);
+      process.exitCode = 1;
+      return;
+    }
+  } catch (error) {
+    mal(`no se pudo hablar con Cloudinary: ${describe(error)}`);
+    process.exitCode = 1;
+    return;
+  }
 
   // ── 1. La variable ─────────────────────────────────────────────────────────
   if (!crudo) {
@@ -224,7 +274,9 @@ async function main(): Promise<void> {
     nota("Ojo: la API corre en tu máquina y el callback apunta afuera.");
   }
 
-  console.log("\nTodo listo: la lectura automática debería funcionar.\n");
+  console.log(
+    "\nTodo listo: subí un documento y en ~10 segundos cambia solo de estado.\n",
+  );
 }
 
 main().catch((error) => {
