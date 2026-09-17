@@ -29,6 +29,9 @@ const ok = (t: string) => console.log(`  OK    ${t}`);
 const mal = (t: string) => console.log(`  FALLA ${t}`);
 const nota = (t: string) => console.log(`        ${t}`);
 
+/** Cosas que andan pero no deberían quedar así. Se listan al final. */
+const avisos: string[][] = [];
+
 /** ¿Es un host de la misma máquina o de la red local? */
 function esLocal(host: string): boolean {
   const limpio = host.replace(/^\[|\]$/g, "");
@@ -222,9 +225,22 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  if (!protegida && token) {
+  if (!protegida && !local) {
+    // El caso del túnel, y es el peligroso: la API corre en una máquina, así
+    // que ninguna señal de plataforma está puesta y se cree en local —arranca
+    // sin token y con CORS abierto— pero la URL la alcanza cualquiera. Por acá
+    // pasan documentos de identidad de personas reales.
+    avisos.push([
+      "La API es alcanzable desde internet y NO pide token: cualquiera que",
+      "sepa la URL puede mandarle documentos. Si la estás exponiendo con un",
+      "túnel, levantala así (la variable la obliga a exigir token):",
+      '  DOCVERIFY_EXPUESTO=1 DOCVERIFY_TOKEN="<un secreto largo>" \\',
+      "    .venv/bin/python -m uvicorn app.main:app --port 8000",
+      "y poné el MISMO DOCVERIFY_TOKEN en el backend.",
+    ]);
+  } else if (!protegida && token) {
     nota("DOCVERIFY_TOKEN está puesta pero la API no pide token: sobra, y no");
-    nota("molesta. En un deploy expuesto a internet, ponéselo también a ella.");
+    nota("molesta. Corriendo en local no hace falta.");
   }
 
   // /contrato pasa por el mismo control de token que /analizar/documento, así
@@ -272,6 +288,17 @@ async function main(): Promise<void> {
   ok(`el resultado vuelve a ${publica}`);
   if (local && !esLocal(new URL(publica).hostname)) {
     nota("Ojo: la API corre en tu máquina y el callback apunta afuera.");
+  }
+
+  if (avisos.length > 0) {
+    for (const aviso of avisos) {
+      console.log("\n  AVISO " + aviso[0]);
+      for (const linea of aviso.slice(1)) nota(linea);
+    }
+    console.log(
+      "\nLa cadena funciona, pero revisá el aviso de arriba antes de dejarlo así.\n",
+    );
+    return;
   }
 
   console.log(

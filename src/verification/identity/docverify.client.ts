@@ -187,6 +187,14 @@ export class DocverifyClient {
       };
     }
 
+    // Un deploy apuntando a una dirección privada no tiene arreglo por
+    // reintento, y el pedido no puede salir bien. Se corta ACÁ, antes de bajar
+    // las dos fotos de Cloudinary, porque esperar 30 segundos a un timeout y
+    // gastar dos descargas para llegar a la misma conclusión no le sirve a
+    // nadie.
+    const sinRuta = this.sinRutaDesdeUnDeploy(base);
+    if (sinRuta) return { accepted: false, failure: sinRuta };
+
     let frente: string;
     let dorso: string;
     try {
@@ -368,6 +376,47 @@ export class DocverifyClient {
     const porIp = new URL(base);
     porIp.hostname = "127.0.0.1";
     return [base, porIp.toString().replace(/\/+$/, "")];
+  }
+
+  /**
+   * Por qué este deploy no va a poder llegar a una dirección privada.
+   *
+   * `127.0.0.1` y `192.168.x.y` no existen fuera de la red de uno: un servidor
+   * de Vercel que intente conectarse ahí se está apuntando A SÍ MISMO, y lo
+   * que recibe es un `ECONNREFUSED` idéntico al de un servicio apagado. El
+   * mensaje que sale de ahí —"revisá que la API esté levantada"— manda a mirar
+   * la máquina equivocada: la API puede estar perfecta y encendida, y el
+   * pedido no llega igual, porque no hay ruta.
+   *
+   * Devuelve null cuando no aplica, que es el caso normal.
+   */
+  private sinRutaDesdeUnDeploy(base: string): DocverifyFailure | null {
+    const host = hostDe(base);
+    if (host === null || !esLocal(host)) return null;
+
+    // Solo señales que pone la plataforma: ninguna de estas existe en la
+    // máquina de uno, así que no hay forma de que esto se dispare en un local
+    // que anda bien. La lista es la misma de docverify-api/app/config.py.
+    const plataforma = [
+      "VERCEL",
+      "VERCEL_URL",
+      "RENDER_SERVICE_ID",
+      "K_SERVICE",
+      "FLY_APP_NAME",
+    ].find((señal) => this.config.get<string>(señal)?.trim());
+    if (!plataforma) return null;
+
+    return {
+      problem: "INALCANZABLE",
+      // Los primeros 160 caracteres son los únicos que le llegan al usuario
+      // (ver shortDetail), así que el qué hacer va adelante y el detalle atrás.
+      detail:
+        `DOCVERIFY_URL apunta a ${host}, que desde un deploy es el propio ` +
+        "servidor y no tu máquina: exponé la API con un túnel y poné esa URL " +
+        `(ver docverify-api/README.md). Detectado por ${plataforma}.`,
+      // No hay reintento que agregue una ruta que no existe.
+      retryable: false,
+    };
   }
 
   /** Baja un asset privado de Cloudinary y lo devuelve en base64. */

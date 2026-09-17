@@ -276,3 +276,81 @@ describe("no reintentar lo que el servicio pudo haber recibido", () => {
     },
   );
 });
+
+describe("un deploy apuntando a una dirección privada", () => {
+  // `127.0.0.1` desde Vercel es Vercel, no la máquina de uno. El síntoma es un
+  // ECONNREFUSED idéntico al de un servicio apagado, y el consejo de "revisá
+  // que esté levantada" manda a mirar la máquina equivocada.
+  const PLATAFORMAS = [
+    ["VERCEL", "1"],
+    ["VERCEL_URL", "freewheel.vercel.app"],
+    ["RENDER_SERVICE_ID", "srv-123"],
+    ["K_SERVICE", "backend"],
+    ["FLY_APP_NAME", "freewheel"],
+  ];
+
+  it.each(PLATAFORMAS)(
+    "lo detecta por %s y no intenta el pedido",
+    async (señal, valor) => {
+      interceptar(() => Promise.resolve(new Response("", { status: 202 })));
+
+      const resultado = await cliente({
+        DOCVERIFY_URL: "http://127.0.0.1:8000",
+        [señal]: valor,
+      }).requestAnalysis(PEDIDO);
+
+      if (resultado.accepted) throw new Error("no debería haber sido aceptado");
+      expect(resultado.failure.detail).toContain("túnel");
+      // Ninguna ruta nueva va a aparecer por insistir.
+      expect(resultado.failure.retryable).toBe(false);
+      // Y ni se intentó: no se gastan dos descargas de Cloudinary ni 30s de
+      // timeout para llegar a una conclusión que ya se sabía.
+      expect(llamadas).toHaveLength(0);
+    },
+  );
+
+  it("lo que le llega al usuario dice qué hacer, aun cortado a 160", async () => {
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://127.0.0.1:8000",
+      VERCEL: "1",
+    }).requestAnalysis(PEDIDO);
+
+    if (resultado.accepted) throw new Error("no debería haber sido aceptado");
+    // El mismo recorte que hace document-verification.service al guardarlo.
+    const visible = resultado.failure.detail.slice(0, 157);
+    expect(visible).toContain("túnel");
+  });
+
+  it("una dirección de red local también se detecta", async () => {
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://192.168.0.10:8000",
+      VERCEL: "1",
+    }).requestAnalysis(PEDIDO);
+
+    if (resultado.accepted) throw new Error("no debería haber sido aceptado");
+    expect(resultado.failure.detail).toContain("túnel");
+  });
+
+  it("corriendo en local no se mete: ahí 127.0.0.1 es el lugar correcto", async () => {
+    interceptar(() => Promise.resolve(new Response("", { status: 202 })));
+
+    // Sin señales de plataforma, que es lo que pasa en la máquina de uno.
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://127.0.0.1:8000",
+    }).requestAnalysis(PEDIDO);
+
+    expect(resultado.accepted).toBe(true);
+    expect(llamadas).toHaveLength(1);
+  });
+
+  it("un deploy contra una URL pública sigue funcionando", async () => {
+    interceptar(() => Promise.resolve(new Response("", { status: 202 })));
+
+    const resultado = await cliente({
+      DOCVERIFY_URL: "https://mi-tunel.trycloudflare.com",
+      VERCEL: "1",
+    }).requestAnalysis(PEDIDO);
+
+    expect(resultado.accepted).toBe(true);
+  });
+});

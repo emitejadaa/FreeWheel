@@ -479,16 +479,79 @@ Las salidas reales son tres:
 
 - **Backend local también.** Lo de arriba. Para desarrollar y mostrar, es lo más
   simple y lo más rápido.
-- **Un túnel.** `cloudflared tunnel --url http://localhost:8000` (o `ngrok http
-  8000`) le da a tu API local una URL pública; esa es la que va en
-  `DOCVERIFY_URL`. Sirve para probar el deploy de Vercel contra tu máquina, pero
-  la URL vive mientras el túnel esté abierto y la máquina prendida.
+- **Un túnel.** Le da a tu API local una URL pública. Es gratis, no pide tarjeta
+  y es lo que sirve para probar el deploy de Vercel contra tu máquina. La receta
+  completa está abajo.
 - **Dar vuelta el flujo.** Que la API, desde tu máquina, le PREGUNTE al backend
   si hay documentos para analizar, en vez de esperar a que la llamen. Tu máquina
   sí puede salir a internet; lo que no puede es recibir. Es como funciona un
   runner de CI, y es la solución de fondo para "no tengo dónde hostear esto",
   pero es trabajo: hace falta una cola, tomar y devolver trabajos, y un token de
   worker.
+
+#### Receta: exponer la API local con un túnel
+
+Para el caso concreto de "el backend está en Vercel y la API corre en mi
+máquina". Gratis y sin cuenta.
+
+**1 · Un secreto compartido.** Cualquier cosa larga y al azar:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+**2 · Levantar la API pidiendo token.** `DOCVERIFY_EXPUESTO=1` es
+imprescindible y es el paso que más se olvida: detrás de un túnel la API sigue
+corriendo en tu máquina, así que no ve ninguna señal de plataforma, se cree en
+local y arranca **sin token y con CORS abierto**. La URL, mientras tanto, la
+alcanza cualquiera. Esa variable la obliga a exigir token (y a negarse a
+arrancar sin uno, que es justo lo que querés que pase).
+
+```bash
+# Linux / Mac
+DOCVERIFY_EXPUESTO=1 DOCVERIFY_TOKEN="<el secreto del paso 1>" \
+  .venv/bin/python -m uvicorn app.main:app --port 8000
+
+# Windows (PowerShell)
+$env:DOCVERIFY_EXPUESTO=1; $env:DOCVERIFY_TOKEN="<el secreto>"
+.venv\Scripts\python -m uvicorn app.main:app --port 8000
+```
+
+**3 · Abrir el túnel**, en otra terminal. `cloudflared` no pide cuenta ni
+tarjeta:
+
+```bash
+# Mac: brew install cloudflared · Windows: winget install Cloudflare.cloudflared
+# Linux: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Imprime una URL tipo `https://algo-al-azar.trycloudflare.com`. Esa es la
+pública. (`ngrok http 8000` hace lo mismo pero pide cuenta gratuita.)
+
+**4 · Configurar Vercel.** En el proyecto del BACKEND → Settings → Environment
+Variables:
+
+| Variable | Valor |
+| --- | --- |
+| `DOCVERIFY_URL` | `https://algo-al-azar.trycloudflare.com` (sin barra final) |
+| `DOCVERIFY_TOKEN` | el secreto del paso 1, idéntico |
+
+`DOCVERIFY_PLATFORM_TOKEN` se deja vacío: es solo para un Space privado de
+Hugging Face. **Redeployá** después de tocar las variables — Vercel no las
+aplica a un deploy ya hecho.
+
+**5 · Comprobar.** Desde la raíz del backend, con esas mismas variables:
+
+```bash
+npm run check:docverify
+```
+
+**Lo que hay que saber antes de apoyarse en esto:** la URL vive mientras el
+túnel esté abierto. Si lo cerrás, reiniciás la máquina o se corta internet,
+cambia —y hay que actualizar `DOCVERIFY_URL` en Vercel y redeployar—. Sirve para
+desarrollar y para mostrar; para algo que tiene que estar siempre, es la opción
+equivocada.
 
 ---
 
