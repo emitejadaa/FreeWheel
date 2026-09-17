@@ -541,7 +541,30 @@ Variables:
 Hugging Face. **Redeployá** después de tocar las variables — Vercel no las
 aplica a un deploy ya hecho.
 
-**5 · Comprobar.** Desde la raíz del backend, con esas mismas variables:
+**5 · Destrabar el aviso de vuelta.** El paso que más cuesta encontrar, porque
+todo lo demás funciona: el documento se lee perfecto y el resultado se pierde.
+
+La **Deployment Protection** de Vercel viene activada y protege con su propio
+login la URL única de cada deploy (`proyecto-a1b2c3-org.vercel.app`), que es la
+que trae `VERCEL_URL`. La API de lectura no tiene cómo pasar ese login, así que
+su aviso recibe `401 Protected deployment` antes de llegar al backend. En el log
+de la API se ve así:
+
+```txt
+POST .../verification/identity/analysis-callback "HTTP/1.1 401 Unauthorized"
+el backend rechazó el aviso de <ref> con 401: {"protection":{"vercel_auth_enabled":true
+```
+
+Cualquiera de las dos salidas sirve:
+
+- **Apuntar al dominio de producción**, que es público: el backend ya prefiere
+  `VERCEL_PROJECT_PRODUCTION_URL` sobre `VERCEL_URL`, así que en un deploy de
+  producción esto se arregla solo. Para forzarlo, `PUBLIC_URL` con el dominio
+  del proyecto (no la URL del deploy).
+- **Desactivar la protección**: Settings → Deployment Protection → Vercel
+  Authentication.
+
+**6 · Comprobar.** Desde la raíz del backend, con esas mismas variables:
 
 ```bash
 npm run check:docverify

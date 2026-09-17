@@ -117,12 +117,18 @@ const CATALOG: Record<VerificationReasonCode, (ctx: ReasonContext) => string> =
       "quedaron guardados y un administrador los va a revisar: no hace falta " +
       "que los vuelvas a enviar.",
 
+    // NO lleva el consejo de "reenviá fotos mejores", y es deliberado: este
+    // motivo significa que nuestro servicio de lectura no pudo ser consultado
+    // —estaba caído, no llegamos, el deploy está mal configurado—, y ninguna
+    // de esas cosas se arregla con una foto más nítida. Pedirlo igual dejaba un
+    // mensaje que se contradecía solo: "es un problema nuestro" seguido de una
+    // tarea para el usuario. El consejo sobre las fotos vive en DATO_ILEGIBLE,
+    // que es el motivo que sí habla de la foto.
     LECTURA_FALLIDA: (c) =>
       "No pudimos leer tus documentos automáticamente" +
       (c.detail ? ` (${c.detail})` : "") +
-      ". Un administrador los va a revisar a mano. Si querés acelerarlo, " +
-      "podés reenviar fotos más nítidas, con el documento entero dentro de la " +
-      "foto y sin reflejos encima.",
+      ". No es un problema de tus fotos y no hace falta que las vuelvas a " +
+      "enviar: ya quedaron guardadas y un administrador las va a revisar.",
 
     DATO_ILEGIBLE: (c) =>
       `No pudimos leer ${c.label ?? "un dato"} en las fotos que enviaste. ` +

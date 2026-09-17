@@ -274,6 +274,9 @@ async function main(): Promise<void> {
   // pierde.
   const publica =
     (process.env.PUBLIC_URL ?? "").trim() ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : "") ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
     (process.env.NODE_ENV !== "production"
       ? `http://localhost:${process.env.PORT ?? "3000"}`
@@ -288,6 +291,44 @@ async function main(): Promise<void> {
   ok(`el resultado vuelve a ${publica}`);
   if (local && !esLocal(new URL(publica).hostname)) {
     nota("Ojo: la API corre en tu máquina y el callback apunta afuera.");
+  }
+
+  // Que la URL exista no alcanza: tiene que ser ALCANZABLE SIN CREDENCIALES,
+  // porque quien la llama es la API de lectura y no tiene ninguna. El caso que
+  // este chequeo existe para cazar es la Deployment Protection de Vercel, que
+  // viene activada y contesta 401 "Protected deployment" a cualquiera sin su
+  // cookie de sesión. El síntoma sin esto es el peor de todos: el documento se
+  // lee perfecto y el resultado se pierde en silencio, cada vez.
+  if (!esLocal(new URL(publica).hostname)) {
+    const callback = `${publica}/verification/identity/analysis-callback`;
+    try {
+      // Sin token: se espera un 401 DEL BACKEND (token inválido), que confirma
+      // que el pedido llegó. Lo que se busca es distinguir ese 401 del de la
+      // plataforma, que ni siquiera deja pasar el request.
+      const prueba = await pedir(callback, {});
+      const cuerpoPrueba = (await prueba.text()).slice(0, 400);
+      const muroDePlataforma =
+        /vercel_auth_enabled|Protected deployment|sso-api|Authentication Required/i.test(
+          cuerpoPrueba,
+        );
+
+      if (muroDePlataforma) {
+        mal("la URL del callback está detrás del login de la plataforma");
+        nota("La API de lectura no tiene cómo pasar ese login: el análisis se");
+        nota("hace, el aviso vuelve con 401 y el resultado se pierde.");
+        nota("En Vercel: Settings → Deployment Protection → desactivá Vercel");
+        nota("Authentication, o apuntá PUBLIC_URL al dominio de producción");
+        nota("(no a la URL del deploy, que es la que queda protegida).");
+        process.exitCode = 1;
+        return;
+      }
+      ok(`el callback es alcanzable sin credenciales (HTTP ${prueba.status})`);
+    } catch (error) {
+      mal(`no se pudo alcanzar la URL del callback: ${describe(error)}`);
+      nota(`Tiene que responder desde internet: ${callback}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   if (avisos.length > 0) {

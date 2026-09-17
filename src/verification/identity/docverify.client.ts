@@ -141,7 +141,31 @@ export interface DocverifyResult {
  * volviendo a intentar (ver `retryable` y el endpoint de reintento). El primer
  * pedido lo despierta aunque se caiga.
  */
-const TIMEOUT_MS = Number(process.env.DOCVERIFY_TIMEOUT_MS ?? 30_000);
+const TIMEOUT_POR_DEFECTO_MS = 30_000;
+
+/**
+ * El timeout configurado, o el de por defecto.
+ *
+ * NO es `Number(process.env.X ?? 30_000)`, y la diferencia muerde: una
+ * variable DECLARADA PERO VACÍA —lo más fácil de dejar en el panel de un
+ * proveedor— no es `undefined`, así que `??` no la reemplaza, y `Number("")`
+ * da 0. Eso ponía un `setTimeout(..., 0)` que abortaba el pedido en el acto y
+ * lo reportaba como un timeout que nunca ocurrió. Lo mismo con cualquier cosa
+ * no numérica: `Number("50s")` es NaN, y `setTimeout` trata NaN como 0.
+ *
+ * `DOCVERIFY_TIMEOUT_MS=0` sí desactiva la espera, a propósito y solo cuando
+ * está escrito así. Conviene saber qué implica: el tope de la plataforma pasa
+ * a ser el único límite, y cuando salta, en vez de este fallo controlado
+ * —que deja el documento en revisión manual— el usuario recibe el error crudo
+ * de la plataforma.
+ */
+function timeoutConfigurado(): number {
+  const crudo = (process.env.DOCVERIFY_TIMEOUT_MS ?? "").trim();
+  if (!crudo) return TIMEOUT_POR_DEFECTO_MS;
+  const valor = Number(crudo);
+  if (!Number.isFinite(valor) || valor < 0) return TIMEOUT_POR_DEFECTO_MS;
+  return valor;
+}
 
 @Injectable()
 export class DocverifyClient {
@@ -227,8 +251,21 @@ export class DocverifyClient {
     // AbortController y no solo el timeout de fetch: sin esto, un servicio que
     // acepta la conexión y después se queda callado deja el request colgado
     // hasta que lo mate la plataforma, y con él al usuario esperando.
+    const limite = timeoutConfigurado();
     const corte = new AbortController();
-    const reloj = setTimeout(() => corte.abort(), TIMEOUT_MS);
+    // Se anota si el corte lo pedimos NOSOTROS. Sin esta marca, cualquier
+    // AbortError —el que tira la plataforma al matar la función, o una
+    // cancelación de más arriba— se reportaba como "no respondió en 30s",
+    // un mensaje que miente sobre lo que pasó y sobre cuánto se esperó.
+    let cortadoPorNosotros = false;
+    const arranque = Date.now();
+    const reloj =
+      limite > 0
+        ? setTimeout(() => {
+            cortadoPorNosotros = true;
+            corte.abort();
+          }, limite)
+        : undefined;
 
     const pedido: RequestInit = {
       method: "POST",
@@ -320,20 +357,33 @@ export class DocverifyClient {
       const abortado =
         error instanceof Error &&
         (error.name === "AbortError" || error.name === "TimeoutError");
+      const segundos = Math.round((Date.now() - arranque) / 1000);
       return {
         accepted: false,
-        failure: abortado
-          ? {
-              problem: "TIMEOUT",
-              detail: `la API de lectura no respondió en ${TIMEOUT_MS / 1000}s`,
-              // EL CASO DEL PLAN GRATUITO: el servicio estaba dormido y este
-              // pedido lo despertó. Se cayó, pero no en vano.
-              retryable: true,
-            }
-          : fallaDeRed(error, base),
+        failure: !abortado
+          ? fallaDeRed(error, base)
+          : cortadoPorNosotros
+            ? {
+                problem: "TIMEOUT",
+                detail: `la API de lectura no respondió en ${segundos}s`,
+                // EL CASO DEL PLAN GRATUITO: el servicio estaba dormido y este
+                // pedido lo despertó. Se cayó, pero no en vano.
+                retryable: true,
+              }
+            : {
+                // Abortó algo que no es nuestro reloj. Decirlo así evita la
+                // cacería equivocada: con el mensaje anterior, este caso
+                // mandaba a subir un timeout que no había llegado a vencer.
+                problem: "TIMEOUT",
+                detail:
+                  `el pedido a la API de lectura se canceló a los ${segundos}s ` +
+                  `sin que venciera nuestra espera de ${limite / 1000}s: lo ` +
+                  "cortó la plataforma o algo más arriba",
+                retryable: true,
+              },
       };
     } finally {
-      clearTimeout(reloj);
+      if (reloj !== undefined) clearTimeout(reloj);
     }
   }
 

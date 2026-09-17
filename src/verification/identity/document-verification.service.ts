@@ -813,6 +813,22 @@ export class DocumentVerificationService {
     const explicita = this.config.get<string>("PUBLIC_URL")?.trim();
     if (explicita) return explicita.replace(/\/+$/, "");
 
+    // El DOMINIO DE PRODUCCIÓN antes que la URL del deploy, y el orden importa
+    // más de lo que parece.
+    //
+    // VERCEL_URL es la URL única de ESTE deploy
+    // (proyecto-a1b2c3-org.vercel.app), y la Deployment Protection de Vercel
+    // —que viene activada por defecto— la protege con su propio login. Un
+    // pedido sin la cookie de sesión de Vercel recibe 401 "Protected
+    // deployment" ANTES de llegar a este código, así que el aviso de la API de
+    // lectura moría ahí: el documento se leía bien y el resultado se perdía.
+    // VERCEL_PROJECT_PRODUCTION_URL es el dominio estable del proyecto, que en
+    // producción sí es público.
+    const produccion = this.config
+      .get<string>("VERCEL_PROJECT_PRODUCTION_URL")
+      ?.trim();
+    if (produccion) return `https://${produccion.replace(/\/+$/, "")}`;
+
     const vercel = this.config.get<string>("VERCEL_URL")?.trim();
     if (vercel) return `https://${vercel.replace(/\/+$/, "")}`;
 

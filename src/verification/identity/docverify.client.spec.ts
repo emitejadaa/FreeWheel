@@ -354,3 +354,89 @@ describe("un deploy apuntando a una dirección privada", () => {
     expect(resultado.accepted).toBe(true);
   });
 });
+
+describe("el timeout no puede mentir sobre lo que pasó", () => {
+  const ORIGINAL = process.env.DOCVERIFY_TIMEOUT_MS;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.DOCVERIFY_TIMEOUT_MS;
+    else process.env.DOCVERIFY_TIMEOUT_MS = ORIGINAL;
+  });
+
+  /** El AbortError que tira fetch cuando lo cortan. */
+  function abortado(): Error {
+    const e = new Error("This operation was aborted");
+    e.name = "AbortError";
+    return e;
+  }
+
+  it.each(["", "   ", "cincuenta", "50s", "-1"])(
+    "una variable inservible (%p) no deja el timeout en cero",
+    async (valor) => {
+      // `Number("")` da 0, y un setTimeout(0) abortaba el pedido en el acto
+      // reportando un timeout que nunca ocurrió.
+      process.env.DOCVERIFY_TIMEOUT_MS = valor;
+      interceptar(() => Promise.resolve(new Response("", { status: 202 })));
+
+      const resultado = await cliente({
+        DOCVERIFY_URL: "http://127.0.0.1:8000",
+      }).requestAnalysis(PEDIDO);
+
+      expect(resultado.accepted).toBe(true);
+    },
+  );
+
+  it("con DOCVERIFY_TIMEOUT_MS=0 no arma ninguna espera", async () => {
+    process.env.DOCVERIFY_TIMEOUT_MS = "0";
+    let señal: AbortSignal | null | undefined;
+    jest
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((_u: RequestInfo | URL, init?: RequestInit) => {
+        señal = init?.signal;
+        return Promise.resolve(new Response("", { status: 202 }));
+      });
+
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://127.0.0.1:8000",
+    }).requestAnalysis(PEDIDO);
+
+    expect(resultado.accepted).toBe(true);
+    // La señal sigue viajando, pero nadie la va a disparar por tiempo.
+    expect(señal?.aborted).toBe(false);
+  });
+
+  it("un abort que no es nuestro no se reporta como nuestra espera", async () => {
+    // Lo que tira la plataforma al matar la función, o una cancelación de más
+    // arriba: con el mensaje viejo esto mandaba a subir un timeout intacto.
+    interceptar(() => Promise.reject(abortado()));
+
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://127.0.0.1:8000",
+    }).requestAnalysis(PEDIDO);
+
+    if (resultado.accepted) throw new Error("no debería haber sido aceptado");
+    expect(resultado.failure.problem).toBe("TIMEOUT");
+    expect(resultado.failure.detail).toContain("se canceló");
+    expect(resultado.failure.detail).toContain("sin que venciera");
+    // Y NO puede afirmar que esperó los 30 segundos.
+    expect(resultado.failure.detail).not.toContain("no respondió en 30s");
+  });
+
+  it("cuando vence de verdad, informa el tiempo real", async () => {
+    process.env.DOCVERIFY_TIMEOUT_MS = "20";
+    // Nunca resuelve: solo termina cuando el reloj aborta.
+    interceptar(
+      (_u) =>
+        new Promise((_r, reject) => {
+          setTimeout(() => reject(abortado()), 60);
+        }),
+    );
+
+    const resultado = await cliente({
+      DOCVERIFY_URL: "http://127.0.0.1:8000",
+    }).requestAnalysis(PEDIDO);
+
+    if (resultado.accepted) throw new Error("no debería haber sido aceptado");
+    expect(resultado.failure.detail).toContain("no respondió en");
+    expect(resultado.failure.retryable).toBe(true);
+  });
+});
