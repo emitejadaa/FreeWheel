@@ -7,6 +7,7 @@ import { ReviewsModule } from "../reviews/reviews.module";
 import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
+import { AdminBootstrapService } from "./admin-bootstrap.service";
 
 @Module({
   // MediaModule + VerificationModule: firmar la entrega de los documentos de
@@ -21,6 +22,6 @@ import { AccountDeletionPolicy } from "./account-deletion.policy";
     ReviewsModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService, AccountDeletionPolicy],
+  providers: [AdminService, AccountDeletionPolicy, AdminBootstrapService],
 })
 export class AdminModule {}

@@ -56,6 +56,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       licenseExpiresAt: user.licenseExpiresAt,
       licenseClass: user.licenseClass,
       licenseBeginnerUntil: user.licenseBeginnerUntil,
+      dniExpiresAt: user.dniExpiresAt,
     };
   }
 }

@@ -20,27 +20,33 @@ import {
 } from "./payment-provider.interface";
 
 /**
- * Deterministic, offline implementation of the payment boundary. Used for local
- * development and as the E2E provider (no network). Money never moves.
+ * EL PROVEEDOR OFFLINE, PARA LOS TESTS.
  *
- * Webhook signatures are verified for real (Stripe's signature scheme is pure
- * crypto, no network) whenever STRIPE_WEBHOOK_SECRET is configured, so the
- * webhook security path is exercised exactly like production.
+ * Implementación determinística del mismo contrato, sin red. Existe para que
+ * la suite de tests pueda recorrer el circuito entero —crear intents,
+ * confirmarlos, capturar y soltar la retención, devolver, transferir— sin
+ * depender de que Stripe esté disponible ni de que haya claves cargadas.
+ *
+ * NO ES EL CAMINO DE PRODUCCIÓN NI EL DE LA DEMO. Los pagos reales, incluso
+ * los de prueba, van por StripePaymentsProvider: un simulador siempre dice que
+ * sí, y las cosas que rompen un sistema de pagos —una tarjeta rechazada, una
+ * que pide autenticación del banco, una disputa— no se prueban contra algo que
+ * no las produce.
+ *
+ * Las firmas de webhook SÍ se verifican de verdad cuando hay
+ * STRIPE_WEBHOOK_SECRET (el esquema de firma de Stripe es pura criptografía,
+ * no necesita red), así que ese camino de seguridad se ejercita igual que en
+ * producción.
  */
 @Injectable()
 export class MockPaymentsProvider implements PaymentProvider {
   readonly name = "mock";
   private readonly webhookSecret: string;
   private readonly stripe: Stripe;
-  /** ¿Se aceptan eventos sin firmar aunque esto corra en producción? */
-  private readonly permiteSinFirma: boolean;
   private readonly enProduccion: boolean;
 
   constructor(config: ConfigService) {
     this.webhookSecret = config.get<string>("STRIPE_WEBHOOK_SECRET") ?? "";
-    this.permiteSinFirma =
-      (config.get<string>("ALLOW_UNSIGNED_WEBHOOKS") ?? "").toLowerCase() ===
-      "true";
     this.enProduccion =
       (config.get<string>("NODE_ENV") ?? process.env.NODE_ENV) === "production";
     // Key-independent: only used for the offline signature helpers.
@@ -110,6 +116,37 @@ export class MockPaymentsProvider implements PaymentProvider {
     });
   }
 
+  /**
+   * El estado de un intent. Offline no hay nada que consultar: se devuelve una
+   * tarjeta de prueba fija para que el camino que guarda las señas antifraude
+   * quede ejercitado en los tests y no sea código que nunca corre.
+   */
+  retrieveIntent(paymentIntentId: string): Promise<PaymentIntentResult> {
+    return Promise.resolve({
+      id: paymentIntentId,
+      clientSecret: null,
+      status: "succeeded",
+      amountMinor: 0,
+      currency: "usd",
+      chargeId: `ch_mock_${paymentIntentId}`,
+      // En null y no en 0: `0` significaría "se cobró cero", y el control que
+      // compara lo cobrado contra lo esperado gritaría en cada test. Null es
+      // "no lo sé", que es la verdad de un provider que no cobra nada.
+      amountReceivedMinor: null,
+      amountCapturableMinor: null,
+      card: {
+        brand: "visa",
+        last4: "4242",
+        fingerprint: "fp_mock_4242",
+        country: "US",
+        cvcCheck: "pass",
+        threeDSecure: false,
+      },
+      risk: { level: "normal", score: 5 },
+      failure: null,
+    });
+  }
+
   ensureCustomer(input: EnsureCustomerInput): Promise<string> {
     return Promise.resolve(
       `cus_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`,
@@ -153,23 +190,26 @@ export class MockPaymentsProvider implements PaymentProvider {
         data: {
           object: event.data.object as unknown as Record<string, unknown>,
         },
+        livemode: event.livemode,
       };
     }
 
     // Camino permisivo: sin secreto de firma configurado, se cree lo que llega.
     //
-    // En desarrollo hace falta para poder recorrer el circuito de pago sin una
-    // cuenta de Stripe. En producción NO, y dejarlo pasar significa que cualquiera
-    // que sepa la URL del webhook puede mandar un "payment_intent.succeeded" y
-    // hacer figurar una reserva como pagada sin haber pagado. Así que en
-    // producción se corta acá y se dice qué falta configurar, en vez de aceptarlo
-    // en silencio. ALLOW_UNSIGNED_WEBHOOKS=true lo habilita a propósito para una
-    // demostración, sabiendo lo que implica.
-    if (this.enProduccion && !this.permiteSinFirma) {
+    // En los tests hace falta para poder recorrer el circuito de pago sin una
+    // cuenta de Stripe. En producción NO, Y NO HAY VARIABLE QUE LO HABILITE.
+    //
+    // Antes la había (ALLOW_UNSIGNED_WEBHOOKS) y se sacó a propósito. Este
+    // endpoint es público: aceptar un evento sin firma significa que cualquiera
+    // que sepa la URL puede mandar un "payment_intent.succeeded" y hacer
+    // figurar una reserva como pagada sin haber pagado nunca. Eso no es un
+    // modo de demostración, es un agujero, y un agujero que se abre con una
+    // variable de entorno es un agujero que un día queda abierto sin que nadie
+    // se acuerde.
+    if (this.enProduccion) {
       throw new Error(
-        "Evento de webhook sin firma verificada. En producción hay que configurar " +
-          "STRIPE_WEBHOOK_SECRET (y PAYMENTS_PROVIDER=stripe para cobrar de verdad). " +
-          "Para una demostración sin pagos reales: ALLOW_UNSIGNED_WEBHOOKS=true.",
+        "Evento de webhook sin firma verificada. En producción hay que " +
+          "configurar STRIPE_WEBHOOK_SECRET y PAYMENTS_PROVIDER=stripe.",
       );
     }
 
@@ -182,6 +222,7 @@ export class MockPaymentsProvider implements PaymentProvider {
       id: parsed.id ?? this.id("evt_mock"),
       type: parsed.type ?? "unknown",
       data: { object: parsed.data?.object ?? {} },
+      livemode: false,
     };
   }
 }

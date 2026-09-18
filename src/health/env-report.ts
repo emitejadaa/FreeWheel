@@ -133,12 +133,19 @@ export function buildEnvReport(): EnvReport {
     // Estos NO son secretos: son la forma en que está configurada la API, y
     // saberlos es justo lo que hace falta para entender qué está pasando.
     modes: {
-      PAYMENTS_PROVIDER: process.env.PAYMENTS_PROVIDER ?? "mock (defecto)",
+      PAYMENTS_PROVIDER: process.env.PAYMENTS_PROVIDER ?? "stripe (defecto)",
       SMS_PROVIDER: process.env.SMS_PROVIDER ?? "mock (defecto)",
       REQUIRE_PHONE_VERIFICATION:
         process.env.REQUIRE_PHONE_VERIFICATION ?? "false (defecto)",
       GROQ_VISION_MODEL:
         process.env.GROQ_VISION_MODEL ?? "sin forzar (usa los del código)",
+      // Cuántas cuentas administradoras nombra la variable, NO cuáles. La
+      // dirección de la cuenta con control total de la plataforma no va en una
+      // respuesta que se puede consultar: saber que hay una alcanza para
+      // diagnosticar "el panel me da 403".
+      ADMIN_EMAILS: cargada("ADMIN_EMAILS")
+        ? `${(process.env.ADMIN_EMAILS ?? "").split(/[,\s;]+/).filter(Boolean).length} cuenta(s) configurada(s)`
+        : "ninguna (el rol se da desde el panel)",
     },
   };
 }

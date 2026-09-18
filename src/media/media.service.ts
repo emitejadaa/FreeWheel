@@ -33,7 +33,14 @@ export class MediaService {
    * usuario y sube como authenticated.
    */
   signUpload(folder = "freewheel") {
-    if (/^identity(\/|$)/.test(folder)) {
+    // La comparación va SIN distinguir mayúsculas. Hoy Cloudinary trata
+    // "Identity/" y "identity/" como carpetas distintas, así que escribir la
+    // palabra con mayúscula no da acceso a los documentos de nadie — pero eso
+    // es un detalle de Cloudinary, no una decisión nuestra, y una reserva que
+    // depende de cómo otro producto normaliza sus nombres es una reserva que
+    // se puede caer sin que nos enteremos. Reservada es reservada en cualquier
+    // grafía.
+    if (/^identity(\/|$)/i.test(folder.trim())) {
       throw new BadRequestException({
         statusCode: 400,
         code: "RESERVED_MEDIA_FOLDER",

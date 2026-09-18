@@ -3,23 +3,26 @@ import { randomBytes } from "crypto";
 import { CloudinaryService } from "../../media/cloudinary.service";
 import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import { UploadSignatureDto } from "../dto/upload-signature.dto";
-
-/** Tipo de documento en minúscula, como viaja en las URLs y los public_id. */
-export type DocumentKind = "dni" | "license";
+import { slotFor } from "./document-slots";
+import type { DocumentKind, DocumentSlot } from "./document-slots";
 
 /**
- * Las cuatro fotos que se pueden subir. Es el vocabulario de los public_id en
- * el storage: cada archivo se firma bajo el prefijo de su slot y el submit
- * rechaza una foto que llegue en el campo equivocado.
+ * El vocabulario de las fotos vive en document-slots.ts, que no depende de
+ * Cloudinary: lo necesita también el catálogo de motivos para poder nombrar
+ * qué foto hay que repetir. Se re-exporta acá para no romper a quien ya lo
+ * importaba desde este archivo.
  */
-export const DOCUMENT_SLOTS = [
-  "dni_front",
-  "dni_back",
-  "license_front",
-  "license_back",
-] as const;
-
-export type DocumentSlot = (typeof DOCUMENT_SLOTS)[number];
+export {
+  DOCUMENT_SLOTS,
+  slotFor,
+  slotsOf,
+  slotForFace,
+} from "./document-slots";
+export type {
+  DocumentKind,
+  DocumentSlot,
+  DocumentSide,
+} from "./document-slots";
 
 const ALLOWED_FORMATS = ["jpg", "jpeg", "png", "webp"];
 
@@ -28,13 +31,6 @@ export const IDENTITY_FOLDER_PREFIX = "identity";
 
 export function identityFolder(userId: string): string {
   return `${IDENTITY_FOLDER_PREFIX}/${userId}`;
-}
-
-export function slotFor(
-  kind: DocumentKind,
-  side: "front" | "back",
-): DocumentSlot {
-  return `${kind}_${side}`;
 }
 
 interface ParsedAsset {

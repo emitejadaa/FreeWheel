@@ -238,7 +238,7 @@ describe("Verificación documental (revisión manual)", () => {
     const res = await submit(user.token, user.id, "dni").expect(400);
     expect(res.body.code).toBe("PERFIL_INCOMPLETO");
     expect(res.body.missing).toEqual(
-      expect.arrayContaining(["DNI", "CUIL", "domicilio"]),
+      expect.arrayContaining(["DNI", "CUIL"]),
     );
   });
 

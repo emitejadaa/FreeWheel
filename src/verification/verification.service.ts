@@ -135,7 +135,7 @@ export class VerificationService {
         emailVerified: Boolean(user.emailVerifiedAt),
         phoneVerified: Boolean(user.phoneVerifiedAt),
         dateOfBirthProvided: Boolean(user.dateOfBirth),
-        identityDataProvided: Boolean(user.dni && user.cuil && user.address),
+        identityDataProvided: Boolean(user.dni && user.cuil),
         dniApproved:
           documents.dni?.status === DocumentVerificationStatus.APPROVED,
         licenseApproved:

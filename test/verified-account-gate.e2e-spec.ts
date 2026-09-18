@@ -118,4 +118,76 @@ describe("Verified-account gate", () => {
       expect(listing.id).toEqual(expect.any(String));
     });
   });
+
+  /**
+   * EL DNI VENCIDO: la cuenta sigue verificada, pero no puede operar.
+   *
+   * Es la distinción que este bloque cuida. La persona no dejó de ser quien
+   * es, así que no vuelve a empezar la verificación desde cero; lo que perdió
+   * es el respaldo documental vigente, y todo lo que este guard protege tiene
+   * plata y responsabilidad de por medio.
+   */
+  describe("con el DNI vencido", () => {
+    it("bloquea lo sensible con un 403 que dice exactamente qué pasó", async () => {
+      const owner = await registerUser(app);
+      await prisma.user.update({
+        where: { id: owner.id },
+        data: { dniExpiresAt: new Date("2021-03-07T12:00:00.000Z") },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post("/vehicles")
+        .set("Authorization", `Bearer ${owner.token}`)
+        .send({ brand: "Toyota", model: "Corolla", year: 2020 })
+        .expect(403);
+
+      expect(res.body.code).toBe("IDENTITY_DOCUMENT_EXPIRED");
+      expect(res.body.reasons[0].code).toBe("DNI_VENCIDO");
+      // El mensaje alcanza para saber qué hacer sin preguntarle a nadie.
+      expect(res.body.message).toContain("7/3/2021");
+    });
+
+    it("la cuenta NO se desverifica: sigue VERIFIED y puede ver su perfil", async () => {
+      const owner = await registerUser(app);
+      await prisma.user.update({
+        where: { id: owner.id },
+        data: { dniExpiresAt: new Date("2021-03-07T12:00:00.000Z") },
+      });
+
+      const yo = await request(app.getHttpServer())
+        .get("/users/me")
+        .set("Authorization", `Bearer ${owner.token}`)
+        .expect(200);
+      expect(yo.body.verificationStatus).toBe("VERIFIED");
+    });
+
+    it("deja LEER lo que ya existe: bloquea escrituras, no consultas", async () => {
+      // Bloquear las lecturas no protege nada y deja a alguien sin poder
+      // mirar sus propias reservas, que se ve como una cuenta rota.
+      const owner = await registerUser(app);
+      await prisma.user.update({
+        where: { id: owner.id },
+        data: { dniExpiresAt: new Date("2021-03-07T12:00:00.000Z") },
+      });
+
+      // Una ruta GET que SÍ exige cuenta verificada. Que conteste 404 (la
+      // reserva no existe) y no 403 es la prueba de que el guard la dejó
+      // pasar: el bloqueo por DNI vencido no llegó a correr.
+      await request(app.getHttpServer())
+        .get("/payments/bookings/00000000-0000-0000-0000-000000000000/status")
+        .set("Authorization", `Bearer ${owner.token}`)
+        .expect(404);
+    });
+
+    it("un vencimiento desconocido no bloquea nada", async () => {
+      // Hay cuentas verificadas de antes de que este dato existiera.
+      const owner = await registerUser(app);
+      await prisma.user.update({
+        where: { id: owner.id },
+        data: { dniExpiresAt: null },
+      });
+      const vehicle = await createVehicle(app, owner.token);
+      expect(vehicle.id).toEqual(expect.any(String));
+    });
+  });
 });

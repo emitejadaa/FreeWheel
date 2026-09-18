@@ -259,7 +259,7 @@ describe("Verification", () => {
       .expect(400);
     expect(res.body.code).toBe("PERFIL_INCOMPLETO");
     expect(res.body.missing).toEqual(
-      expect.arrayContaining(["DNI", "CUIL", "domicilio"]),
+      expect.arrayContaining(["DNI", "CUIL"]),
     );
   });
 
@@ -273,15 +273,20 @@ describe("Verification", () => {
     expect(res.body.code).toBe("RESERVED_MEDIA_FOLDER");
   });
 
-  it("verifies the account only once BOTH documents are approved", async () => {
+  it("verifica la cuenta con el DNI aprobado: la licencia habilita, no verifica", async () => {
+    // El cambio de fondo: verificar una cuenta es probar QUIÉN ES la persona,
+    // y eso lo prueba el DNI. La licencia prueba que además puede manejar, que
+    // es otra cosa — quien solo alquila su auto no tiene por qué tener una, y
+    // exigírsela lo dejaba sin poder publicar por un documento que no le hace
+    // falta.
     const user = await registerUser(app, { verified: false });
     await verifyPhone(user.token);
     await setIdentityProfile(app, user.token);
 
-    // Enviar las fotos NO aprueba nada: las aprueba un admin. Acá la
-    // aprobación se escribe directo en la base porque lo que se ejercita es
-    // el cálculo del estado de la CUENTA, no el circuito de la revisión (ese
-    // vive completo en identity-review.e2e-spec.ts).
+    // Enviar las fotos NO aprueba nada. Acá la aprobación se escribe directo
+    // en la base porque lo que se ejercita es el cálculo del estado de la
+    // CUENTA, no el circuito de la revisión (ese vive completo en
+    // identity-review.e2e-spec.ts).
     const aprobar = async (kind: "dni" | "license") => {
       await http()
         .post(`/verification/identity/${kind}/submit`)
@@ -294,20 +299,7 @@ describe("Verification", () => {
       });
     };
 
-    // Solo el DNI: la cuenta todavía no está verificada.
     await aprobar("dni");
-
-    const parcial = await http()
-      .get("/verification/me/status")
-      .set("Authorization", auth(user.token))
-      .expect(200);
-    expect(parcial.body.fullyVerified).toBe(false);
-    expect(parcial.body.verificationStatus).toBe("ID_SUBMITTED");
-    expect(parcial.body.checklist.dniApproved).toBe(true);
-    expect(parcial.body.checklist.licenseApproved).toBe(false);
-
-    // Con la licencia también aprobada, la cuenta queda VERIFIED.
-    await aprobar("license");
 
     const status = await http()
       .get("/verification/me/status")
@@ -321,8 +313,18 @@ describe("Verification", () => {
       dateOfBirthProvided: true,
       identityDataProvided: true,
       dniApproved: true,
-      licenseApproved: true,
+      licenseApproved: false,
     });
+
+    // Y con la licencia también aprobada sigue verificada, ahora además con
+    // la licencia en el checklist.
+    await aprobar("license");
+    const conLicencia = await http()
+      .get("/verification/me/status")
+      .set("Authorization", auth(user.token))
+      .expect(200);
+    expect(conLicencia.body.verificationStatus).toBe("VERIFIED");
+    expect(conLicencia.body.checklist.licenseApproved).toBe(true);
   });
 
   it("accepts resubmitting a document that is still pending review", async () => {

@@ -99,14 +99,34 @@ export function identityDocUrl(
   );
 }
 
-/** Las dos URLs (frente y dorso) de un documento, con formato válido. */
+/**
+ * UN ENVÍO DE DOCUMENTO COMPLETO: las dos fotos Y LOS DATOS DECLARADOS.
+ *
+ * Los datos van acá porque desde el rediseño son obligatorios: la lectura
+ * automática ya no saca el vencimiento ni la clase del documento, los compara
+ * contra lo que la persona cargó. Un envío sin ellos es un 400
+ * DATOS_DEL_DOCUMENTO_FALTANTES, así que el helper los trae puestos y cada
+ * test los pisa si quiere probar otra cosa.
+ */
+export const DECLARADO_DNI = { expiresAt: "2039-04-06" };
+
+export const DECLARADO_LICENCIA = {
+  expiresAt: "2039-10-28",
+  issuedAt: "2020-10-28",
+  licenseClass: "B.1",
+  isBeginner: false,
+};
+
 export function documentUrls(
   userId: string,
   kind: "dni" | "license",
   suffix = "1700000000_abcdef01",
+  declarado: Record<string, unknown> = {},
 ) {
   return {
     frontUrl: identityDocUrl(userId, `${kind}_front`, suffix),
     backUrl: identityDocUrl(userId, `${kind}_back`, suffix),
+    ...(kind === "dni" ? DECLARADO_DNI : DECLARADO_LICENCIA),
+    ...declarado,
   };
 }

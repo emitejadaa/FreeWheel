@@ -33,7 +33,6 @@ const IDENTITY_LOCKED_FIELDS = [
   "lastName",
   "dni",
   "cuil",
-  "address",
 ] as const;
 
 @Injectable()
@@ -178,7 +177,12 @@ export class UsersService {
       });
     }
 
-    const updateData: Prisma.UserUpdateInput = { ...data };
+    // `address` se acepta en el DTO por compatibilidad con el formulario de
+    // perfil que ya está publicado, pero no existe más como dato de la cuenta:
+    // se descarta acá para que no llegue nunca a un update de Prisma.
+    const { address: _domicilioIgnorado, ...aceptado } = data;
+    void _domicilioIgnorado;
+    const updateData: Prisma.UserUpdateInput = { ...aceptado };
     if (data.cuil !== undefined) {
       // El validador del DTO ya garantizó un CUIL de persona válido.
       updateData.cuil = normalizeCuil(data.cuil) ?? data.cuil;

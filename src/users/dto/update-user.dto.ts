@@ -45,9 +45,14 @@ export class UpdateUserDto {
   @IsPhone()
   phone?: string;
 
-  // Identidad manual requerida para la verificación documental: debe coincidir
-  // con lo extraído del DNI y la licencia. Inmutable una vez que la cuenta es
-  // VERIFIED (403 IDENTITY_FIELDS_LOCKED en el servicio).
+  // Identidad que carga la persona: la revisión documental la cruza contra lo
+  // que dicen el DNI y la licencia. Inmutable una vez que hay un documento
+  // aprobado contra ella (403 IDENTITY_FIELDS_LOCKED en el servicio).
+  //
+  // El domicilio ya no se pide. No se comparaba contra el documento, no
+  // habilitaba nada y era el dato más sensible que guardábamos de una persona;
+  // la única dirección que el sistema necesita es la del auto, y esa vive en la
+  // publicación.
   @IsOptional()
   @Matches(/^\d{7,8}$/, {
     message: "dni debe tener 7 u 8 dígitos, sin puntos",
@@ -58,9 +63,20 @@ export class UpdateUserDto {
   @IsCuil()
   cuil?: string;
 
+  /**
+   * DEPRECADO: SE ACEPTA Y SE IGNORA.
+   *
+   * El domicilio dejó de ser un dato de la cuenta (ver el comentario de
+   * arriba). Se sigue aceptando en el body para no romper el formulario de
+   * perfil que ya está publicado: con `forbidNonWhitelisted` activado, un
+   * campo desconocido devuelve 400, y eso habría dejado a la gente sin poder
+   * guardar su perfil hasta que el front se actualizara.
+   *
+   * No se guarda en ninguna parte y no se devuelve. Cuando el front deje de
+   * mandarlo, este campo se borra.
+   */
   @IsOptional()
   @IsString()
-  @MinLength(5)
   @MaxLength(200)
   address?: string;
 

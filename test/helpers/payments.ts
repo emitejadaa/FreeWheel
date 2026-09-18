@@ -26,13 +26,20 @@ export function sendWebhook(
   app: INestApplication,
   type: string,
   object: Record<string, unknown>,
-  opts: { id?: string; signature?: string; payload?: string } = {},
+  opts: {
+    id?: string;
+    signature?: string;
+    payload?: string;
+    /** Para probar que un evento del modo REAL se descarta acá. */
+    livemode?: boolean;
+  } = {},
 ) {
   evtSeq += 1;
   const event = {
     id: opts.id ?? `evt_test_${Date.now()}_${evtSeq}`,
     type,
     data: { object },
+    livemode: opts.livemode ?? false,
   };
   const signed = signWebhook(event);
   const payload = opts.payload ?? signed.payload;

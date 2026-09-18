@@ -9,6 +9,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   Booking,
   BookingStatus,
+  PaymentRecord,
   PaymentRecordKind,
   PaymentRecordStatus,
   PaymentStatus,
@@ -24,14 +25,42 @@ import { assertParticipant } from "../common/utils/authorization.util";
 import { PrismaService } from "../prisma/prisma.service";
 import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
 import type {
+  PaymentIntentResult,
   PaymentProvider,
   PaymentRecordKindLike,
 } from "./providers/payment-provider.interface";
 
+/** Estados en los que la plata efectivamente entró. */
 const PAID_RECORD_STATUSES: PaymentRecordStatus[] = [
   PaymentRecordStatus.PAID,
   PaymentRecordStatus.CAPTURED,
 ];
+
+/**
+ * Estados de un intent que NO se pueden reutilizar: hay que crear uno nuevo.
+ *
+ * Un intent fallado o cancelado no se puede volver a confirmar del lado de
+ * Stripe, así que devolverle al front su client secret sería mandarlo a
+ * intentar contra algo muerto.
+ */
+const UNUSABLE_RECORD_STATUSES: PaymentRecordStatus[] = [
+  PaymentRecordStatus.FAILED,
+  PaymentRecordStatus.CANCELLED,
+];
+
+/**
+ * QUIÉN PIDIÓ ESTO Y DESDE DÓNDE.
+ *
+ * Viaja con cada pedido que mueve plata y queda guardado en el registro. No es
+ * telemetría: es lo que permite contestar un desconocimiento de cobro ("este
+ * pago salió de esta IP, con esta tarjeta, a esta hora") y ver el patrón de
+ * alguien que prueba tarjetas robadas desde una misma conexión.
+ */
+export interface PaymentContext {
+  actorId?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+}
 
 @Injectable()
 export class PaymentsService {
@@ -45,30 +74,51 @@ export class PaymentsService {
     private readonly email: EmailService,
   ) {}
 
-  // ---- intent creation (renter, on demand) --------------------------------
+  // ── Creación de intents (la pide quien alquila) ────────────────────────
 
-  createSenaIntent(renterId: string, bookingId: string) {
-    return this.createChargeIntent(renterId, bookingId, "SENA");
+  createSenaIntent(renterId: string, bookingId: string, ctx: PaymentContext) {
+    return this.createChargeIntent(renterId, bookingId, "SENA", ctx);
   }
 
-  async createBalanceIntent(renterId: string, bookingId: string) {
-    const booking = await this.findBooking(bookingId);
-    if (booking.paymentStatus === PaymentStatus.PENDING) {
-      throw new BadRequestException(
-        "Pay the deposit (seña) before the balance",
-      );
+  async createBalanceIntent(
+    renterId: string,
+    bookingId: string,
+    ctx: PaymentContext,
+  ) {
+    // El saldo exige que la seña ya esté COBRADA, y se controla contra los
+    // registros y no contra `booking.paymentStatus`.
+    //
+    // La diferencia importa: `paymentStatus` es un resumen que también se
+    // escribe desde otros lados (una devolución lo deja en REFUNDED, un fallo
+    // en FAILED), así que mirarlo ahí dejaba pasar el saldo de una reserva
+    // cuya seña había fallado. Los registros dicen si esa plata entró.
+    const senaPagada = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.SENA,
+        status: { in: PAID_RECORD_STATUSES },
+      },
+      select: { id: true },
+    });
+    if (!senaPagada) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "SENA_NOT_PAID",
+        message: "Hay que pagar la seña antes que el saldo",
+      });
     }
-    return this.createChargeIntent(renterId, bookingId, "BALANCE");
+    return this.createChargeIntent(renterId, bookingId, "BALANCE", ctx);
   }
 
-  createDepositHold(renterId: string, bookingId: string) {
-    return this.createChargeIntent(renterId, bookingId, "DEPOSIT_HOLD");
+  createDepositHold(renterId: string, bookingId: string, ctx: PaymentContext) {
+    return this.createChargeIntent(renterId, bookingId, "DEPOSIT_HOLD", ctx);
   }
 
   private async createChargeIntent(
     renterId: string,
     bookingId: string,
     kind: PaymentRecordKindLike,
+    ctx: PaymentContext,
   ) {
     const booking = await this.findBookingWithUsers(bookingId);
     if (booking.renterId !== renterId) {
@@ -83,22 +133,41 @@ export class PaymentsService {
     const amountMinor = this.amountForKind(booking, kind);
     const currency = booking.currency;
 
-    // Idempotent: reuse a non-failed intent of the same kind if present.
+    // Idempotente: se reutiliza un intent vivo del mismo tramo SI Y SOLO SI es
+    // por el mismo importe y la misma moneda.
+    //
+    // Esa condición no estaba y era un agujero silencioso: si el precio de la
+    // reserva cambiaba entre que se creaba el intent y que se pagaba, el front
+    // recibía el intent viejo y se cobraba el importe anterior. El control de
+    // precio del servidor no servía de nada porque el cobro ya no pasaba por
+    // él.
     const existing = await this.prisma.paymentRecord.findFirst({
       where: {
         bookingId,
         kind: kind as PaymentRecordKind,
-        status: { notIn: [PaymentRecordStatus.FAILED] },
+        status: { notIn: UNUSABLE_RECORD_STATUSES },
       },
       orderBy: { createdAt: "desc" },
     });
-    if (existing?.stripePaymentIntentId) {
-      const meta = (existing.metadata as Record<string, unknown> | null) ?? {};
+    if (
+      existing?.stripePaymentIntentId &&
+      existing.amountMinor === amountMinor &&
+      existing.currency === currency
+    ) {
+      // El client secret NO se guarda en la base y se vuelve a pedir acá.
+      //
+      // Es una credencial: con ella se confirma el pago de ese intent. Tenerla
+      // escrita en una columna significaba que cualquier volcado de la base
+      // —un backup, un log de consulta, una captura de pantalla del panel—
+      // repartía la capacidad de operar sobre cobros ajenos. Pedirla de nuevo
+      // cuesta una llamada y la deja existiendo solo mientras dura la
+      // respuesta.
+      const vigente = await this.safeRetrieve(existing.stripePaymentIntentId);
       return {
         bookingId,
         kind,
         paymentIntentId: existing.stripePaymentIntentId,
-        clientSecret: (meta.clientSecret as string | undefined) ?? null,
+        clientSecret: vigente?.clientSecret ?? null,
         amountMinor: existing.amountMinor ?? amountMinor,
         currency,
         status: existing.status,
@@ -115,7 +184,10 @@ export class PaymentsService {
       customerId,
       transferGroup: booking.transferGroup,
       metadata: { renterId: booking.renterId, ownerId: booking.ownerId },
-      idempotencyKey: `booking_${bookingId}_${kind.toLowerCase()}`,
+      // La clave de idempotencia lleva el importe adentro: sin él, un intent
+      // creado por $100 y otro por $120 compartían clave y Stripe devolvía el
+      // primero, cobrando el precio viejo.
+      idempotencyKey: `booking_${bookingId}_${kind.toLowerCase()}_${amountMinor}`,
     };
 
     const intent =
@@ -135,8 +207,12 @@ export class PaymentsService {
         amount: amountMinor / 100,
         amountMinor,
         currency,
+        initiatedIp: ctx.ip ?? null,
+        initiatedUserAgent: ctx.userAgent?.slice(0, 500) ?? null,
+        // `metadata` ya no lleva el client secret (ver arriba). Lleva las dos
+        // partes de la reserva, que es lo que hace falta para reconstruir un
+        // cobro sin tener que ir a buscar la reserva.
         metadata: {
-          clientSecret: intent.clientSecret,
           renterId: booking.renterId,
           ownerId: booking.ownerId,
         } as Prisma.InputJsonValue,
@@ -149,6 +225,19 @@ export class PaymentsService {
         data: { depositPaymentIntentId: intent.id },
       });
     }
+
+    await this.recordEvent({
+      record,
+      bookingId,
+      actorId: renterId,
+      source: "api",
+      type: `${kind.toLowerCase()}.intent.created`,
+      status: PaymentRecordStatus.REQUIRES_ACTION,
+      amountMinor,
+      currency,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
 
     await this.auditLog.create({
       actorId: renterId,
@@ -183,25 +272,32 @@ export class PaymentsService {
         "Booking is missing pricing snapshots; accept it first",
       );
     }
-    return Math.round(value * 100);
+    const minor = Math.round(value * 100);
+    if (!Number.isFinite(minor) || minor <= 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "INVALID_AMOUNT",
+        message: "El importe de este cobro no es válido",
+      });
+    }
+    return minor;
   }
 
-  // ---- simulación de pago (solo provider mock) ----------------------------
+  // ── Simulación offline (solo con el provider mock, que es el de los tests) ──
 
   /**
-   * Completa el pago de una reserva sin pasar por Stripe: crea los intents que
-   * falten y los marca como cobrados/autorizados aplicando exactamente la misma
-   * transición que el webhook real.
+   * Completa el pago de una reserva sin pasar por el procesador.
    *
-   * Existe porque con PAYMENTS_PROVIDER=mock nadie envía el webhook, y sin él la
-   * reserva se queda en PENDING para siempre: el dueño nunca puede marcarla
-   * lista para retiro y el circuito entre los dos usuarios queda cortado.
-   * Con el provider Stripe está deshabilitado (403): ahí manda el webhook.
+   * Existe SOLO para los tests automatizados, que corren con
+   * PAYMENTS_PROVIDER=mock y no tienen quién les mande un webhook firmado. Con
+   * el provider Stripe está deshabilitado (403), y la demo usa Stripe: ahí el
+   * pago lo confirma Stripe y el aviso llega por webhook, como en producción.
    */
   async simulatePaymentSuccess(
     renterId: string,
     bookingId: string,
-    kind?: PaymentRecordKindLike,
+    kind: PaymentRecordKindLike | undefined,
+    ctx: PaymentContext,
   ) {
     this.assertMockProvider();
     const kinds: PaymentRecordKindLike[] = kind
@@ -213,16 +309,13 @@ export class PaymentsService {
       // array importa: cada vuelta ve el estado que dejó la anterior.
       const intent =
         current === "BALANCE"
-          ? await this.createBalanceIntent(renterId, bookingId)
-          : await this.createChargeIntent(renterId, bookingId, current);
+          ? await this.createBalanceIntent(renterId, bookingId, ctx)
+          : await this.createChargeIntent(renterId, bookingId, current, ctx);
 
       if (current === "DEPOSIT_HOLD") {
         await this.onHoldAuthorized(intent.paymentIntentId);
       } else {
-        await this.onIntentSucceeded(
-          intent.paymentIntentId,
-          `ch_mock_${intent.paymentIntentId}`,
-        );
+        await this.onIntentSucceeded(intent.paymentIntentId);
       }
     }
 
@@ -245,7 +338,7 @@ export class PaymentsService {
       where: {
         bookingId,
         kind: kind as PaymentRecordKind,
-        status: { notIn: [PaymentRecordStatus.FAILED] },
+        status: { notIn: UNUSABLE_RECORD_STATUSES },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -264,13 +357,17 @@ export class PaymentsService {
 
   private assertMockProvider() {
     if (this.provider.name !== "mock") {
-      throw new ForbiddenException(
-        "La simulación de pagos solo está disponible con PAYMENTS_PROVIDER=mock",
-      );
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: "SIMULATION_DISABLED",
+        message:
+          "La simulación de pagos solo existe para los tests automatizados " +
+          "(PAYMENTS_PROVIDER=mock). Acá los pagos los confirma Stripe.",
+      });
     }
   }
 
-  // ---- status -------------------------------------------------------------
+  // ── Estado ─────────────────────────────────────────────────────────────
 
   async getStatus(userId: string, bookingId: string) {
     const booking = await this.findBookingForParticipant(userId, bookingId);
@@ -290,29 +387,45 @@ export class PaymentsService {
       insurance: booking.insuranceSnapshot,
       ownerPayout: booking.ownerPayoutSnapshot,
       ownerTransferId: booking.ownerTransferId,
+      depositCapturedAmount: booking.depositCapturedAmount,
       paidAt: booking.paidAt,
       refundedAt: booking.refundedAt,
-      records,
+      records: records.map((record) => publicRecord(record)),
     };
   }
 
-  // ---- webhook ------------------------------------------------------------
+  // ── Webhook ────────────────────────────────────────────────────────────
 
   async handleWebhook(rawBody: Buffer, signature: string | undefined) {
     let event;
     try {
       event = this.provider.constructWebhookEvent(rawBody, signature);
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`webhook rechazado: ${message}`);
       throw new BadRequestException("Invalid Stripe webhook signature");
     }
 
-    const already = await this.prisma.stripeEvent.findUnique({
-      where: { eventId: event.id },
-    });
-    if (already?.processedAt) {
-      return { received: true, duplicate: true };
+    // UN EVENTO DEL MODO REAL LLEGANDO A UN DEPLOY DE PRUEBA SE DESCARTA.
+    //
+    // Si esto pasa, algo está cruzado: las claves, o un webhook de la cuenta
+    // real apuntado a este proyecto. Procesarlo movería plata de verdad sobre
+    // reservas que son de mentira. Se contesta 200 para que Stripe no reintente
+    // eternamente, pero no se toca nada.
+    if (event.livemode && !this.enModoReal()) {
+      this.logger.error(
+        `evento livemode ${event.id} (${event.type}) recibido por un deploy ` +
+          "en modo de prueba: descartado. Revisar a qué proyecto apunta el " +
+          "webhook de la cuenta de Stripe real.",
+      );
+      return { received: true, ignored: "livemode_mismatch" as const };
     }
-    if (!already) {
+
+    // La unicidad de `eventId` es lo que hace el descarte de duplicados, y se
+    // apoya en la base y no en un `findUnique` previo: dos entregas del mismo
+    // evento llegando a la vez pasaban las dos por el chequeo y se procesaban
+    // dos veces (Stripe reintenta, y reintenta en paralelo).
+    try {
       await this.prisma.stripeEvent.create({
         data: {
           eventId: event.id,
@@ -320,52 +433,113 @@ export class PaymentsService {
           payload: event as unknown as Prisma.InputJsonValue,
         },
       });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        // Ya procesado, o todavía procesándose por otra entrega: en los dos
+        // casos se descarta. El que lo está procesando va a terminar, y si no
+        // termina Stripe vuelve a mandarlo (la fila queda sin processedAt, así
+        // que se ve cuál quedó a medias).
+        return { received: true, duplicate: true as const, type: event.type };
+      }
+      throw error;
     }
 
-    await this.dispatchEvent(event.type, event.data.object);
+    await this.dispatchEvent(event.id, event.type, event.data.object);
 
     await this.prisma.stripeEvent.update({
       where: { eventId: event.id },
       data: { processedAt: new Date() },
     });
 
-    return { received: true, duplicate: false };
+    return { received: true, duplicate: false as const, type: event.type };
   }
 
   private async dispatchEvent(
+    eventId: string,
     type: string,
     object: Record<string, unknown>,
   ): Promise<void> {
-    const paymentIntentId = object.id as string | undefined;
-    if (!paymentIntentId) return;
+    const id = object.id as string | undefined;
+    if (!id) return;
 
-    if (type === "payment_intent.succeeded") {
-      await this.onIntentSucceeded(
-        paymentIntentId,
-        object.latest_charge as string | undefined,
-      );
-    } else if (type === "payment_intent.amount_capturable_updated") {
-      await this.onHoldAuthorized(paymentIntentId);
-    } else if (type === "payment_intent.payment_failed") {
-      await this.onIntentFailed(paymentIntentId);
+    switch (type) {
+      case "payment_intent.succeeded":
+        await this.onIntentSucceeded(id, eventId);
+        break;
+      case "payment_intent.amount_capturable_updated":
+        await this.onHoldAuthorized(id, eventId);
+        break;
+      case "payment_intent.processing":
+        await this.onIntentProcessing(id, eventId);
+        break;
+      case "payment_intent.payment_failed":
+        await this.onIntentFailed(id, eventId);
+        break;
+      case "payment_intent.canceled":
+        await this.onIntentCanceled(id, eventId);
+        break;
+      case "charge.refunded":
+        await this.onChargeRefunded(object, eventId);
+        break;
+      case "charge.dispute.created":
+      case "charge.dispute.funds_withdrawn":
+        await this.onDisputeOpened(object, eventId);
+        break;
+      case "account.updated":
+        await this.onConnectedAccountUpdated(object, eventId);
+        break;
+      default:
+        // Un evento que no nos interesa no es un error: Stripe manda muchos y
+        // suscribirse de más es más seguro que de menos. Queda anotado y ya.
+        this.logger.debug(`evento ${type} recibido y no aplicado`);
     }
   }
 
-  private async onIntentSucceeded(piId: string, chargeId?: string) {
+  /**
+   * Un cobro se concretó.
+   *
+   * Antes de tocar nada se le pregunta al procesador por el intent completo:
+   * el webhook trae el id del cargo pero no el cargo, así que la tarjeta y la
+   * evaluación de riesgo —lo único que después permite responder un
+   * desconocimiento de cobro— solo se consiguen preguntando.
+   */
+  private async onIntentSucceeded(piId: string, eventId?: string) {
     const record = await this.prisma.paymentRecord.findUnique({
       where: { stripePaymentIntentId: piId },
     });
     if (!record?.bookingId) return;
     const bookingId = record.bookingId;
+    const detalle = await this.safeRetrieve(piId);
 
-    // The record's capture and the booking's payment status must move together.
-    await this.prisma.$transaction(async (tx) => {
-      await tx.paymentRecord.update({
+    // El importe que Stripe dice haber cobrado contra el que esta reserva
+    // esperaba. Un desajuste es una señal de manipulación o de un intent que
+    // no es de esta reserva; no se revierte solo —la plata ya entró— pero
+    // queda gritado en el log y guardado en el registro.
+    if (
+      detalle?.amountReceivedMinor != null &&
+      record.amountMinor != null &&
+      detalle.amountReceivedMinor !== record.amountMinor
+    ) {
+      this.logger.error(
+        `el cobro ${piId} entró por ${detalle.amountReceivedMinor} y la ` +
+          `reserva ${bookingId} esperaba ${record.amountMinor}`,
+      );
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const actualizado = await tx.paymentRecord.update({
         where: { id: record.id },
         data: {
           status: PaymentRecordStatus.CAPTURED,
-          stripeChargeId: chargeId,
+          stripeChargeId: detalle?.chargeId ?? undefined,
           paidAt: new Date(),
+          capturedAt: new Date(),
+          failureCode: null,
+          failureMessage: null,
+          ...cardColumns(detalle),
         },
       });
 
@@ -406,6 +580,21 @@ export class PaymentsService {
           });
         }
       }
+      return actualizado;
+    });
+
+    await this.recordEvent({
+      record: updated,
+      bookingId,
+      source: "webhook",
+      type: "intent.succeeded",
+      status: PaymentRecordStatus.CAPTURED,
+      amountMinor: detalle?.amountReceivedMinor ?? record.amountMinor,
+      currency: record.currency,
+      providerEventId: eventId,
+      payload: detalle
+        ? { status: detalle.status, chargeId: detalle.chargeId }
+        : null,
     });
 
     await this.auditLog.create({
@@ -423,13 +612,14 @@ export class PaymentsService {
     SENA: "Seña",
     BALANCE: "Saldo",
     DEPOSIT_HOLD: "Depósito en garantía",
+    DEPOSIT_CAPTURE: "Cobro del depósito en garantía",
   };
 
   /**
    * Comprobante al inquilino y aviso al dueño, cada vez que un cobro se concreta.
    *
    * Va acá, en onIntentSucceeded, porque es el ÚNICO lugar por donde pasan los
-   * dos caminos: el webhook de Stripe y el pago simulado del modo mock. Ponerlo
+   * dos caminos: el webhook de Stripe y el pago simulado de los tests. Ponerlo
    * en cada uno serían dos lugares para olvidarse de uno.
    *
    * Nunca hace fallar el pago: si el mail no sale, queda en el log. Un cobro que
@@ -516,31 +706,81 @@ export class PaymentsService {
     }
   }
 
-  private async onHoldAuthorized(piId: string) {
+  /** La retención del depósito quedó autorizada: la plata está bloqueada. */
+  private async onHoldAuthorized(piId: string, eventId?: string) {
     const record = await this.prisma.paymentRecord.findUnique({
       where: { stripePaymentIntentId: piId },
     });
     if (!record) return;
-    await this.prisma.paymentRecord.update({
+    const detalle = await this.safeRetrieve(piId);
+
+    const updated = await this.prisma.paymentRecord.update({
       where: { id: record.id },
-      data: { status: PaymentRecordStatus.AUTHORIZED },
+      data: {
+        status: PaymentRecordStatus.AUTHORIZED,
+        stripeChargeId: detalle?.chargeId ?? undefined,
+        ...cardColumns(detalle),
+      },
+    });
+
+    await this.recordEvent({
+      record: updated,
+      bookingId: record.bookingId,
+      source: "webhook",
+      type: "hold.authorized",
+      status: PaymentRecordStatus.AUTHORIZED,
+      amountMinor: detalle?.amountCapturableMinor ?? record.amountMinor,
+      currency: record.currency,
+      providerEventId: eventId,
     });
   }
 
-  private async onIntentFailed(piId: string) {
+  /**
+   * El medio de pago se está procesando: ni éxito ni fracaso.
+   *
+   * Existe porque sin este estado un pago en curso se veía igual que uno que
+   * nunca se intentó, y el front le mostraba a alguien que ya había pagado el
+   * botón de pagar otra vez.
+   */
+  private async onIntentProcessing(piId: string, eventId?: string) {
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record) return;
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: { status: PaymentRecordStatus.PROCESSING },
+    });
+    await this.recordEvent({
+      record: updated,
+      bookingId: record.bookingId,
+      source: "webhook",
+      type: "intent.processing",
+      status: PaymentRecordStatus.PROCESSING,
+      providerEventId: eventId,
+    });
+  }
+
+  private async onIntentFailed(piId: string, eventId?: string) {
     const record = await this.prisma.paymentRecord.findUnique({
       where: { stripePaymentIntentId: piId },
     });
     if (!record?.bookingId) return;
     const bookingId = record.bookingId;
+    const detalle = await this.safeRetrieve(piId);
     const isCharge =
       record.kind === PaymentRecordKind.SENA ||
       record.kind === PaymentRecordKind.BALANCE;
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.paymentRecord.update({
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const actualizado = await tx.paymentRecord.update({
         where: { id: record.id },
-        data: { status: PaymentRecordStatus.FAILED },
+        data: {
+          status: PaymentRecordStatus.FAILED,
+          failureCode: detalle?.failure?.code ?? null,
+          failureMessage: detalle?.failure?.message ?? null,
+          ...cardColumns(detalle),
+        },
       });
       if (isCharge) {
         await tx.booking.update({
@@ -548,10 +788,234 @@ export class PaymentsService {
           data: { paymentStatus: PaymentStatus.FAILED },
         });
       }
+      return actualizado;
+    });
+
+    await this.recordEvent({
+      record: updated,
+      bookingId,
+      source: "webhook",
+      type: "intent.failed",
+      status: PaymentRecordStatus.FAILED,
+      amountMinor: record.amountMinor,
+      currency: record.currency,
+      providerEventId: eventId,
+      payload: detalle?.failure ? { ...detalle.failure } : null,
     });
   }
 
-  // ---- pickup gate --------------------------------------------------------
+  private async onIntentCanceled(piId: string, eventId?: string) {
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record) return;
+    // Cancelar una retención ES soltarla: para quien alquiló, su plata se
+    // desbloqueó. Distinguirlo de un intent de cobro cancelado importa porque
+    // son dos cosas distintas para quien lee el historial.
+    const esRetencion = record.kind === PaymentRecordKind.DEPOSIT_HOLD;
+    const status = esRetencion
+      ? PaymentRecordStatus.RELEASED
+      : PaymentRecordStatus.CANCELLED;
+
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: {
+        status,
+        ...(esRetencion ? { releasedAt: new Date() } : {}),
+      },
+    });
+    await this.recordEvent({
+      record: updated,
+      bookingId: record.bookingId,
+      source: "webhook",
+      type: esRetencion ? "hold.released" : "intent.canceled",
+      status,
+      providerEventId: eventId,
+    });
+  }
+
+  /**
+   * Una devolución se concretó del lado del procesador.
+   *
+   * Llega también cuando la devolución la inició alguien desde el panel de
+   * Stripe y no desde acá, que es justamente el caso que antes dejaba la base
+   * diciendo "cobrado" sobre plata que ya se había devuelto.
+   */
+  private async onChargeRefunded(
+    object: Record<string, unknown>,
+    eventId?: string,
+  ) {
+    const piId = object.payment_intent as string | undefined;
+    if (!piId) return;
+    const record = await this.prisma.paymentRecord.findUnique({
+      where: { stripePaymentIntentId: piId },
+    });
+    if (!record) return;
+
+    const refundedMinor = Number(object.amount_refunded ?? 0);
+    const totalMinor = Number(object.amount ?? record.amountMinor ?? 0);
+    const completa = refundedMinor >= totalMinor && totalMinor > 0;
+
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: {
+        status: completa
+          ? PaymentRecordStatus.REFUNDED
+          : PaymentRecordStatus.PARTIALLY_REFUNDED,
+        refundedAmountMinor: refundedMinor,
+        refundedAt: new Date(),
+      },
+    });
+
+    if (completa && record.bookingId) {
+      await this.prisma.booking.update({
+        where: { id: record.bookingId },
+        data: {
+          paymentStatus: PaymentStatus.REFUNDED,
+          refundedAt: new Date(),
+        },
+      });
+    }
+
+    await this.recordEvent({
+      record: updated,
+      bookingId: record.bookingId,
+      source: "webhook",
+      type: completa ? "refund.completed" : "refund.partial",
+      status: updated.status,
+      amountMinor: refundedMinor,
+      currency: record.currency,
+      providerEventId: eventId,
+    });
+  }
+
+  /**
+   * EL TITULAR DE LA TARJETA DESCONOCIÓ EL COBRO.
+   *
+   * Es el evento más caro de todos: la plata se va, y se va del saldo de la
+   * plataforma. Lo importante acá es que quede MARCADO antes de que se le
+   * transfiera nada al dueño del auto — si el pago se revierte después de
+   * haberle pagado, la pérdida la come la plataforma entera.
+   *
+   * Por eso `settleOnReturn` se niega a liquidar una reserva con una disputa
+   * abierta.
+   */
+  private async onDisputeOpened(
+    object: Record<string, unknown>,
+    eventId?: string,
+  ) {
+    const chargeId = object.charge as string | undefined;
+    const piId = object.payment_intent as string | undefined;
+    const record = piId
+      ? await this.prisma.paymentRecord.findUnique({
+          where: { stripePaymentIntentId: piId },
+        })
+      : chargeId
+        ? await this.prisma.paymentRecord.findFirst({
+            where: { stripeChargeId: chargeId },
+          })
+        : null;
+    if (!record) return;
+
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: record.id },
+      data: {
+        status: PaymentRecordStatus.DISPUTED,
+        disputedAt: new Date(),
+      },
+    });
+
+    if (record.bookingId) {
+      await this.prisma.booking.update({
+        where: { id: record.bookingId },
+        data: { paymentStatus: PaymentStatus.DISPUTED },
+      });
+    }
+
+    await this.recordEvent({
+      record: updated,
+      bookingId: record.bookingId,
+      source: "webhook",
+      type: "dispute.opened",
+      status: PaymentRecordStatus.DISPUTED,
+      amountMinor: Number(object.amount ?? record.amountMinor ?? 0),
+      currency: record.currency,
+      providerEventId: eventId,
+      payload: { reason: object.reason ?? null, status: object.status ?? null },
+    });
+
+    this.logger.error(
+      `DISPUTA abierta sobre ${record.stripePaymentIntentId} ` +
+        `(reserva ${record.bookingId}). La liquidación al dueño queda frenada.`,
+    );
+
+    await this.auditLog.create({
+      targetUserId: record.userId ?? undefined,
+      action: "payment.dispute.opened",
+      entityType: "Booking",
+      entityId: record.bookingId ?? "",
+      metadata: {
+        paymentIntentId: record.stripePaymentIntentId,
+        reason: object.reason ?? null,
+      },
+    });
+  }
+
+  /**
+   * La cuenta conectada de un dueño cambió de estado.
+   *
+   * Sin esto, `stripeAccountStatus` se quedaba en PENDING para siempre: se
+   * escribía al empezar el alta y nadie volvía a mirarlo. El resultado era que
+   * la plataforma intentaba transferirle a cuentas que Stripe había
+   * restringido, y la transferencia fallaba en el peor momento posible — al
+   * devolver el auto.
+   */
+  private async onConnectedAccountUpdated(
+    object: Record<string, unknown>,
+    eventId?: string,
+  ) {
+    const accountId = object.id as string | undefined;
+    if (!accountId) return;
+
+    const owner = await this.prisma.user.findUnique({
+      where: { stripeAccountId: accountId },
+      select: { id: true },
+    });
+    if (!owner) return;
+
+    const chargesEnabled = object.charges_enabled === true;
+    const payoutsEnabled = object.payouts_enabled === true;
+    const detailsSubmitted = object.details_submitted === true;
+
+    const status = payoutsEnabled
+      ? StripeAccountStatus.ENABLED
+      : detailsSubmitted
+        ? StripeAccountStatus.RESTRICTED
+        : StripeAccountStatus.PENDING;
+
+    await this.prisma.user.update({
+      where: { id: owner.id },
+      data: { stripeAccountStatus: status },
+    });
+
+    await this.prisma.paymentEvent.create({
+      data: {
+        actorId: null,
+        source: "webhook",
+        type: "connect.account.updated",
+        providerEventId: eventId ?? null,
+        payload: {
+          accountId,
+          chargesEnabled,
+          payoutsEnabled,
+          detailsSubmitted,
+          status,
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  // ── Puerta del retiro ──────────────────────────────────────────────────
 
   async assertReadyForPickup(bookingId: string): Promise<void> {
     const booking = await this.findBooking(bookingId);
@@ -574,12 +1038,35 @@ export class PaymentsService {
     }
   }
 
-  // ---- settlement on return (release deposit + payout to owner) ------------
+  // ── Liquidación en la devolución (soltar depósito + pagar al dueño) ────
 
   async settleOnReturn(actorId: string, bookingId: string) {
     const booking = await this.findBookingWithUsers(bookingId);
 
-    // Release the (clean-return) deposit hold if still authorized.
+    // NO SE LIQUIDA UNA RESERVA CON UNA DISPUTA ABIERTA.
+    //
+    // Transferirle al dueño plata que el banco del inquilino puede reclamar de
+    // vuelta convierte una disputa en una pérdida: la plataforma devuelve el
+    // cobro y ya le pagó al dueño. Frenar la liquidación es lo único que deja
+    // la plata donde se la puede defender.
+    const disputado = await this.prisma.paymentRecord.findFirst({
+      where: { bookingId, status: PaymentRecordStatus.DISPUTED },
+      select: { id: true },
+    });
+    if (disputado) {
+      this.logger.error(
+        `la reserva ${bookingId} tiene un cobro disputado: no se liquida`,
+      );
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "PAYMENT_DISPUTED",
+        message:
+          "Hay un pago de esta reserva desconocido por el titular de la " +
+          "tarjeta. La liquidación queda frenada hasta que se resuelva.",
+      });
+    }
+
+    // Soltar la retención del depósito (devolución sin daños).
     const hold = await this.prisma.paymentRecord.findFirst({
       where: {
         bookingId,
@@ -592,13 +1079,26 @@ export class PaymentsService {
         paymentIntentId: hold.stripePaymentIntentId,
         idempotencyKey: `booking_${bookingId}_deposit_release`,
       });
-      await this.prisma.paymentRecord.update({
+      const updated = await this.prisma.paymentRecord.update({
         where: { id: hold.id },
-        data: { status: PaymentRecordStatus.RELEASED },
+        data: {
+          status: PaymentRecordStatus.RELEASED,
+          releasedAt: new Date(),
+        },
+      });
+      await this.recordEvent({
+        record: updated,
+        bookingId,
+        actorId,
+        source: "api",
+        type: "hold.released",
+        status: PaymentRecordStatus.RELEASED,
+        amountMinor: hold.amountMinor,
+        currency: hold.currency,
       });
     }
 
-    // Transfer the owner payout to their connected account.
+    // Transferir al dueño lo que le corresponde.
     const accountId = await this.ensureOwnerAccount(booking.owner);
     const amountMinor = Math.round((booking.ownerPayoutSnapshot ?? 0) * 100);
     if (amountMinor > 0) {
@@ -611,7 +1111,7 @@ export class PaymentsService {
         idempotencyKey: `booking_${bookingId}_owner_transfer`,
       });
 
-      await this.prisma.$transaction([
+      const [payout] = await this.prisma.$transaction([
         this.prisma.paymentRecord.create({
           data: {
             bookingId,
@@ -632,6 +1132,17 @@ export class PaymentsService {
           data: { ownerTransferId: transfer.id },
         }),
       ]);
+
+      await this.recordEvent({
+        record: payout,
+        bookingId,
+        actorId,
+        source: "api",
+        type: "transfer.created",
+        status: PaymentRecordStatus.PAID,
+        amountMinor,
+        currency: booking.currency,
+      });
     }
 
     await this.auditLog.create({
@@ -644,7 +1155,124 @@ export class PaymentsService {
     });
   }
 
-  // ---- refund on cancel ---------------------------------------------------
+  /**
+   * COBRAR PARTE DEL DEPÓSITO EN GARANTÍA POR UN DAÑO.
+   *
+   * Es la otra mitad del depósito, y hasta ahora no existía: la retención solo
+   * se podía soltar, así que un auto devuelto con un golpe no tenía forma de
+   * cobrarse y el depósito era decorativo.
+   *
+   * ── Por qué lo ejecuta un administrador y no el dueño ────────────────────
+   * Es plata de otra persona y la decisión tiene dos partes interesadas con
+   * intereses opuestos. Dejar que el dueño capture solo convertiría el
+   * depósito en un botón para quedarse con $200 de quien alquiló, sin que
+   * nadie mire. El dueño reclama, la plataforma resuelve — que es lo que la
+   * plataforma está para hacer.
+   *
+   * El importe se acota al retenido: no se puede capturar más de lo que se
+   * bloqueó, y Stripe además lo rechazaría.
+   */
+  async captureDeposit(
+    actorId: string,
+    bookingId: string,
+    amountMinor: number,
+    reason: string,
+    ctx: PaymentContext = {},
+  ) {
+    const booking = await this.findBooking(bookingId);
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (!hold?.stripePaymentIntentId) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DEPOSIT_HOLD_NOT_AVAILABLE",
+        message:
+          "Esta reserva no tiene un depósito retenido para cobrar. Puede que " +
+          "ya se haya soltado o que nunca se haya autorizado.",
+      });
+    }
+
+    const retenido = hold.amountMinor ?? 0;
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "INVALID_AMOUNT",
+        message: "El importe a cobrar tiene que ser un número positivo.",
+      });
+    }
+    if (amountMinor > retenido) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "AMOUNT_EXCEEDS_HOLD",
+        message: `No se puede cobrar más de lo retenido (${retenido / 100} ${hold.currency.toUpperCase()}).`,
+      });
+    }
+
+    const captured = await this.provider.captureHold({
+      paymentIntentId: hold.stripePaymentIntentId,
+      amountMinor,
+      idempotencyKey: `booking_${bookingId}_deposit_capture_${amountMinor}`,
+    });
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const actualizado = await tx.paymentRecord.update({
+        where: { id: hold.id },
+        data: {
+          status: PaymentRecordStatus.CAPTURED,
+          amount: amountMinor / 100,
+          amountMinor,
+          capturedAt: new Date(),
+          paidAt: new Date(),
+          stripeChargeId: captured.chargeId ?? undefined,
+          metadata: {
+            ...((hold.metadata as Record<string, unknown> | null) ?? {}),
+            depositHeldMinor: retenido,
+            captureReason: reason,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      await tx.booking.update({
+        where: { id: bookingId },
+        data: { depositCapturedAmount: amountMinor / 100 },
+      });
+      return actualizado;
+    });
+
+    await this.recordEvent({
+      record: updated,
+      bookingId,
+      actorId,
+      source: "api",
+      type: "hold.captured",
+      status: PaymentRecordStatus.CAPTURED,
+      amountMinor,
+      currency: hold.currency,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+      payload: { reason, heldMinor: retenido },
+    });
+
+    await this.auditLog.create({
+      actorId,
+      targetUserId: booking.renterId,
+      action: "payment.deposit.captured",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: { amountMinor, heldMinor: retenido, reason },
+    });
+
+    return this.getStatus(actorId, bookingId).catch(() => ({
+      bookingId,
+      capturedMinor: amountMinor,
+    }));
+  }
+
+  // ── Devolución al cancelar ─────────────────────────────────────────────
 
   async refundOnCancel(actorId: string, bookingId: string) {
     const booking = await this.findBooking(bookingId);
@@ -658,16 +1286,24 @@ export class PaymentsService {
 
     for (const record of charged) {
       if (!record.stripePaymentIntentId) continue;
+      // Lo que queda por devolver, no el importe original: un cobro que ya
+      // tuvo una devolución parcial no se devuelve entero otra vez.
+      const pendienteMinor =
+        (record.amountMinor ?? 0) - (record.refundedAmountMinor ?? 0);
+      if (pendienteMinor <= 0) continue;
+
       const refund = await this.provider.refund({
         paymentIntentId: record.stripePaymentIntentId,
-        amountMinor: record.amountMinor ?? undefined,
-        idempotencyKey: `booking_${bookingId}_${record.kind}_refund`,
+        amountMinor: pendienteMinor,
+        idempotencyKey: `booking_${bookingId}_${record.kind}_refund_${pendienteMinor}`,
       });
-      await this.prisma.$transaction([
+      const [updated, comprobante] = await this.prisma.$transaction([
         this.prisma.paymentRecord.update({
           where: { id: record.id },
           data: {
             status: PaymentRecordStatus.REFUNDED,
+            refundedAmountMinor:
+              (record.refundedAmountMinor ?? 0) + pendienteMinor,
             refundedAt: new Date(),
           },
         }),
@@ -680,16 +1316,28 @@ export class PaymentsService {
             provider: this.provider.name,
             providerId: refund.id,
             stripeRefundId: refund.id,
-            amount: (record.amountMinor ?? 0) / 100,
-            amountMinor: record.amountMinor,
+            amount: pendienteMinor / 100,
+            amountMinor: pendienteMinor,
             currency: record.currency,
             refundedAt: new Date(),
           },
         }),
       ]);
+      void updated;
+
+      await this.recordEvent({
+        record: comprobante,
+        bookingId,
+        actorId,
+        source: "api",
+        type: "refund.created",
+        status: PaymentRecordStatus.REFUNDED,
+        amountMinor: pendienteMinor,
+        currency: record.currency,
+      });
     }
 
-    // Release any authorized deposit hold.
+    // Soltar la retención del depósito, si estaba autorizada.
     const hold = await this.prisma.paymentRecord.findFirst({
       where: {
         bookingId,
@@ -702,9 +1350,22 @@ export class PaymentsService {
         paymentIntentId: hold.stripePaymentIntentId,
         idempotencyKey: `booking_${bookingId}_deposit_release`,
       });
-      await this.prisma.paymentRecord.update({
+      const updated = await this.prisma.paymentRecord.update({
         where: { id: hold.id },
-        data: { status: PaymentRecordStatus.RELEASED },
+        data: {
+          status: PaymentRecordStatus.RELEASED,
+          releasedAt: new Date(),
+        },
+      });
+      await this.recordEvent({
+        record: updated,
+        bookingId,
+        actorId,
+        source: "api",
+        type: "hold.released",
+        status: PaymentRecordStatus.RELEASED,
+        amountMinor: hold.amountMinor,
+        currency: hold.currency,
       });
     }
 
@@ -728,7 +1389,7 @@ export class PaymentsService {
     });
   }
 
-  // ---- connect onboarding (owner) -----------------------------------------
+  // ── Alta del dueño en Connect ──────────────────────────────────────────
 
   async createOwnerOnboarding(ownerId: string) {
     const owner = await this.prisma.user.findUnique({ where: { id: ownerId } });
@@ -754,7 +1415,168 @@ export class PaymentsService {
     return { accountId: result.accountId, onboardingUrl: result.onboardingUrl };
   }
 
-  // ---- helpers ------------------------------------------------------------
+  /**
+   * El estado de cobro del dueño, consultado al procesador.
+   *
+   * El front lo necesita para poder decir "todavía te falta completar tus
+   * datos en Stripe" antes de que alguien publique un auto y descubra recién
+   * al devolverlo que no puede cobrar.
+   */
+  async getOwnerPayoutStatus(ownerId: string) {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { stripeAccountId: true, stripeAccountStatus: true },
+    });
+    assertFound(owner, "User not found");
+
+    if (!owner.stripeAccountId) {
+      return {
+        connected: false,
+        status: StripeAccountStatus.NONE,
+        chargesEnabled: false,
+        payoutsEnabled: false,
+        detailsSubmitted: false,
+      };
+    }
+
+    const estado = await this.provider.getConnectedAccountStatus(
+      owner.stripeAccountId,
+    );
+    const status = estado.payoutsEnabled
+      ? StripeAccountStatus.ENABLED
+      : estado.detailsSubmitted
+        ? StripeAccountStatus.RESTRICTED
+        : StripeAccountStatus.PENDING;
+
+    if (status !== owner.stripeAccountStatus) {
+      await this.prisma.user.update({
+        where: { id: ownerId },
+        data: { stripeAccountStatus: status },
+      });
+    }
+
+    return { connected: true, status, ...estado };
+  }
+
+  // ── Registro append-only ───────────────────────────────────────────────
+
+  /**
+   * Anota una línea en el registro de lo que le pasó a un cobro.
+   *
+   * NUNCA HACE FALLAR LA OPERACIÓN QUE LA MOTIVÓ. Es deliberado y vale la pena
+   * ser explícito: el registro es importante, pero revertir un cobro que ya se
+   * hizo porque no se pudo escribir una línea de auditoría sería cambiar un
+   * problema de trazabilidad por uno de plata. Si falla, queda gritado en el
+   * log, que es donde alguien lo va a ver.
+   */
+  private async recordEvent(input: {
+    record?: PaymentRecord | null;
+    bookingId?: string | null;
+    actorId?: string | null;
+    source: "api" | "webhook" | "system";
+    type: string;
+    status?: PaymentRecordStatus;
+    amountMinor?: number | null;
+    currency?: string | null;
+    providerEventId?: string | null;
+    ip?: string | null;
+    userAgent?: string | null;
+    payload?: Record<string, unknown> | null;
+  }): Promise<void> {
+    try {
+      await this.prisma.paymentEvent.create({
+        data: {
+          paymentRecordId: input.record?.id ?? null,
+          bookingId: input.bookingId ?? input.record?.bookingId ?? null,
+          actorId: input.actorId ?? null,
+          source: input.source,
+          type: input.type,
+          status: input.status ?? null,
+          amountMinor: input.amountMinor ?? null,
+          currency: input.currency ?? null,
+          // El id del evento del procesador lleva el tipo pegado: un mismo
+          // evento de Stripe puede producir más de una línea (el cobro y el
+          // aviso), y el unique las haría chocar.
+          providerEventId: input.providerEventId
+            ? `${input.providerEventId}:${input.type}`
+            : null,
+          ip: input.ip ?? null,
+          userAgent: input.userAgent?.slice(0, 500) ?? null,
+          payload: (input.payload ?? undefined) as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        return; // El mismo evento ya quedó anotado: es el caso normal de un reintento.
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `no se pudo anotar el evento ${input.type} del cobro ` +
+          `${input.record?.id ?? "(sin registro)"}: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * El historial completo de una reserva: cada línea, en orden.
+   *
+   * Lo ven las dos partes de la reserva y los administradores. Va SIN las
+   * señas de la tarjeta ni la IP para quien no es administrador: al inquilino
+   * le sirve ver qué pasó y cuándo, no de qué IP se pagó.
+   */
+  async getLedger(userId: string, bookingId: string, isAdmin: boolean) {
+    await this.findBookingForParticipant(userId, bookingId);
+    const events = await this.prisma.paymentEvent.findMany({
+      where: { bookingId },
+      orderBy: { createdAt: "asc" },
+    });
+    return events.map((event) => ({
+      id: event.id,
+      type: event.type,
+      status: event.status,
+      amountMinor: event.amountMinor,
+      currency: event.currency,
+      source: event.source,
+      createdAt: event.createdAt,
+      ...(isAdmin
+        ? { ip: event.ip, userAgent: event.userAgent, payload: event.payload }
+        : {}),
+    }));
+  }
+
+  // ── Ayudantes ──────────────────────────────────────────────────────────
+
+  /**
+   * Consulta el intent y NO LANZA: si el procesador no contesta, se sigue con
+   * lo que ya se sabe.
+   *
+   * Es una consulta para enriquecer el registro, no para decidir. Hacerla
+   * obligatoria significaría que una caída momentánea de Stripe deje un cobro
+   * exitoso sin aplicar, que es exactamente al revés de lo que conviene.
+   */
+  private async safeRetrieve(
+    paymentIntentId: string,
+  ): Promise<PaymentIntentResult | null> {
+    try {
+      return await this.provider.retrieveIntent(paymentIntentId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `no se pudo consultar el intent ${paymentIntentId}: ${message}`,
+      );
+      return null;
+    }
+  }
+
+  /** Si este deploy está configurado para mover plata de verdad. */
+  private enModoReal(): boolean {
+    return /^(sk|rk)_live_/.test(
+      this.config.get<string>("STRIPE_SECRET_KEY") ?? "",
+    );
+  }
 
   private async ensureRenterCustomer(renter: User): Promise<string> {
     if (renter.stripeCustomerId) return renter.stripeCustomerId;
@@ -780,7 +1602,11 @@ export class PaymentsService {
       where: { id: owner.id },
       data: {
         stripeAccountId: account.accountId,
-        stripeAccountStatus: StripeAccountStatus.ENABLED,
+        // PENDING y no ENABLED: una cuenta recién creada NO puede recibir
+        // plata hasta que su dueño complete el alta con Stripe. Marcarla como
+        // habilitada era una mentira que se descubría al fallar la primera
+        // transferencia; el estado real llega por el webhook account.updated.
+        stripeAccountStatus: StripeAccountStatus.PENDING,
       },
     });
     return account.accountId;
@@ -813,4 +1639,58 @@ export class PaymentsService {
     );
     return booking;
   }
+}
+
+/** Las columnas de tarjeta y riesgo, solo cuando hay algo que escribir. */
+function cardColumns(detalle: PaymentIntentResult | null) {
+  if (!detalle) return {};
+  return {
+    ...(detalle.card
+      ? {
+          cardBrand: detalle.card.brand,
+          cardLast4: detalle.card.last4,
+          cardFingerprint: detalle.card.fingerprint,
+          cardCountry: detalle.card.country,
+        }
+      : {}),
+    ...(detalle.risk
+      ? { riskLevel: detalle.risk.level, riskScore: detalle.risk.score }
+      : {}),
+  };
+}
+
+/**
+ * UN COBRO, COMO LO VE QUIEN PARTICIPA DE LA RESERVA.
+ *
+ * La fila completa NO se devuelve, y el motivo es concreto: desde que el
+ * registro guarda el fingerprint de la tarjeta, la IP y el navegador de quien
+ * pagó, devolverla entera le mostraría al dueño del auto desde dónde se conecta
+ * quien se lo alquiló. Eso es vigilancia, no información de pago.
+ *
+ * Lo que queda es lo que sirve para entender el cobro: cuánto, cuándo, en qué
+ * estado, con qué tarjeta (marca y últimos cuatro, que es lo que la persona
+ * necesita para reconocerla en su resumen) y por qué falló si falló.
+ */
+function publicRecord(record: PaymentRecord) {
+  return {
+    id: record.id,
+    bookingId: record.bookingId,
+    kind: record.kind,
+    status: record.status,
+    amount: record.amount,
+    amountMinor: record.amountMinor,
+    refundedAmountMinor: record.refundedAmountMinor,
+    currency: record.currency,
+    cardBrand: record.cardBrand,
+    cardLast4: record.cardLast4,
+    failureCode: record.failureCode,
+    failureMessage: record.failureMessage,
+    paidAt: record.paidAt,
+    capturedAt: record.capturedAt,
+    releasedAt: record.releasedAt,
+    refundedAt: record.refundedAt,
+    disputedAt: record.disputedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
 }

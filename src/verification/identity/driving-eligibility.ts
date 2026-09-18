@@ -3,7 +3,6 @@ import {
   verificationReason,
 } from "../errors/verification-reasons";
 import { habilitaAuto } from "./identity-match.service";
-import { esLaCuentaDePrueba } from "../../common/cuenta-de-prueba";
 
 /**
  * ¿ESTA PERSONA PUEDE ALQUILAR UN AUTO AHORA MISMO?
@@ -12,6 +11,13 @@ import { esLaCuentaDePrueba } from "../../common/cuenta-de-prueba";
  * La verificación dice "sos quien decís ser" y se resuelve una vez; esto dice
  * "hoy podés conducir" y puede cambiar sin que nadie toque nada, simplemente
  * porque pasó el tiempo y la licencia venció.
+ *
+ * ── De dónde salen estos datos ───────────────────────────────────────────────
+ * Los declaró la persona al enviar su licencia, leyéndolos de la licencia, y
+ * la lectura automática los corroboró contra la foto antes de aprobarla. No
+ * salen de un OCR: un vencimiento mal leído dejaba una cuenta verificada y sin
+ * poder reservar, y la persona no tenía cómo corregir un dato que no había
+ * cargado ella.
  *
  * ── Se evalúa en cada pedido, no con un proceso programado ───────────────────
  * La tentación es un job nocturno que marque las licencias vencidas. El
@@ -23,14 +29,13 @@ import { esLaCuentaDePrueba } from "../../common/cuenta-de-prueba";
  *
  * ── Lo que no se sabe no bloquea ─────────────────────────────────────────────
  * Un vencimiento en `null` NO impide alquilar. Es importante y es deliberado:
- * hay licencias aprobadas por un admin antes de que existiera la lectura
- * automática, y en esas filas el dato nunca se cargó. Tratar "no sé cuándo
- * vence" como "está vencida" dejaría afuera, el día del deploy, a todas las
- * cuentas ya verificadas — un cambio que no arregla ningún fraude y rompe a
- * todos los usuarios reales. El dato se completa solo a medida que se
- * verifican o reverifican documentos.
+ * hay licencias aprobadas por un admin sin que nadie cargara la fecha, y en
+ * esas filas el dato nunca existió. Tratar "no sé cuándo vence" como "está
+ * vencida" dejaría afuera, el día del deploy, a cuentas ya verificadas — un
+ * cambio que no arregla ningún fraude y rompe a usuarios reales. El dato se
+ * completa solo a medida que se verifican o reverifican documentos.
  *
- * Mismo criterio para la clase: si no se pudo leer, no se asume que es de moto.
+ * Mismo criterio para la clase: si no está cargada, no se asume que es de moto.
  */
 
 /** Lo que hace falta saber de alguien para decidir si puede manejar. */
@@ -38,14 +43,6 @@ export interface DrivingCredentials {
   licenseExpiresAt: Date | null;
   licenseClass: string | null;
   licenseBeginnerUntil: Date | null;
-  /**
-   * Solo lo mira la cuenta de prueba de la fase de demo. Opcional para que
-   * quien llame no tenga que cargarlo si no le interesa; las tres llamadas de
-   * hoy pasan el usuario entero, así que ya viene puesto.
-   *
-   * FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts.
-   */
-  email?: string | null;
 }
 
 export interface DrivingEligibility {
@@ -103,18 +100,66 @@ export function evaluateDrivingEligibility(
     );
   }
 
-  // FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts (ver ese archivo).
-  // Los motivos se devuelven igual: la cuenta de prueba puede alquilar, pero
-  // el informe sigue diciendo qué la habría frenado.
-  const esPrueba = esLaCuentaDePrueba(credentials.email);
-
   return {
-    canRent: reasons.length === 0 || esPrueba,
+    canRent: reasons.length === 0,
     reasons,
     licenseExpiresAt: vence,
     expiresSoon:
       Boolean(vence) &&
       reasons.length === 0 &&
+      diasHasta(vence as Date, hoy) <= DIAS_DE_AVISO,
+  };
+}
+
+/**
+ * ¿LA IDENTIDAD DE ESTA PERSONA SIGUE RESPALDADA HOY?
+ *
+ * Es el control paralelo al de manejar, pero sobre el DNI, y gobierna TODO lo
+ * sensible: reservar, publicar, pagar, cobrar.
+ *
+ * Existe porque verificar una identidad no es para siempre. Un DNI vencido no
+ * deja de decir quién es la persona —por eso la cuenta sigue VERIFIED y no
+ * vuelve a cero— pero deja de ser un documento con el que la plataforma pueda
+ * respaldar una operación con plata adentro. La salida es renovar el documento
+ * y volver a enviarlo, no verificarse de nuevo desde el principio.
+ *
+ * Mismo criterio que arriba: un vencimiento desconocido no bloquea. Bloquear a
+ * todas las cuentas verificadas antes de que existiera este dato no atrapa
+ * ningún fraude y rompe a todos los usuarios reales.
+ */
+export interface IdentityCredentials {
+  dniExpiresAt: Date | null;
+}
+
+export interface IdentityValidity {
+  /** Si su identidad tiene respaldo documental vigente. */
+  valid: boolean;
+  reasons: VerificationReason[];
+  dniExpiresAt: Date | null;
+  expiresSoon: boolean;
+}
+
+export function evaluateIdentityValidity(
+  credentials: IdentityCredentials,
+  now: Date = new Date(),
+): IdentityValidity {
+  const hoy = comienzoDelDia(now);
+  const vence = credentials.dniExpiresAt;
+  const vencido = Boolean(vence && comienzoDelDia(vence) < hoy);
+
+  return {
+    valid: !vencido,
+    reasons: vencido
+      ? [
+          verificationReason("DNI_VENCIDO", {
+            date: isoCorto(vence as Date),
+          }),
+        ]
+      : [],
+    dniExpiresAt: vence,
+    expiresSoon:
+      Boolean(vence) &&
+      !vencido &&
       diasHasta(vence as Date, hoy) <= DIAS_DE_AVISO,
   };
 }

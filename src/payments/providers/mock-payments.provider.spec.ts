@@ -6,9 +6,9 @@ import { MockPaymentsProvider } from "./mock-payments.provider";
  *
  * Por qué importa: el webhook es lo que marca una reserva como pagada. Si se
  * acepta un evento sin verificar, cualquiera que sepa la URL manda un
- * "payment_intent.succeeded" y figura como que pagó. En desarrollo el camino
- * permisivo hace falta para poder recorrer el circuito sin una cuenta de Stripe;
- * en producción es una puerta abierta.
+ * "payment_intent.succeeded" y figura como que pagó. En los tests el camino
+ * permisivo hace falta para poder recorrer el circuito sin una cuenta de
+ * Stripe; en producción es una puerta abierta, y no hay variable que la abra.
  */
 function crear(env: Record<string, string>): MockPaymentsProvider {
   const config = { get: (clave: string) => env[clave] };
@@ -46,13 +46,18 @@ describe("MockPaymentsProvider y los webhooks sin firma", () => {
     ).toThrow(/sin firma verificada/i);
   });
 
-  it("en producción se puede habilitar a propósito para una demostración", () => {
+  it("NINGUNA variable de entorno vuelve a abrir esa puerta", () => {
+    // ALLOW_UNSIGNED_WEBHOOKS existió y se sacó. Un agujero que se abre con
+    // una variable es un agujero que un día queda abierto sin que nadie se
+    // acuerde, y lo que abría era "cualquiera puede declarar una reserva como
+    // pagada". Este test está para que nadie lo reponga sin darse cuenta.
     const provider = crear({
       NODE_ENV: "production",
       ALLOW_UNSIGNED_WEBHOOKS: "true",
     });
-    const evento = provider.constructWebhookEvent(EVENTO, undefined);
-    expect(evento.id).toBe("evt_falso");
+    expect(() => provider.constructWebhookEvent(EVENTO, undefined)).toThrow(
+      /sin firma verificada/i,
+    );
   });
 
   it("con el secreto configurado, una firma inventada no pasa", () => {

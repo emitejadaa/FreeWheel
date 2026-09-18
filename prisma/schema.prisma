@@ -37,15 +37,23 @@ enum VerifiedDocumentType {
 }
 
 /// Estado de la verificación de UN documento.
-/// - PENDING: las fotos están subidas y todavía nadie las revisó. Es el
-///   estado con el que nace toda submission; el usuario puede reenviar fotos
-///   o pedir la revisión de un admin.
+///
+/// DNI y licencia son dos flujos independientes: cada uno nace, falla y se
+/// aprueba por su cuenta, y verificar uno no obliga a verificar el otro.
+///
+/// - PENDING: las fotos están subidas y todavía no hay veredicto. Es el estado
+///   con el que nace toda submission y también donde queda cuando la lectura
+///   automática no se pudo hacer (servicio caído, sin configurar): un problema
+///   nuestro no puede contar como un documento fallado.
+/// - FAILED: la lectura automática se hizo y NO cerró. `reasonCodes` dice
+///   exactamente qué falló y sobre qué foto. Las fotos NO se borran: el usuario
+///   elige entre mandar otras (y ahí sí se borran las viejas) o pedir que un
+///   admin mire estas mismas. Lo que no se puede es volver a analizar las
+///   mismas fotos: ya tienen veredicto.
 /// - MANUAL_REVIEW: el usuario pidió la revisión; espera a un admin.
-/// - APPROVED: un admin aprobó el documento.
+/// - APPROVED: el documento quedó verificado, por la lectura automática o por
+///   un admin. Recién acá los datos declarados se copian a la cuenta.
 /// - REJECTED: un admin lo rechazó; los archivos se borran del storage.
-/// - FAILED: histórico. Lo escribía la verificación automática, que ya no
-///   existe. Se conserva porque hay filas viejas con este estado; se las
-///   trata igual que a un PENDING (se puede reenviar o pedir revisión).
 enum DocumentVerificationStatus {
   PENDING
   APPROVED
@@ -199,6 +207,8 @@ enum BookingStatus {
   DISPUTED
 }
 
+/// El resumen del estado de pago de UNA reserva. Es derivado de los
+/// PaymentRecord y existe para no tener que sumarlos en cada consulta.
 enum PaymentStatus {
   NOT_REQUIRED
   PENDING
@@ -208,8 +218,29 @@ enum PaymentStatus {
   DEPOSIT_PAID
   FULLY_PAID
   PARTIALLY_REFUNDED
+  /// El titular de la tarjeta desconoció un cobro de esta reserva. Es el
+  /// estado más caro: la plata puede irse del saldo de la plataforma, así que
+  /// frena la liquidación al dueño hasta que se resuelva.
+  DISPUTED
 }
 
+/// En qué anda UN cobro concreto. Sigue el ciclo de un PaymentIntent de
+/// Stripe, que es el modelo de referencia de toda esta parte.
+///
+///   REQUIRES_ACTION → el intent existe y espera que el cliente pague o
+///                     complete la autenticación (3-D Secure).
+///   PROCESSING      → el medio de pago se está procesando (débitos, algunos
+///                     métodos locales). No es ni éxito ni fracaso todavía.
+///   AUTHORIZED      → la plata está retenida pero no cobrada. Es el estado
+///                     del depósito en garantía.
+///   CAPTURED / PAID → cobrado de verdad.
+///   RELEASED        → una retención que se soltó sin cobrar.
+///   PARTIALLY_REFUNDED / REFUNDED → devuelto en parte o entero.
+///   DISPUTED        → el titular de la tarjeta desconoció el cobro. Es plata
+///                     que puede irse: bloquea la liquidación al dueño.
+///   FAILED          → el pago no se pudo hacer. `failureCode` dice por qué.
+///   CANCELLED       → el intent se dio de baja antes de cobrarse.
+///   MOCK            → filas del provider offline que se usa en los tests.
 enum PaymentRecordStatus {
   MOCK
   PENDING
@@ -218,10 +249,12 @@ enum PaymentRecordStatus {
   FAILED
   CANCELLED
   REQUIRES_ACTION
+  PROCESSING
   AUTHORIZED
   CAPTURED
   RELEASED
   PARTIALLY_REFUNDED
+  DISPUTED
 }
 
 enum PaymentRecordKind {
@@ -281,13 +314,20 @@ model User {
   /// "+5491132895416" y "011 3289-5416" entrarían como dos números distintos.
   phone                   String?             @unique
   dateOfBirth             DateTime?
-  // Datos de identidad cargados a mano en el panel; la revisión documental
-  // los cruza contra el DNI y la licencia. Quedan inmutables una vez que la
-  // cuenta es VERIFIED. Unicidad nullable: una misma identidad no puede
-  // respaldar dos cuentas (antifraude a nivel base).
+  /// Datos de identidad que CARGA LA PERSONA. La revisión documental los cruza
+  /// contra lo que dicen el DNI y la licencia, y ese cruce es lo único que hace
+  /// la lectura automática: ningún dato sale de la foto para entrar acá.
+  ///
+  /// El domicilio ya no está y no es un olvido. No se comparaba contra nada, no
+  /// habilitaba nada, y era el dato más sensible que guardábamos de una persona.
+  /// La dirección que el sistema sí necesita es la del auto, y esa vive en
+  /// Listing.locationText.
+  ///
+  /// Quedan inmutables una vez que hay un documento aprobado contra ellos.
+  /// Unicidad nullable: una misma identidad no puede respaldar dos cuentas
+  /// (antifraude a nivel base).
   dni                     String?             @unique
   cuil                    String?             @unique
-  address                 String?
   profilePhotoUrl         String?
   /// La foto de perfil SIN RECORTAR, tal como se subió.
   ///
@@ -325,31 +365,36 @@ model User {
   role                    UserRole            @default(USER)
   status                  UserStatus          @default(ACTIVE)
   verificationStatus      VerificationStatus  @default(UNVERIFIED)
-  /// DATOS DE LA LICENCIA QUE SALEN DE LA FOTO, NO DEL FORMULARIO.
+  /// ── LO QUE DICEN LOS DOCUMENTOS, DECLARADO POR SU DUEÑO ──────────────────
   ///
-  /// Nadie los carga a mano: los completa la lectura del documento cuando se
-  /// aprueba la licencia, y se limpian si esa aprobación se revoca. Están
-  /// acá arriba y no solo en DocumentVerification porque son los que deciden,
-  /// en CADA pedido, si esta persona puede alquilar un auto. JwtStrategy ya
-  /// trae el usuario entero en cada request, así que tenerlos acá hace que ese
-  /// control no cueste una consulta más.
+  /// Estos campos los escribe LA PERSONA al enviar cada documento, y se copian
+  /// acá recién cuando ese documento queda APROBADO. O sea: son datos
+  /// declarados que la lectura del documento corroboró.
   ///
-  /// El vencimiento se compara contra la fecha de hoy en el momento de usarlo
-  /// y no lo revisa ningún proceso programado: un job nocturno dejaría una
-  /// ventana entre que la licencia vence y alguien se entera, y en esa ventana
-  /// se puede alquilar un auto sin habilitación.
+  /// NO SALEN DEL OCR, y el cambio es deliberado. Cuando salían de la foto, un
+  /// vencimiento mal leído dejaba la cuenta verificada pero sin poder reservar,
+  /// y la persona no tenía forma de corregirlo: el dato equivocado lo había
+  /// puesto la máquina. Ahora el dato lo pone quien lo puede leer con los ojos
+  /// y la máquina solo dice si coincide con la foto.
+  ///
+  /// Están acá arriba y no solo en DocumentVerification porque son los que
+  /// deciden, en CADA pedido, qué puede hacer esta persona. JwtStrategy ya trae
+  /// el usuario entero, así que ese control no cuesta una consulta más.
+  ///
+  /// Los vencimientos se comparan contra la fecha de hoy en el momento de
+  /// usarlos y no los revisa ningún proceso programado: un job nocturno dejaría
+  /// una ventana entre que el documento vence y alguien se entera.
   licenseExpiresAt        DateTime?
   /// Clase de la licencia (B.1, A2.2, C...). Solo las que incluyen auto
   /// particular habilitan a alquilar: una clase A es de moto.
   licenseClass            String?
-  /// Desde cuándo tiene licencia. No bloquea nada hoy; queda guardado porque
-  /// es el dato con el que se define una antigüedad mínima si alguna vez se
-  /// pide.
+  /// Desde cuándo tiene licencia.
   licenseIssuedAt         DateTime?
   /// Hasta cuándo dura el período de principiante, si la licencia lo tiene.
   licenseBeginnerUntil    DateTime?
-  /// Cuándo vence el DNI. No bloquea alquilar —la persona sigue siendo quien
-  /// es— pero sirve para pedir una re-verificación cuando caduca.
+  /// Cuándo vence el DNI. Vencido, la cuenta sigue VERIFICADA —la persona no
+  /// dejó de ser quien es— pero no puede hacer nada sensible: es su identidad
+  /// la que quedó sin respaldo vigente.
   dniExpiresAt            DateTime?
   emailVerifiedAt         DateTime?
   acceptedTermsAt         DateTime?
@@ -399,25 +444,43 @@ model DocumentVerification {
   status              DocumentVerificationStatus
   frontUrl            String?
   backUrl             String?
-  // Número de documento asociado a esta verificación. Sostiene el control
-  // antifraude: una misma identidad no puede quedar aprobada en dos cuentas.
+  /// Número de documento asociado a esta verificación. Sale del DNI que la
+  /// persona declaró en su perfil, NO de la foto. Sostiene el control
+  /// antifraude: una misma identidad no puede quedar aprobada en dos cuentas.
   documentNumber      String?
-  /// Cuándo vence ESTE documento, leído de la foto. Es el dato que después
-  /// decide si la persona puede alquilar: una licencia vencida no habilita a
-  /// manejar por más que la cuenta esté verificada.
+  /// Cuándo vence ESTE documento, según lo DECLARADO por su dueño y
+  /// corroborado por la lectura. Es el dato que después decide qué puede hacer
+  /// la persona: una licencia vencida no habilita a manejar por más que la
+  /// cuenta esté verificada.
   expiresAt           DateTime?
-  // Motivo del último veredicto (hoy: el rechazo de un admin), con el mensaje
-  // completo guardado adentro para que las filas viejas se sigan mostrando
-  // aunque su código ya no esté en el catálogo.
+  /// LO QUE LA PERSONA DECLARÓ SOBRE ESTE DOCUMENTO al enviarlo: vencimiento
+  /// y, en la licencia, otorgamiento, clase y período de principiante.
+  ///
+  /// Es el único origen de estos datos. La lectura automática no los escribe:
+  /// los COMPARA contra la foto, y si coinciden el documento se aprueba y
+  /// estos valores se copian a la cuenta. Guardarlo por submission (y no solo
+  /// en User) es lo que permite auditar contra qué se comparó la foto que se
+  /// aprobó, incluso después de que la persona reenvíe el documento.
+  declared            Json?
+  /// Motivo del último veredicto, con el mensaje completo guardado adentro
+  /// para que las filas viejas se sigan mostrando aunque su código ya no esté
+  /// en el catálogo.
   matchReport         Json?
-  // Los mismos motivos en códigos estables, aptos para que el front ramifique.
+  /// Los mismos motivos en códigos estables, aptos para que el front ramifique.
   reasonCodes         String[]                   @default([])
-  /// Lo que la lectura automática sacó de las dos fotos, ya recortado a los
-  /// campos que sirven y con el valor acordado entre orígenes. Se guarda para
-  /// poder auditar una decisión después: sin esto, "por qué se aprobó esta
-  /// cuenta" no tiene respuesta. NO guarda el texto completo del OCR — ahí
-  /// viajan el domicilio y, en la licencia, datos de salud.
-  extracted           Json?
+  /// Qué FOTOS hay que volver a sacar ("dni_front", "license_back"). Sale del
+  /// veredicto y se guarda aparte de los motivos porque es lo que el front
+  /// necesita para decirle a la persona cuál repetir y cuál puede reutilizar,
+  /// sin tener que interpretar una lista de códigos.
+  retakeSlots         String[]                   @default([])
+  /// EL RESULTADO DEL CRUCE, SIN LOS VALORES LEÍDOS.
+  ///
+  /// Guarda, por campo, si la foto coincidió con lo declarado, cuántos
+  /// orígenes lo confirmaron y si esos orígenes decían todos lo mismo. NO
+  /// guarda lo que la foto decía: eso es dato personal que ya tenemos
+  /// declarado, y duplicarlo desde una lectura automática que puede
+  /// equivocarse es guardar un dato peor por las dudas.
+  checks              Json?
   /// En qué anda la lectura automática, y por qué falló si falló. El mensaje
   /// se le muestra al usuario, así que dice qué pasó en castellano y no un
   /// stack trace.
@@ -430,7 +493,7 @@ model DocumentVerification {
   /// de un análisis. Se borra al consumirlo, y eso es lo que lo hace de un
   /// solo uso.
   analysisTokenHash   String?                    @unique
-  // Revisión manual: cuándo la pidió el usuario y quién/cuándo la resolvió.
+  /// Revisión manual: cuándo la pidió el usuario y quién/cuándo la resolvió.
   reviewRequestedAt   DateTime?
   reviewedBy          String?
   reviewedAt          DateTime?
@@ -438,8 +501,8 @@ model DocumentVerification {
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
-  // Una fila viva por documento y usuario: reenviar fotos reemplaza la
-  // anterior (y borra sus archivos). El historial queda en AuditLog.
+  /// Una fila viva por documento y usuario: reenviar fotos reemplaza la
+  /// anterior (y borra sus archivos). El historial queda en AuditLog.
   @@unique([userId, type])
   @@index([status])
   @@index([documentNumber])
@@ -682,16 +745,106 @@ model PaymentRecord {
   amountMinor           Int?
   applicationFeeMinor   Int?
   currency              String              @default("ARS")
-  metadata              Json?
-  paidAt                DateTime?
-  refundedAt            DateTime?
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  /// Cuánto de este cobro ya se devolvió. Una devolución parcial deja el
+  /// registro en PARTIALLY_REFUNDED y este número es el que dice cuánta plata
+  /// sigue siendo nuestra; sin él, dos devoluciones parciales podrían sumar
+  /// más que el cobro original y nadie se enteraría.
+  refundedAmountMinor   Int                 @default(0)
+
+  /// ── LO QUE PERMITE RECONSTRUIR UN COBRO DISCUTIDO ────────────────────────
+  ///
+  /// Nada de esto es el número de tarjeta, que nunca pasa por este servidor:
+  /// son las señas que devuelve el procesador y que sirven para responder
+  /// "¿quién pagó esto y desde dónde?" cuando alguien desconoce un cobro.
+  ///
+  /// `cardFingerprint` es el identificador estable que Stripe le da a UNA
+  /// tarjeta: la misma tarjeta en dos cuentas distintas tiene el mismo
+  /// fingerprint. Es lo que permite ver que cinco cuentas nuevas están pagando
+  /// todas con el mismo plástico, que es la forma que tiene el fraude de
+  /// verse desde acá.
+  cardBrand          String?
+  cardLast4          String?
+  cardFingerprint    String?
+  cardCountry        String?
+  /// Evaluación de riesgo del procesador (Stripe Radar): "normal", "elevated",
+  /// "highest", y su puntaje 0-100.
+  riskLevel          String?
+  riskScore          Int?
+  /// Desde dónde se pidió este cobro. La IP y el navegador del pedido que
+  /// creó el intent, no los del webhook (ese lo manda Stripe).
+  initiatedIp        String?
+  initiatedUserAgent String?
+  /// Por qué falló, tal como lo dijo el procesador ("card_declined",
+  /// "insufficient_funds"). Se guarda el código y el mensaje: el código es
+  /// para que el front ramifique, el mensaje para el soporte.
+  failureCode        String?
+  failureMessage     String?
+
+  metadata   Json?
+  paidAt     DateTime?
+  capturedAt DateTime?
+  releasedAt DateTime?
+  refundedAt DateTime?
+  disputedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  events PaymentEvent[]
 
   @@index([bookingId])
   @@index([userId])
   @@index([status])
   @@index([kind])
+  @@index([cardFingerprint])
+}
+
+/// CADA COSA QUE LE PASÓ A UN COBRO, EN ORDEN Y SIN PISARSE.
+///
+/// `PaymentRecord` guarda el estado de AHORA; esto guarda cómo se llegó. Son
+/// dos preguntas distintas y antes solo se podía responder la primera: un
+/// registro que decía REFUNDED no dejaba ver si se había cobrado y devuelto, o
+/// si el cobro había fallado tres veces antes, ni cuándo, ni por orden de
+/// quién.
+///
+/// Es APPEND-ONLY: nada de acá se edita ni se borra. Es lo que lo hace servir
+/// para lo que existe —responder un desconocimiento de cobro, reconstruir una
+/// disputa, ver un patrón de fraude—, porque un registro que se puede reescribir
+/// no prueba nada.
+///
+/// `payload` guarda el objeto del procesador tal como llegó, que es la prueba
+/// de lo que dijo. No lleva datos de tarjeta más allá de los últimos cuatro
+/// dígitos: eso Stripe no lo manda y nosotros no lo pedimos.
+model PaymentEvent {
+  id              String               @id @default(uuid())
+  paymentRecordId String?
+  paymentRecord   PaymentRecord?       @relation(fields: [paymentRecordId], references: [id], onDelete: Restrict)
+  bookingId       String?
+  /// Quién lo provocó: el id del usuario, o null cuando lo provocó el
+  /// procesador (un webhook) y no una persona.
+  actorId         String?
+  /// De dónde vino: "api" (un pedido nuestro), "webhook" (Stripe nos avisó),
+  /// "system" (una tarea nuestra).
+  source          String
+  /// Qué pasó: "intent.created", "intent.succeeded", "intent.failed",
+  /// "hold.authorized", "hold.captured", "hold.released", "refund.created",
+  /// "transfer.created", "dispute.opened"...
+  type            String
+  /// En qué estado quedó el cobro después de esto.
+  status          PaymentRecordStatus?
+  amountMinor     Int?
+  currency        String?
+  /// Id del evento del procesador, único: es lo que hace que reprocesar el
+  /// mismo webhook no escriba dos veces la misma línea.
+  providerEventId String?              @unique
+  ip              String?
+  userAgent       String?
+  payload         Json?
+  createdAt       DateTime             @default(now())
+
+  @@index([paymentRecordId, createdAt])
+  @@index([bookingId, createdAt])
+  @@index([type])
+  @@index([createdAt])
 }
 
 model MediaAsset {

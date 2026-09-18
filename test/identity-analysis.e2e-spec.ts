@@ -97,11 +97,12 @@ describe("Verificación automática de documentos", () => {
   async function enviarYPrepararAviso(
     user: { token: string; id: string },
     kind: "dni" | "license",
+    declarado: Record<string, unknown> = {},
   ): Promise<string> {
     await http()
       .post(`/verification/identity/${kind}/submit`)
       .set("Authorization", auth(user.token))
-      .send(documentUrls(user.id, kind))
+      .send(documentUrls(user.id, kind, undefined, declarado))
       .expect(201);
 
     const token = `token-de-prueba-${kind}-${user.id}`;
@@ -208,16 +209,22 @@ describe("Verificación automática de documentos", () => {
     expect(fila.status).toBe("APPROVED");
     expect(fila.analysisStatus).toBe("DONE");
     expect(fila.reasonCodes).toEqual([]);
-    // El número que se guarda es el que dice el DOCUMENTO, no el declarado: el
-    // declarado lo elige el usuario y es lo que el antifraude tiene que cruzar.
+    // El número guardado es el DECLARADO en el perfil, corroborado por la
+    // foto. No sale del OCR: ningún dato leído se guarda.
     expect(fila.documentNumber).toBe(user.dni);
-    // El vencimiento leído queda guardado.
+    // El vencimiento guardado es el que declaró su dueño.
     expect(fila.expiresAt?.toISOString().slice(0, 10)).toBe("2039-04-06");
+    // Y el informe NO guarda lo que la foto decía, solo si coincidió.
+    expect(JSON.stringify(fila.checks)).not.toContain("TEJADA");
     // Y el token se consumió: el aviso vale una sola vez.
     expect(fila.analysisTokenHash).toBeNull();
   });
 
-  it("guarda de la licencia lo que el formulario nunca preguntó", async () => {
+  it("copia a la cuenta lo DECLARADO de la licencia, una vez corroborado", async () => {
+    // El dato lo cargó su dueño leyendo su propia licencia; la foto solo
+    // confirmó que dice lo mismo. Cuando salía del OCR, un "2039" leído como
+    // "2019" dejaba la cuenta verificada y sin poder reservar, y la persona no
+    // tenía cómo corregir un dato que no había cargado.
     const user = await cuenta();
     const token = await enviarYPrepararAviso(user, "license");
 
@@ -235,7 +242,7 @@ describe("Verificación automática de documentos", () => {
     );
   });
 
-  it("verifica la cuenta cuando los DOS documentos quedan aprobados", async () => {
+  it("el DNI aprobado verifica la cuenta; la licencia habilita a manejar", async () => {
     const user = await cuenta();
 
     await avisar(
@@ -243,11 +250,15 @@ describe("Verificación automática de documentos", () => {
       dniQueCierra(user.dni, user.cuil),
     ).expect(201);
 
+    // Con el DNI aprobado la cuenta YA está verificada: es el DNI el que
+    // prueba quién es la persona. Todavía no puede manejar porque no mandó la
+    // licencia, que es un control aparte.
     const parcial = await http()
       .get("/verification/me/status")
       .set("Authorization", auth(user.token))
       .expect(200);
-    expect(parcial.body.fullyVerified).toBe(false);
+    expect(parcial.body.fullyVerified).toBe(true);
+    expect(parcial.body.checklist.licenseApproved).toBe(false);
 
     await avisar(
       await enviarYPrepararAviso(user, "license"),
@@ -267,7 +278,7 @@ describe("Verificación automática de documentos", () => {
 
   // ── Lo que NO se aprueba solo ──────────────────────────────────────────
 
-  it("manda a revisión manual una tarjeta donde el texto y el código se contradicen", async () => {
+  it("hace FALLAR una tarjeta donde el texto y el código se contradicen", async () => {
     const user = await cuenta();
     const token = await enviarYPrepararAviso(user, "dni");
 
@@ -278,7 +289,7 @@ describe("Verificación automática de documentos", () => {
       campo("2011-04-06");
 
     const res = await avisar(token, adulterado).expect(201);
-    expect(res.body.status).toBe("PENDING");
+    expect(res.body.status).toBe("FAILED");
 
     const fila = await prisma.documentVerification.findFirstOrThrow({
       where: { userId: user.id, type: "DNI" },
@@ -293,21 +304,24 @@ describe("Verificación automática de documentos", () => {
     expect(mio.body.dni.reasons[0].message).toContain("no dice lo mismo");
   });
 
-  it("manda a revisión manual el documento de otra persona", async () => {
+  it("hace fallar el documento de otra persona, y dice qué corregir", async () => {
     const user = await cuenta();
     const token = await enviarYPrepararAviso(user, "dni");
 
     const deOtro = dniQueCierra("30111222", cuilFor("30111222"));
     const res = await avisar(token, deOtro).expect(201);
 
-    expect(res.body.status).toBe("PENDING");
+    expect(res.body.status).toBe("FAILED");
     const fila = await prisma.documentVerification.findFirstOrThrow({
       where: { userId: user.id, type: "DNI" },
     });
     expect(fila.reasonCodes).toContain("DATO_NO_COINCIDE_CON_LA_CUENTA");
   });
 
-  it("nunca rechaza solo: ni con todo mal el veredicto es REJECTED", async () => {
+  it("un documento fallado conserva sus fotos y deja pedir revisión", async () => {
+    // Fallar NO es el final del camino, y por eso las fotos no se borran: son
+    // justamente lo que un administrador necesita mirar. Lo que no se puede es
+    // volver a analizarlas — ya tienen veredicto.
     const user = await cuenta();
     const token = await enviarYPrepararAviso(user, "dni");
 
@@ -318,11 +332,63 @@ describe("Verificación automática de documentos", () => {
         "frente.pdf417": { apellido: "PEREZ", numero_documento: "22222222" },
       }),
     ).expect(201);
-
-    // Un OCR equivocándose no puede ser la última palabra sobre la identidad
-    // de alguien: lo peor que puede pasar es que lo mire una persona.
-    expect(res.body.status).toBe("PENDING");
+    expect(res.body.status).toBe("FAILED");
     expect(res.body.status).not.toBe("REJECTED");
+
+    const fila = await prisma.documentVerification.findFirstOrThrow({
+      where: { userId: user.id, type: "DNI" },
+    });
+    expect(fila.frontUrl).not.toBeNull();
+    expect(fila.backUrl).not.toBeNull();
+
+    const mio = await http()
+      .get("/verification/identity/me")
+      .set("Authorization", auth(user.token))
+      .expect(200);
+    expect(mio.body.dni.canRequestManualReview).toBe(true);
+    expect(mio.body.dni.canResubmit).toBe(true);
+    // Reanalizar las mismas fotos no se ofrece ni se acepta.
+    expect(mio.body.dni.analysis.canRetry).toBe(false);
+    const reintento = await http()
+      .post("/verification/identity/dni/retry-analysis")
+      .set("Authorization", auth(user.token))
+      .expect(400);
+    expect(reintento.body.code).toBe("ANALYSIS_RETRY_NOT_AVAILABLE");
+
+    await http()
+      .post("/verification/identity/dni/request-review")
+      .set("Authorization", auth(user.token))
+      .expect(201);
+  });
+
+  it("dice QUÉ FOTO repetir y cuál se puede reutilizar", async () => {
+    const user = await cuenta();
+    const token = await enviarYPrepararAviso(user, "dni");
+
+    // El dorso no leyó nada: es la única foto que hay que repetir.
+    const conDorsoIlegible = dniQueCierra(user.dni, user.cuil) as {
+      caras: Record<string, unknown>;
+    };
+    conDorsoIlegible.caras.dorso = {
+      ok: true,
+      documento: "dorso",
+      origenes: {},
+    };
+
+    await avisar(token, conDorsoIlegible).expect(201);
+
+    const mio = await http()
+      .get("/verification/identity/me")
+      .set("Authorization", auth(user.token))
+      .expect(200);
+    expect(mio.body.dni.retakeSlots).toEqual(["dni_back"]);
+    expect(mio.body.dni.nextAction).toBe("RETAKE_PHOTO");
+    const fotos = mio.body.dni.photos as {
+      slot: string;
+      mustRetake: boolean;
+    }[];
+    expect(fotos.find((f) => f.slot === "dni_front")?.mustRetake).toBe(false);
+    expect(fotos.find((f) => f.slot === "dni_back")?.mustRetake).toBe(true);
   });
 
   // ── Habilitación para conducir ─────────────────────────────────────────
@@ -333,21 +399,16 @@ describe("Verificación automática de documentos", () => {
       await enviarYPrepararAviso(user, "dni"),
       dniQueCierra(user.dni, user.cuil),
     ).expect(201);
-    // Vencida: no se aprueba sola, la mira un admin. Se aprueba a mano para
-    // llegar al estado que interesa —cuenta verificada, licencia vencida— que
-    // es el de alguien que se verificó hace años.
-    await avisar(
-      await enviarYPrepararAviso(user, "license"),
+    // Vencida: SE APRUEBA IGUAL. Es auténtica y es suya, así que verifica su
+    // identidad; lo que no hace es habilitarla a manejar. Negarle la
+    // verificación la dejaría sin cuenta Y sin poder manejar, cuando el
+    // problema es uno solo.
+    const vencimiento = { expiresAt: "2021-01-01" };
+    const res = await avisar(
+      await enviarYPrepararAviso(user, "license", vencimiento),
       licenciaQueCierra(user.dni, { fecha_vencimiento: "2021-01-01" }),
     ).expect(201);
-    await prisma.documentVerification.updateMany({
-      where: { userId: user.id, type: "LICENSE" },
-      data: { status: "APPROVED" },
-    });
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { licenseExpiresAt: new Date("2021-01-01T12:00:00.000Z") },
-    });
+    expect(res.body.status).toBe("APPROVED");
 
     const estado = await http()
       .get("/verification/me/status")

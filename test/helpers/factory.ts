@@ -9,7 +9,6 @@ import type { FakeEmailService } from "./email.fake";
 
 export const TEST_PASSWORD = "TestPass123!";
 export const TEST_DATE_OF_BIRTH = "1990-01-01";
-export const TEST_ADDRESS = "Av. Siempre Viva 742, Springfield, CABA";
 
 let seq = 0;
 let dniSeq = 0;
@@ -59,19 +58,20 @@ export function cuilFor(dni: string, sex: "M" | "F" = "M"): string {
 }
 
 /**
- * Fills the manually-entered identity data (dni/cuil/address) via the public
- * PATCH /users/me route; the verification checklist requires all three.
+ * Carga la identidad que la persona declara (dni/cuil) por la ruta pública
+ * PATCH /users/me; la verificación documental los exige a los dos.
+ *
+ * El domicilio ya no está: dejó de ser un dato de la cuenta.
  */
 export async function setIdentityProfile(
   app: INestApplication,
   token: string,
-  overrides: Partial<{ dni: string; cuil: string; address: string }> = {},
-): Promise<{ dni: string; cuil: string; address: string }> {
+  overrides: Partial<{ dni: string; cuil: string }> = {},
+): Promise<{ dni: string; cuil: string }> {
   const dni = overrides.dni ?? uniqueDni();
   const identity = {
     dni,
     cuil: overrides.cuil ?? cuilFor(dni),
-    address: overrides.address ?? TEST_ADDRESS,
   };
   await request(app.getHttpServer())
     .patch("/users/me")
@@ -178,7 +178,6 @@ export async function registerUser(
         phoneVerifiedAt: new Date(),
         dni,
         cuil: cuilFor(dni),
-        address: TEST_ADDRESS,
         verificationStatus: VerificationStatus.VERIFIED,
       },
     });

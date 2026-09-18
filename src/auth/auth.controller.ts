@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { Throttle } from "@nestjs/throttler";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
@@ -29,6 +30,25 @@ import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import type { GoogleProfilePayload } from "./strategies/google.strategy";
 
+/**
+ * LOS LÍMITES DE ESTE CONTROLADOR NO SON POR COSTO.
+ *
+ * El tope general del servidor es de 120 pedidos por minuto y por IP, que para
+ * una pantalla de login es una invitación: 120 contraseñas por minuto son
+ * 172.800 por día contra una sola cuenta, y eso alcanza para cualquier
+ * contraseña que una persona pueda recordar.
+ *
+ * Lo mismo con los códigos de seis dígitos: son un millón de combinaciones, y
+ * aunque cada código tiene su propio contador de intentos, sin un tope por IP
+ * alguien puede pedir códigos nuevos y probar contra todos a la vez.
+ *
+ * Y con "olvidé mi contraseña": sin límite, es una forma de averiguar qué
+ * direcciones tienen cuenta y de llenarle la casilla a alguien.
+ *
+ * Los números están elegidos para que una persona real no los toque nunca. Diez
+ * intentos de login en cinco minutos es alguien que de verdad no se acuerda;
+ * el undécimo es un programa.
+ */
 @Controller("auth")
 export class AuthController {
   constructor(
@@ -37,22 +57,26 @@ export class AuthController {
   ) {}
 
   /** Step 1: email only — sends the verification code. No account yet. */
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @Post("register/start")
   registerStart(@Body() dto: RegisterStartDto) {
     return this.authService.registerStart(dto);
   }
 
   /** Step 2: code + full payload — creates the (email-verified) account. */
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @Post("register/complete")
   registerComplete(@Body() dto: RegisterCompleteDto) {
     return this.authService.registerComplete(dto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 300_000 } })
   @Post("login")
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @UseGuards(OnboardingAuthGuard)
   @Post("verify-email")
   verifyEmail(
@@ -62,6 +86,7 @@ export class AuthController {
     return this.authService.verifyEmail(user.id, dto);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @UseGuards(OnboardingAuthGuard)
   @Post("resend-verification")
   resendVerification(@CurrentUser() user: CurrentUserPayload) {
@@ -78,11 +103,13 @@ export class AuthController {
     return this.authService.completeProfile(user.id, dto);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @Post("forgot-password")
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @Post("reset-password")
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
@@ -130,6 +157,7 @@ export class AuthController {
    * NUEVA: es la única forma de comprobar que existe y es de quien la pone.
    * Hasta confirmar, el email de la cuenta no se toca.
    */
+  @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @UseGuards(JwtAuthGuard)
   @Post("request-email-change")
   requestEmailChange(@Req() req: Request, @Body() dto: RequestEmailChangeDto) {
@@ -139,6 +167,7 @@ export class AuthController {
     );
   }
 
+  @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @UseGuards(JwtAuthGuard)
   @Post("confirm-email-change")
   confirmEmailChange(@Req() req: Request, @Body() dto: ConfirmEmailChangeDto) {

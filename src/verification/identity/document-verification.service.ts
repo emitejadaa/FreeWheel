@@ -19,26 +19,35 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { AuditLogService } from "../../common/services/audit-log.service";
 import { assertFound } from "../../common/utils/entity.util";
 import {
+  ReasonAction,
   VerificationReason,
   verificationReason,
 } from "../errors/verification-reasons";
 import { InspectDocumentDto } from "../dto/inspect-document.dto";
 import { SubmitDocumentDto } from "../dto/submit-document.dto";
 import {
-  DocumentKind,
   IdentityDocumentsService,
   IdentityUrlInspection,
 } from "./identity-documents.service";
+import { DocumentKind, DocumentSlot, slotFor, slotsOf } from "./document-slots";
 import {
   DocverifyClient,
   DocverifyDocument,
   DocverifyResult,
 } from "./docverify.client";
-import { ExtractedFacts, IdentityMatchService } from "./identity-match.service";
+import {
+  DeclaredDocumentData,
+  IdentityMatchService,
+} from "./identity-match.service";
 
 const KIND_TO_TYPE: Record<DocumentKind, VerifiedDocumentType> = {
   dni: VerifiedDocumentType.DNI,
   license: VerifiedDocumentType.LICENSE,
+};
+
+const TYPE_TO_KIND: Record<VerifiedDocumentType, DocumentKind> = {
+  DNI: "dni",
+  LICENSE: "license",
 };
 
 /** Cómo nombra cada documento la API que los lee. */
@@ -48,9 +57,12 @@ const KIND_TO_DOCVERIFY: Record<DocumentKind, DocverifyDocument> = {
 };
 
 /**
- * Datos del perfil que hacen falta para poder revisar un documento: son
- * exactamente los que el admin tiene que poder contrastar contra la foto.
- * Sin ellos la revisión no tiene contra qué comparar.
+ * Datos del PERFIL que hacen falta para poder verificar cualquier documento:
+ * son exactamente los que la foto tiene que confirmar.
+ *
+ * El domicilio ya no está. No se comparaba contra nada, no habilitaba nada, y
+ * era el dato más sensible que guardábamos de una persona. La única dirección
+ * que el sistema necesita es la del auto, y esa vive en la publicación.
  */
 const REQUIRED_PROFILE_FIELDS: { field: keyof User; label: string }[] = [
   { field: "firstName", label: "nombre" },
@@ -58,8 +70,50 @@ const REQUIRED_PROFILE_FIELDS: { field: keyof User; label: string }[] = [
   { field: "dateOfBirth", label: "fecha de nacimiento" },
   { field: "dni", label: "DNI" },
   { field: "cuil", label: "CUIL" },
-  { field: "address", label: "domicilio" },
 ];
+
+/**
+ * Qué datos hay que DECLARAR de cada documento, con el nombre que tienen en el
+ * formulario y el que usaría una persona.
+ *
+ * Es la lista que hace de contrato con el front: lo que falte sale en
+ * `missing` del error DATOS_DEL_DOCUMENTO_FALTANTES, con el nombre del campo,
+ * así el front puede marcar el input exacto.
+ */
+const REQUIRED_DECLARED_FIELDS: Record<
+  VerifiedDocumentType,
+  { field: keyof SubmitDocumentDto; label: string }[]
+> = {
+  DNI: [{ field: "expiresAt", label: "fecha de vencimiento del DNI" }],
+  LICENSE: [
+    { field: "expiresAt", label: "fecha de vencimiento de la licencia" },
+    { field: "issuedAt", label: "fecha de otorgamiento de la licencia" },
+    { field: "licenseClass", label: "clase de licencia" },
+    { field: "isBeginner", label: "si la licencia es de principiante" },
+  ],
+};
+
+/** Lo que el propio usuario declaró de un documento, tal como se le devuelve. */
+export interface DeclaredView {
+  expiresAt: string | null;
+  issuedAt: string | null;
+  licenseClass: string | null;
+  isBeginner: boolean | null;
+  beginnerUntil: string | null;
+}
+
+/** El estado de UNA foto: si está guardada y si hay que sacarla de nuevo. */
+export interface PhotoView {
+  slot: DocumentSlot;
+  side: "front" | "back";
+  /** Si hay una foto guardada en este slot. */
+  present: boolean;
+  /**
+   * Si esta foto es la que falló y hay que repetirla. Las que tienen `false`
+   * se pueden reutilizar: el front no debería pedirlas de nuevo.
+   */
+  mustRetake: boolean;
+}
 
 /** Lo que ve el propio usuario sobre uno de sus documentos. */
 export interface DocumentVerificationView {
@@ -67,7 +121,21 @@ export interface DocumentVerificationView {
   type: VerifiedDocumentType;
   status: DocumentVerificationStatus;
   reasons: VerificationReason[];
+  /**
+   * QUÉ TIENE QUE HACER LA PERSONA AHORA, en una sola palabra.
+   *
+   * Sale de los motivos: es la acción del más urgente. El front puede usarla
+   * para elegir el botón principal sin recorrer la lista. `null` cuando no hay
+   * nada que hacer (aprobado, o esperando a que termine el análisis).
+   */
+  nextAction: ReasonAction | null;
   documents: { front: boolean; back: boolean };
+  /** Estado foto por foto: cuál repetir y cuál se puede reutilizar. */
+  photos: PhotoView[];
+  /** Los slots de `photos` con mustRetake, sueltos, para ramificar rápido. */
+  retakeSlots: DocumentSlot[];
+  /** Lo que la persona declaró de este documento. */
+  declared: DeclaredView | null;
   /** El usuario puede volver a mandar fotos de este documento. */
   canResubmit: boolean;
   /** El usuario puede pedir que un admin revise este documento. */
@@ -86,14 +154,14 @@ export interface DocumentVerificationView {
      * Si volver a pedir el análisis puede salir bien
      * (`POST /verification/identity/:document/retry-analysis`).
      *
-     * Es true sobre todo en el caso del servicio dormido: el pedido que se
-     * cayó fue el que lo despertó, así que el siguiente lo encuentra andando.
-     * El front puede reintentar solo una vez y, si vuelve a fallar, dejar que
-     * siga por revisión manual.
+     * Solo es true cuando el análisis no llegó a hacerse: el servicio estaba
+     * dormido, caído o no configurado. NUNCA es true sobre un documento que ya
+     * tiene veredicto — esas fotos ya se analizaron y volver a analizarlas
+     * daría lo mismo. Ahí la salida es mandar fotos nuevas o pedir revisión.
      */
     canRetry: boolean;
   };
-  /** Cuándo vence este documento, si se pudo leer. */
+  /** Cuándo vence este documento, según lo declarado por su dueño. */
   expiresAt: Date | null;
   reviewRequestedAt: Date | null;
   reviewedAt: Date | null;
@@ -106,7 +174,19 @@ export interface DocumentVerificationView {
  *
  * Las fotos las LEE un servicio aparte, escrito en Python, que se deploya por
  * su cuenta (ver docverify-api/). Este backend le manda las dos caras, recibe
- * lo que leyó, lo CRUZA contra los datos de la cuenta y decide.
+ * lo que leyó, lo CRUZA contra lo que la persona declaró y decide.
+ *
+ * ── Los documentos no se leen: se corroboran ────────────────────────────────
+ * Ningún dato sale de la foto para entrar en la base. El vencimiento, la clase
+ * de la licencia y el período de principiante los declara la persona, leyendo
+ * su propio documento, y la lectura automática dice si la foto coincide. Si
+ * coincide, lo declarado pasa a ser la verdad de la cuenta; si no, se dice qué
+ * dato y en qué foto.
+ *
+ * El motivo es concreto: cuando el dato salía del OCR, un "2029" leído como
+ * "2019" dejaba una cuenta verificada que no podía reservar, y su dueño no
+ * tenía forma de corregir un dato que no había cargado. Ahora equivocarse
+ * cuesta un reenvío.
  *
  * ── La lectura es asíncrona, y el usuario no espera ─────────────────────────
  * Analizar un documento son varios segundos por cara y los análisis no pueden
@@ -116,29 +196,40 @@ export interface DocumentVerificationView {
  * documento está PENDING con `analysisStatus` en QUEUED, que es lo que el
  * front muestra como "revisando tus documentos".
  *
- * ── Aprueba solo; rechazar es de personas ───────────────────────────────────
- * Si todo coincide, el documento queda APPROVED sin que intervenga nadie. Si
- * algo no cierra —un dato que no coincide, una foto que no se pudo leer, el
- * servicio de lectura caído— va a MANUAL_REVIEW con el informe ya armado, para
- * que el admin resuelva en segundos en vez de leer cuatro fotos. Lo que NUNCA
- * pasa es un rechazo automático: un OCR equivocándose no puede ser la última
- * palabra sobre la identidad de una persona.
+ * ── Fallar no es el final ───────────────────────────────────────────────────
+ * Un documento que no cierra queda FAILED, con el motivo exacto y QUÉ FOTO hay
+ * que repetir. Desde ahí la persona elige: mandar fotos nuevas (y ahí sí se
+ * borran las viejas) o pedir que un administrador mire estas mismas. Las fotos
+ * de un documento fallado NO se borran solas, porque son justamente lo que el
+ * admin necesita mirar. Lo que no se puede es volver a analizarlas: ya tienen
+ * veredicto.
  *
- * Corolario: que la lectura automática falle no bloquea a nadie. Es un
- * acelerador, no un requisito.
+ * Un problema NUESTRO —el servicio de lectura caído, sin configurar— no es un
+ * documento fallado: la fila queda PENDING con el motivo aparte, y sigue por
+ * revisión manual. Que nuestra infraestructura falle no puede aparecerle a una
+ * persona como que su documento está mal.
  *
- * DNI y licencia son flujos separados: cada uno tiene su fila viva en
- * DocumentVerification y se puede enviar solo o junto con el otro. La cuenta
- * queda VERIFIED cuando AMBOS documentos están aprobados (más el email, y el
- * teléfono si REQUIRE_PHONE_VERIFICATION lo exige).
+ * ── Un documento vencido se aprueba ─────────────────────────────────────────
+ * Es auténtico y es de quien dice ser. Negarle la verificación lo dejaría sin
+ * cuenta Y sin poder operar, cuando el problema es uno solo. El vencimiento
+ * queda guardado y lo aplica la capa de habilitación: DNI vencido bloquea todo
+ * lo sensible, licencia vencida bloquea alquilar.
+ *
+ * ── DNI y licencia son independientes ───────────────────────────────────────
+ * Cada uno tiene su fila viva, se envía cuando su dueño quiere y falla o se
+ * aprueba por su cuenta. La cuenta queda VERIFIED con el DNI aprobado (más el
+ * email, y el teléfono si REQUIRE_PHONE_VERIFICATION lo exige): es el DNI el
+ * que prueba la identidad. La licencia no verifica a nadie — habilita a
+ * manejar, que es otra cosa, y por eso alguien que solo alquila su auto no
+ * tiene por qué tener una.
  *
  * Ciclo de vida de una submission:
  *   submit → PENDING + análisis QUEUED     (fotos guardadas, lectura pedida)
- *   análisis DONE  → APPROVED  (todo cruzó)
- *                  → PENDING   (algo no cerró; el usuario puede pedir revisión)
- *   análisis FAILED→ PENDING   (no se pudo leer; camino manual, con el motivo)
- *   PENDING → (pedir revisión) MANUAL_REVIEW → admin: APPROVED | REJECTED
- *   PENDING → (reenviar fotos: reemplaza y borra las anteriores)
+ *   análisis DONE  → APPROVED  (todo cruzó; lo declarado se copia a la cuenta)
+ *                  → FAILED    (algo no cerró; con motivos y fotos a repetir)
+ *   análisis FAILED→ PENDING   (problema nuestro; camino manual, con el motivo)
+ *   PENDING/FAILED → (pedir revisión) MANUAL_REVIEW → admin: APPROVED|REJECTED
+ *   cualquiera     → (reenviar fotos: reemplaza y borra las anteriores)
  *   REJECTED → los archivos se borran; se puede volver a empezar.
  */
 @Injectable()
@@ -157,11 +248,12 @@ export class DocumentVerificationService {
   // ── Flujo del usuario ──────────────────────────────────────────────────
 
   /**
-   * Guarda las dos fotos de un documento, dispara su lectura y contesta.
+   * Guarda las dos fotos de un documento junto con lo que su dueño declaró,
+   * dispara la lectura y contesta.
    *
    * No espera el análisis: la respuesta sale con el documento en PENDING y el
    * análisis QUEUED, y el front consulta `GET /verification/identity/me` hasta
-   * que cambie. Ver la nota de la clase sobre por qué es asíncrono.
+   * que cambie.
    */
   async submit(
     userId: string,
@@ -172,6 +264,7 @@ export class DocumentVerificationService {
     const type = KIND_TO_TYPE[kind];
 
     this.assertProfileComplete(user);
+    const declared = this.parseDeclared(type, dto);
 
     const existing = await this.prisma.documentVerification.findUnique({
       where: { userId_type: { userId, type } },
@@ -186,15 +279,20 @@ export class DocumentVerificationService {
     // Una revisión manual pendiente NO bloquea reenviar fotos: hay UNA
     // revisión viva por documento y la última que se pide es la que vale.
     // Mandar fotos nuevas reemplaza lo que hubiera —el pedido de revisión
-    // incluido, que queda sin efecto— porque el admin tiene que mirar ESTAS
-    // fotos y no las anteriores. Lo aplica persistOutcome, que pisa la fila
-    // entera y limpia reviewRequestedAt.
+    // incluido— porque el admin tiene que mirar ESTAS fotos y no las
+    // anteriores. Lo aplica persistSubmission, que pisa la fila entera.
 
     // Las URLs deben ser nuestras, del slot correcto, de esta cuenta y
     // existir; se persiste la forma canónica sin firma.
     const urls = await this.documents.validateSubmission(userId, kind, dto);
 
-    const row = await this.persistSubmission(user, type, existing, urls);
+    const row = await this.persistSubmission(
+      user,
+      type,
+      existing,
+      urls,
+      declared,
+    );
 
     await this.recomputeAccountStatus(userId);
 
@@ -259,16 +357,15 @@ export class DocumentVerificationService {
         `(${result.failure.problem}): ${result.failure.detail}`,
     );
 
-    // El mensaje va a `analysisError` y NO a `reasonCodes`.
+    // El mensaje va a `analysisError` y NO a `reasonCodes`, y el documento
+    // queda PENDING y NO FAILED.
     //
     // La diferencia importa: `reasons` es "qué está mal con TU documento" y el
     // front lo muestra como tal. Que nuestro servicio de lectura esté caído, o
     // que este deploy no tenga ninguno configurado, no es nada que el usuario
-    // haya hecho mal ni algo que pueda arreglar reenviando fotos. Meterlo ahí
-    // le mostraría un problema en su documento que no existe.
-    //
-    // Va a `analysisError`, que el front recibe en `analysis.error` y muestra
-    // como lo que es: un aviso de que esto lo va a mirar una persona.
+    // haya hecho mal ni algo que pueda arreglar reenviando fotos. Marcarlo
+    // como documento fallado le mostraría un problema en su documento que no
+    // existe.
     const reason = verificationReason(
       result.failure.problem === "NO_CONFIGURADO"
         ? "LECTURA_NO_DISPONIBLE"
@@ -319,8 +416,17 @@ export class DocumentVerificationService {
       });
     }
 
+    const declared = readDeclared(row);
+    if (!declared) {
+      // No debería pasar: el submit no deja crear una fila sin datos
+      // declarados. Si pasa —una fila vieja, una migración a medias— el
+      // documento no se puede cruzar contra nada, así que va a revisión
+      // manual en vez de aprobarse o fallar por algo que no se evaluó.
+      return this.parkForManualReview(row, "sin datos declarados");
+    }
+
     const user = await this.getUser(row.userId);
-    const report = this.matcher.evaluate(row.type, result, user);
+    const report = this.matcher.evaluate(row.type, result, user, declared);
 
     this.logger.log(
       `análisis de ${row.type} de ${row.userId}: ${report.verdict}` +
@@ -334,7 +440,7 @@ export class DocumentVerificationService {
     // sería el camino para verificar dos cuentas con el mismo documento, que
     // es justo lo que el control del admin impide.
     const duplicado = aprobar
-      ? await this.findDuplicate(row, report.facts.documentNumber ?? user.dni)
+      ? await this.findDuplicate(row, row.documentNumber)
       : false;
 
     const reasons = duplicado
@@ -343,7 +449,7 @@ export class DocumentVerificationService {
     const status =
       aprobar && !duplicado
         ? DocumentVerificationStatus.APPROVED
-        : DocumentVerificationStatus.PENDING;
+        : DocumentVerificationStatus.FAILED;
 
     const updated = await this.prisma.documentVerification.update({
       where: { id: row.id },
@@ -353,13 +459,17 @@ export class DocumentVerificationService {
         // Consumido: el aviso vale una sola vez.
         analysisTokenHash: null,
         analysisError: null,
-        expiresAt: report.facts.expiresAt,
-        documentNumber: report.facts.documentNumber ?? row.documentNumber,
-        extracted: JSON.parse(JSON.stringify(report)) as Prisma.InputJsonValue,
+        // `checks` guarda SI coincidió cada campo, no QUÉ decía la foto. Lo
+        // que decía ya lo tenemos declarado; guardar además la versión de una
+        // máquina que puede equivocarse es guardar un dato peor por las dudas.
+        checks: JSON.parse(
+          JSON.stringify(report.checks),
+        ) as Prisma.InputJsonValue,
         matchReport: JSON.parse(
-          JSON.stringify({ reasons }),
+          JSON.stringify({ reasons, analysis: report.analysis }),
         ) as Prisma.InputJsonValue,
         reasonCodes: reasons.map((r) => r.code),
+        retakeSlots: report.retakeSlots,
         ...(status === DocumentVerificationStatus.APPROVED
           ? { reviewedBy: null, reviewedAt: new Date() }
           : {}),
@@ -367,7 +477,7 @@ export class DocumentVerificationService {
     });
 
     if (status === DocumentVerificationStatus.APPROVED) {
-      await this.applyFactsToUser(row.userId, row.type, report.facts);
+      await this.applyDeclaredToUser(row.userId, row.type, declared);
     }
 
     await this.recomputeAccountStatus(row.userId);
@@ -382,9 +492,40 @@ export class DocumentVerificationService {
         verdict: report.verdict,
         status,
         reasons: reasons.map((r) => r.code),
+        retakeSlots: report.retakeSlots,
       },
     });
 
+    return { applied: true, status: updated.status };
+  }
+
+  /**
+   * Deja un documento esperando a un administrador, sin marcarlo como
+   * fallado.
+   *
+   * Es la salida para cuando no pudimos EVALUARLO: una fila sin datos
+   * declarados, un caso que el cruce no sabe resolver. No es lo mismo que
+   * fallar —no hay nada que el usuario haya hecho mal, así que no se le pide
+   * que corrija nada— y por eso no escribe motivos.
+   */
+  private async parkForManualReview(
+    row: DocumentVerification,
+    porQue: string,
+  ): Promise<{ applied: true; status: DocumentVerificationStatus }> {
+    this.logger.warn(
+      `el análisis de ${row.id} no se pudo aplicar (${porQue}): ` +
+        "queda para revisión manual",
+    );
+    const reason = verificationReason("LECTURA_NO_DISPONIBLE");
+    const updated = await this.prisma.documentVerification.update({
+      where: { id: row.id },
+      data: {
+        status: DocumentVerificationStatus.PENDING,
+        analysisStatus: DocumentAnalysisStatus.FAILED,
+        analysisTokenHash: null,
+        analysisError: reason.message,
+      },
+    });
     return { applied: true, status: updated.status };
   }
 
@@ -401,9 +542,11 @@ export class DocumentVerificationService {
   }
 
   /**
-   * Manda el documento a la cola del admin. Se puede pedir sobre un PENDING
-   * (el caso normal) y también sobre un FAILED, que es el estado en el que
-   * quedaron las submissions de la verificación automática vieja.
+   * Manda el documento a la cola del admin.
+   *
+   * Se puede pedir sobre un PENDING (el análisis no se pudo hacer) y sobre un
+   * FAILED (el análisis se hizo y algo no cerró). En los dos casos las fotos
+   * siguen guardadas, que es justamente lo que el admin tiene que mirar.
    */
   async requestManualReview(
     userId: string,
@@ -430,6 +573,15 @@ export class DocumentVerificationService {
               : "Este documento fue rechazado: volvé a enviar las fotos",
       });
     }
+    if (!row.frontUrl || !row.backUrl) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "REVIEW_WITHOUT_PHOTOS",
+        message:
+          "Este documento ya no tiene fotos guardadas: volvé a enviarlas " +
+          "para que un administrador pueda revisarlas.",
+      });
+    }
 
     const updated = await this.prisma.documentVerification.update({
       where: { id: row.id },
@@ -444,7 +596,7 @@ export class DocumentVerificationService {
       action: "identity.document.review_requested",
       entityType: "DocumentVerification",
       entityId: row.id,
-      metadata: { type },
+      metadata: { type, previousStatus: row.status },
     });
 
     return this.toPublicView(updated);
@@ -457,10 +609,11 @@ export class DocumentVerificationService {
    * se apaga por inactividad, y despertarlo tarda más de lo que una función
    * serverless puede esperar: el primer pedido después de un rato se cae
    * SIEMPRE. Pero ese pedido fallido es justamente el que lo despertó, así que
-   * el siguiente lo encuentra andando. Sin esta vía, cada rato de inactividad
-   * se traducía en una verificación que iba a revisión manual sin necesidad.
+   * el siguiente lo encuentra andando.
    *
-   * No reenvía las fotos ni las toca: son las mismas que ya están guardadas.
+   * NO sirve para reintentar un veredicto. Un documento que ya se analizó y
+   * falló no se vuelve a analizar: son las mismas fotos y darían lo mismo. Ahí
+   * la salida es mandar fotos nuevas o pedir revisión manual.
    */
   async retryAnalysis(
     userId: string,
@@ -480,11 +633,15 @@ export class DocumentVerificationService {
           row.analysisStatus === DocumentAnalysisStatus.QUEUED
             ? // Un QUEUED reciente: hay uno corriendo de verdad.
               "El análisis de este documento ya está en curso: esperá el resultado."
-            : row.status === DocumentVerificationStatus.APPROVED
-              ? "Este documento ya está verificado."
-              : !row.frontUrl || !row.backUrl
-                ? "Este documento ya no tiene fotos guardadas: volvé a enviarlas."
-                : "No hay nada que reintentar en este documento.",
+            : row.analysisStatus === DocumentAnalysisStatus.DONE
+              ? "Este documento ya se analizó. Volver a analizar las mismas " +
+                "fotos daría el mismo resultado: enviá fotos nuevas o pedí " +
+                "que lo revise un administrador."
+              : row.status === DocumentVerificationStatus.APPROVED
+                ? "Este documento ya está verificado."
+                : !row.frontUrl || !row.backUrl
+                  ? "Este documento ya no tiene fotos guardadas: volvé a enviarlas."
+                  : "No hay nada que reintentar en este documento.",
       });
     }
 
@@ -525,9 +682,10 @@ export class DocumentVerificationService {
         mode: "automatic",
         canVerifyAutomatically: true,
         detail:
-          "Las fotos se leen automáticamente y se cruzan contra los datos de " +
-          "la cuenta. Si todo coincide el documento se aprueba solo; si algo " +
-          "no cierra, lo revisa un administrador.",
+          "Las fotos se leen automáticamente y se cruzan contra los datos que " +
+          "cargaste. Si todo coincide el documento se aprueba solo; si algo " +
+          "no cierra, te decimos qué dato y qué foto, y podés corregirlo o " +
+          "pedir que lo revise un administrador.",
       };
     }
     return {
@@ -598,6 +756,21 @@ export class DocumentVerificationService {
 
     let updated: DocumentVerification;
     if (decision === "APPROVED") {
+      const declared = readDeclared(row);
+      // Aprobar a mano un documento sin datos declarados dejaría la cuenta
+      // verificada sin saber cuándo vence nada, que es justo el estado que
+      // este rediseño vino a sacar. El admin le pide a la persona que
+      // reenvíe el documento con los datos cargados.
+      if (!declared) {
+        throw new BadRequestException({
+          statusCode: 400,
+          code: "DECLARED_DATA_MISSING",
+          message:
+            "Esta submission no tiene los datos del documento (vencimiento, " +
+            "clase). Pedile al usuario que lo vuelva a enviar cargándolos: " +
+            "sin ellos no se puede saber qué habilita el documento.",
+        });
+      }
       // Antifraude: una misma identidad no puede verificar dos cuentas.
       if (await this.findDuplicate(row, row.documentNumber)) {
         const reason = verificationReason("DOCUMENTO_YA_VERIFICADO");
@@ -612,21 +785,23 @@ export class DocumentVerificationService {
         data: {
           status: DocumentVerificationStatus.APPROVED,
           reasonCodes: [],
+          retakeSlots: [],
+          matchReport: Prisma.JsonNull,
           notes,
           reviewedBy: actorId,
           reviewedAt: new Date(),
         },
       });
-      // Un admin puede estar aprobando un documento que la lectura automática
-      // no pudo resolver sola, pero que igual leyó: el vencimiento y la clase
-      // están guardados y son los que después habilitan a manejar. Sin esto,
-      // toda licencia aprobada a mano quedaría sin vencimiento conocido y no
-      // habilitaría nada.
-      await this.applyFactsToUser(row.userId, row.type, factsOf(updated));
+      await this.applyDeclaredToUser(row.userId, row.type, declared);
     } else {
-      // Rechazo manual: la documentación se borra del storage.
+      // Rechazo manual: la documentación se borra del storage. Es el único
+      // camino que borra fotos sin que el usuario mande otras, y tiene
+      // sentido: un admin ya decidió que estas no sirven, así que guardarlas
+      // sería quedarse con el documento de identidad de alguien sin motivo.
       await this.documents.deleteDocuments([row.frontUrl, row.backUrl]);
-      const reason = verificationReason("RECHAZADO_POR_ADMIN");
+      const reason = verificationReason("RECHAZADO_POR_ADMIN", {
+        slots: slotsOf(TYPE_TO_KIND[row.type]),
+      });
       updated = await this.prisma.documentVerification.update({
         where: { id: row.id },
         data: {
@@ -634,11 +809,13 @@ export class DocumentVerificationService {
           frontUrl: null,
           backUrl: null,
           expiresAt: null,
-          extracted: Prisma.JsonNull,
+          declared: Prisma.JsonNull,
+          checks: Prisma.JsonNull,
           analysisStatus: DocumentAnalysisStatus.NOT_REQUESTED,
           analysisTokenHash: null,
           analysisError: null,
           reasonCodes: [reason.code],
+          retakeSlots: reason.slots,
           matchReport: JSON.parse(
             JSON.stringify({ reasons: [reason] }),
           ) as Prisma.InputJsonValue,
@@ -651,7 +828,7 @@ export class DocumentVerificationService {
       // que ese documento habilitaba se va con él: si no, una licencia
       // revocada seguiría dejando alquilar autos hasta su fecha de
       // vencimiento.
-      await this.applyFactsToUser(row.userId, row.type, VACIO);
+      await this.clearDocumentFacts(row.userId, row.type);
     }
 
     await this.recomputeAccountStatus(row.userId);
@@ -671,10 +848,20 @@ export class DocumentVerificationService {
   // ── Estado de la cuenta ────────────────────────────────────────────────
 
   /**
-   * Recalcula User.verificationStatus a partir del email, el teléfono y los
-   * DOS documentos. Se llama cada vez que algo de eso cambia. VERIFIED
-   * exige ambos documentos aprobados; un documento rechazado por un admin
-   * deja la cuenta REJECTED hasta que se reenvíe.
+   * Recalcula User.verificationStatus a partir del email, el teléfono y el
+   * DNI. Se llama cada vez que algo de eso cambia.
+   *
+   * ── Por qué la licencia no cuenta ────────────────────────────────────────
+   * Verificar una cuenta es probar QUIÉN ES la persona, y eso lo prueba el
+   * DNI. Una licencia prueba que además puede manejar, que es otra cosa: quien
+   * solo alquila su auto no tiene por qué tener una, y exigírsela lo dejaba
+   * sin poder publicar por un documento que no le hace falta.
+   *
+   * Lo que la licencia gobierna es `RequireDrivingEligibility`, que es el
+   * control que corre sobre reservar un auto.
+   *
+   * Un documento rechazado por un admin deja la cuenta REJECTED hasta que se
+   * reenvíe: es la señal de que alguien miró y dijo que no.
    */
   async recomputeAccountStatus(userId: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
@@ -692,12 +879,10 @@ export class DocumentVerificationService {
     const emailVerified = Boolean(user.emailVerifiedAt);
     const phoneVerified = Boolean(user.phoneVerifiedAt);
     const phoneRequired = this.isPhoneVerificationRequired();
-    const bothApproved =
-      dni?.status === DocumentVerificationStatus.APPROVED &&
-      license?.status === DocumentVerificationStatus.APPROVED;
+    const dniApproved = dni?.status === DocumentVerificationStatus.APPROVED;
 
     let next: VerificationStatus;
-    if (bothApproved && emailVerified && (!phoneRequired || phoneVerified)) {
+    if (dniApproved && emailVerified && (!phoneRequired || phoneVerified)) {
       next = VerificationStatus.VERIFIED;
     } else if (
       dni?.status === DocumentVerificationStatus.REJECTED ||
@@ -750,7 +935,7 @@ export class DocumentVerificationService {
    * ¿Esta misma identidad ya está verificada en OTRA cuenta?
    *
    * Es el control antifraude de fondo, y corre tanto en la aprobación
-   * automática como en la del admin. Un documento sin número leído no se puede
+   * automática como en la del admin. Un documento sin número no se puede
    * contrastar: en ese caso no se bloquea —no hay evidencia de nada— y la
    * decisión queda en manos de quien revisa.
    */
@@ -772,29 +957,48 @@ export class DocumentVerificationService {
   }
 
   /**
-   * Copia al usuario lo que el documento aportó y el formulario no tenía.
+   * Copia a la cuenta lo que su dueño declaró de este documento, ahora que la
+   * foto lo corroboró.
    *
-   * ESTÁ DUPLICADO A PROPÓSITO. Los mismos datos ya viven en la fila de
+   * ESTÁ DUPLICADO A PROPÓSITO. Los mismos datos viven en la fila de
    * DocumentVerification; se copian al usuario porque son los que se consultan
-   * en CADA pedido para saber si puede alquilar un auto, y JwtStrategy ya trae
-   * el usuario entero. Tenerlos acá convierte ese control en cero consultas
-   * extra, y el único precio es acordarse de limpiarlos cuando el documento se
-   * revoca — que es lo que hace la llamada con VACIO desde el rechazo.
+   * en CADA pedido para saber qué puede hacer, y JwtStrategy ya trae el usuario
+   * entero. Tenerlos acá convierte ese control en cero consultas extra, y el
+   * único precio es acordarse de limpiarlos cuando el documento se revoca —que
+   * es lo que hace `clearDocumentFacts`.
    */
-  private async applyFactsToUser(
+  private async applyDeclaredToUser(
     userId: string,
     type: VerifiedDocumentType,
-    facts: ExtractedFacts,
+    declared: DeclaredDocumentData,
   ): Promise<void> {
     const data =
       type === VerifiedDocumentType.LICENSE
         ? {
-            licenseExpiresAt: facts.expiresAt,
-            licenseClass: facts.licenseClass,
-            licenseIssuedAt: facts.licenseIssuedAt,
-            licenseBeginnerUntil: facts.licenseBeginnerUntil,
+            licenseExpiresAt: declared.expiresAt,
+            licenseClass: declared.licenseClass ?? null,
+            licenseIssuedAt: declared.issuedAt ?? null,
+            licenseBeginnerUntil: declared.beginnerUntil ?? null,
           }
-        : { dniExpiresAt: facts.expiresAt };
+        : { dniExpiresAt: declared.expiresAt };
+
+    await this.prisma.user.update({ where: { id: userId }, data });
+  }
+
+  /** Lo que la cuenta deja de saber cuando un documento se revoca. */
+  private async clearDocumentFacts(
+    userId: string,
+    type: VerifiedDocumentType,
+  ): Promise<void> {
+    const data =
+      type === VerifiedDocumentType.LICENSE
+        ? {
+            licenseExpiresAt: null,
+            licenseClass: null,
+            licenseIssuedAt: null,
+            licenseBeginnerUntil: null,
+          }
+        : { dniExpiresAt: null };
 
     await this.prisma.user.update({ where: { id: userId }, data });
   }
@@ -836,8 +1040,7 @@ export class DocumentVerificationService {
     // hace falta que nadie la configure: es localhost y el puerto en el que
     // estamos escuchando. Sin esto, levantar el proyecto entero en local dejaba
     // la lectura automática apagada por una variable que no era evidente que
-    // faltara — y el síntoma era silencioso: los documentos se guardaban y se
-    // quedaban esperando a un admin.
+    // faltara — y el síntoma era silencioso.
     //
     // Va acotado a NODE_ENV !== production para que en un deploy sin PUBLIC_URL
     // ni VERCEL_URL esto devuelva "" y el análisis directamente no se pida.
@@ -853,17 +1056,21 @@ export class DocumentVerificationService {
   /**
    * Reemplaza (o crea) la fila viva del documento, en PENDING. Antes de pisar
    * una submission anterior se borran sus archivos del storage: no deben
-   * quedar documentos huérfanos.
+   * quedar documentos huérfanos, y es el único momento en que se borran fotos
+   * que el usuario no pidió borrar — porque acaba de mandar otras.
    *
    * `documentNumber` se guarda del DNI declarado en el perfil —en Argentina el
    * número de licencia ES el del DNI— y es lo que después usa el control
-   * antifraude del admin para no aprobar la misma identidad en dos cuentas.
+   * antifraude para no aprobar la misma identidad en dos cuentas. Sale del
+   * perfil y no de la foto a propósito: es un dato declarado que la foto
+   * corrobora, como todos los demás.
    */
   private async persistSubmission(
     user: User,
     type: VerifiedDocumentType,
     existing: DocumentVerification | null,
     urls: { frontUrl: string; backUrl: string },
+    declared: DeclaredDocumentData,
   ): Promise<DocumentVerification> {
     if (existing) {
       const previous = [existing.frontUrl, existing.backUrl].filter(
@@ -883,18 +1090,16 @@ export class DocumentVerificationService {
       status: DocumentVerificationStatus.PENDING,
       frontUrl: urls.frontUrl,
       backUrl: urls.backUrl,
-      // Provisorio: el número que el usuario declaró. Cuando la lectura
-      // termine se reemplaza por el que dice el documento, que es el que
-      // tiene que sostener el control antifraude — el declarado lo elige el
-      // usuario, el leído no.
       documentNumber: user.dni,
-      expiresAt: null,
+      expiresAt: declared.expiresAt,
+      declared: serializeDeclared(declared),
       matchReport: Prisma.JsonNull,
       reasonCodes: [],
-      // Fotos nuevas, análisis nuevo: lo que se había leído de las anteriores
-      // no describe a estas. El token del análisis viejo se borra acá, y eso
-      // es lo que hace que su aviso —si llega tarde— no se aplique.
-      extracted: Prisma.JsonNull,
+      retakeSlots: [],
+      // Fotos nuevas, análisis nuevo: lo que se había cruzado sobre las
+      // anteriores no describe a estas. El token del análisis viejo se borra
+      // acá, y eso es lo que hace que su aviso —si llega tarde— no se aplique.
+      checks: Prisma.JsonNull,
       analysisStatus: DocumentAnalysisStatus.NOT_REQUESTED,
       analysisRequestedAt: null,
       analysisTokenHash: null,
@@ -933,26 +1138,146 @@ export class DocumentVerificationService {
         statusCode: 400,
         code: reason.code,
         message: reason.message,
+        action: reason.action,
         missing,
       });
     }
   }
 
+  /**
+   * Valida y convierte lo que la persona declaró de este documento.
+   *
+   * Qué es obligatorio depende del tipo, y eso no se puede poner en el DTO
+   * (el tipo viene en la URL, no en el body). El error nombra los campos que
+   * faltan con el nombre del formulario, así el front marca el input exacto en
+   * vez de mostrar "faltan datos".
+   */
+  private parseDeclared(
+    type: VerifiedDocumentType,
+    dto: SubmitDocumentDto,
+  ): DeclaredDocumentData {
+    const missing = REQUIRED_DECLARED_FIELDS[type]
+      .filter(({ field }) => dto[field] === undefined || dto[field] === null)
+      .map(({ field }) => field as string);
+
+    // El fin del período de principiante solo se pide si la persona dijo que
+    // su licencia lo tiene: pedirlo siempre sería pedir una fecha que no
+    // existe en la mayoría de las licencias.
+    if (
+      type === VerifiedDocumentType.LICENSE &&
+      dto.isBeginner === true &&
+      !dto.beginnerUntil
+    ) {
+      missing.push("beginnerUntil");
+    }
+
+    if (missing.length > 0) {
+      const reason = verificationReason("DATOS_DEL_DOCUMENTO_FALTANTES", {
+        missing: missing.map(
+          (field) =>
+            REQUIRED_DECLARED_FIELDS[type].find((f) => f.field === field)
+              ?.label ?? field,
+        ),
+      });
+      throw new BadRequestException({
+        statusCode: 400,
+        code: reason.code,
+        message: reason.message,
+        action: reason.action,
+        missing,
+      });
+    }
+
+    const expiresAt = parseFecha(dto.expiresAt);
+    if (!expiresAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DECLARED_DATE_INVALID",
+        message: "La fecha de vencimiento no es una fecha real.",
+        missing: ["expiresAt"],
+      });
+    }
+
+    if (type === VerifiedDocumentType.DNI) {
+      return { expiresAt };
+    }
+
+    const issuedAt = parseFecha(dto.issuedAt);
+    if (!issuedAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DECLARED_DATE_INVALID",
+        message: "La fecha de otorgamiento no es una fecha real.",
+        missing: ["issuedAt"],
+      });
+    }
+    // Una licencia no puede vencer antes de otorgarse. Es el único control de
+    // coherencia entre dos fechas declaradas, y atrapa el error de carga más
+    // común: escribir las dos al revés.
+    if (issuedAt > expiresAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DECLARED_DATES_INCONSISTENT",
+        message:
+          "La fecha de otorgamiento de la licencia es posterior a la de " +
+          "vencimiento. Revisá que no estén invertidas.",
+        missing: ["issuedAt", "expiresAt"],
+      });
+    }
+
+    const beginnerUntil = dto.isBeginner ? parseFecha(dto.beginnerUntil) : null;
+    if (dto.isBeginner && !beginnerUntil) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DECLARED_DATE_INVALID",
+        message:
+          "La fecha de fin del período de principiante no es una fecha real.",
+        missing: ["beginnerUntil"],
+      });
+    }
+
+    return {
+      expiresAt,
+      issuedAt,
+      licenseClass: dto.licenseClass?.trim().toUpperCase() ?? null,
+      isBeginner: Boolean(dto.isBeginner),
+      beginnerUntil,
+    };
+  }
+
   toPublicView(row: DocumentVerification): DocumentVerificationView {
+    const kind = TYPE_TO_KIND[row.type];
+    const reasons = readReasons(row.matchReport);
+    const retakeSlots = (row.retakeSlots ?? []) as DocumentSlot[];
+
     return {
       id: row.id,
       type: row.type,
       status: row.status,
-      reasons: readReasons(row.matchReport),
+      reasons,
+      nextAction: nextAction(row, reasons),
       documents: { front: Boolean(row.frontUrl), back: Boolean(row.backUrl) },
+      photos: (["front", "back"] as const).map((side) => {
+        const slot = slotFor(kind, side);
+        return {
+          slot,
+          side,
+          present: Boolean(side === "front" ? row.frontUrl : row.backUrl),
+          mustRetake: retakeSlots.includes(slot),
+        };
+      }),
+      retakeSlots,
+      declared: declaredView(row),
       // Reenviar fotos se puede SIEMPRE salvo que ya esté aprobado. Con una
       // revisión manual pendiente también: mandar fotos nuevas la reemplaza.
       canResubmit: row.status !== DocumentVerificationStatus.APPROVED,
-      // Pedir revisión tiene sentido sobre un documento enviado y todavía sin
-      // resolver. Si ya está pedida, no se vuelve a pedir.
+      // Pedir revisión tiene sentido sobre un documento enviado, todavía sin
+      // resolver y con las fotos guardadas. Si ya está pedida, no se repite.
       canRequestManualReview:
-        row.status === DocumentVerificationStatus.PENDING ||
-        row.status === DocumentVerificationStatus.FAILED,
+        (row.status === DocumentVerificationStatus.PENDING ||
+          row.status === DocumentVerificationStatus.FAILED) &&
+        Boolean(row.frontUrl) &&
+        Boolean(row.backUrl),
       analysis: {
         status: row.analysisStatus,
         // Un análisis abandonado ya no está "en curso" por más que la columna
@@ -1016,19 +1341,14 @@ function analisisAbandonado(row: DocumentVerification): boolean {
  *
  * Hacen falta tres cosas, y cada una descarta un caso distinto:
  *
- *   · que el último intento haya FALLADO — si está QUEUED ya hay uno corriendo
- *     y pedir otro duplicaría el trabajo del servicio de lectura, que es
- *     justamente el recurso escaso; si está DONE, ya hay un veredicto;
- *   · que las fotos sigan guardadas — un documento rechazado ya no las tiene,
- *     así que no hay nada para analizar;
+ *   · que el análisis NO SE HAYA HECHO — que haya fallado antes de empezar
+ *     (FAILED) o que se haya perdido en el camino. Si está QUEUED hay uno
+ *     corriendo y pedir otro duplicaría el trabajo del servicio de lectura,
+ *     que es justamente el recurso escaso; si está DONE ya hay un veredicto y
+ *     volver a analizar LAS MISMAS fotos daría lo mismo;
+ *   · que las fotos sigan guardadas — un documento rechazado ya no las tiene;
  *   · que el documento no esté resuelto — aprobado o rechazado, la lectura ya
  *     no cambia nada.
- *
- * No se mira si el fallo fue "reintentable": eso lo decide el cliente al
- * momento de fallar y queda reflejado en que la fila haya quedado o no en
- * FAILED con las fotos intactas. Un token mal configurado deja la fila igual,
- * sí — y reintentarlo cuesta un request que vuelve a fallar en un segundo,
- * mucho menos que explicarle a alguien por qué el botón no aparece.
  */
 function canRetryAnalysis(row: DocumentVerification): boolean {
   return (
@@ -1039,6 +1359,50 @@ function canRetryAnalysis(row: DocumentVerification): boolean {
     row.status !== DocumentVerificationStatus.APPROVED &&
     row.status !== DocumentVerificationStatus.REJECTED
   );
+}
+
+/**
+ * El orden en que importan las acciones cuando hay varios motivos a la vez.
+ *
+ * Una foto ilegible y un dato que no coincide pueden aparecer juntos, y el
+ * front tiene que elegir UN botón. Gana lo que desbloquea más rápido: repetir
+ * una foto es un toque, corregir el perfil son tres pantallas, y esperar a un
+ * admin son días. Presentar primero lo más lento sería mandar a esperar a
+ * alguien que podía resolverlo solo.
+ */
+const PRIORIDAD_DE_ACCION: ReasonAction[] = [
+  "RETAKE_PHOTO",
+  "FIX_DECLARED_DATA",
+  "FIX_PROFILE",
+  "USE_VALID_DOCUMENT",
+  "REQUEST_REVIEW",
+  "CONTACT_SUPPORT",
+  "WAIT",
+];
+
+/** Qué tiene que hacer la persona ahora, en una sola palabra. */
+function nextAction(
+  row: DocumentVerification,
+  reasons: VerificationReason[],
+): ReasonAction | null {
+  if (row.status === DocumentVerificationStatus.APPROVED) return null;
+  if (row.status === DocumentVerificationStatus.MANUAL_REVIEW) return "WAIT";
+  if (
+    row.status === DocumentVerificationStatus.PENDING &&
+    row.analysisStatus === DocumentAnalysisStatus.QUEUED
+  ) {
+    return "WAIT";
+  }
+  if (row.status === DocumentVerificationStatus.PENDING && !reasons.length) {
+    // El análisis no se pudo hacer: la salida es esperar a un admin (o
+    // reintentar, que el front ya sabe por analysis.canRetry).
+    return "WAIT";
+  }
+
+  for (const accion of PRIORIDAD_DE_ACCION) {
+    if (reasons.some((r) => r.action === accion)) return accion;
+  }
+  return null;
 }
 
 /**
@@ -1054,50 +1418,93 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-/** Lo que habilita un documento del que no se leyó nada. */
-const VACIO: ExtractedFacts = {
-  expiresAt: null,
-  licenseClass: null,
-  licenseIssuedAt: null,
-  licenseBeginnerUntil: null,
-  documentNumber: null,
-};
-
-/**
- * Lo que la lectura sacó de un documento, recuperado de la fila.
- *
- * Se lee de `extracted`, que es donde lo dejó el análisis, y se cae a `VACIO`
- * cuando no hay nada: es el caso de un documento que un admin aprobó sin que
- * la lectura automática hubiera podido correr. Ahí no se sabe cuándo vence la
- * licencia, y no saberlo es distinto de que esté vigente — lo que hace el
- * control de habilitación con un vencimiento desconocido está explicado en
- * driving-eligibility.ts.
- *
- * `expiresAt` sale de la columna y no del JSON porque es la columna la que se
- * mantiene al día: un admin puede corregirla sin tocar el informe.
- */
-function factsOf(row: DocumentVerification): ExtractedFacts {
-  const report = row.extracted as { facts?: Partial<ExtractedFacts> } | null;
-  const facts = report?.facts;
+/** Cómo se guarda lo declarado en la columna Json. */
+function serializeDeclared(
+  declared: DeclaredDocumentData,
+): Prisma.InputJsonValue {
   return {
-    expiresAt: row.expiresAt,
-    licenseClass: facts?.licenseClass ?? null,
-    licenseIssuedAt: aDate(facts?.licenseIssuedAt),
-    licenseBeginnerUntil: aDate(facts?.licenseBeginnerUntil),
-    documentNumber: row.documentNumber,
+    expiresAt: declared.expiresAt.toISOString(),
+    issuedAt: declared.issuedAt?.toISOString() ?? null,
+    licenseClass: declared.licenseClass ?? null,
+    isBeginner: declared.isBeginner ?? null,
+    beginnerUntil: declared.beginnerUntil?.toISOString() ?? null,
   };
 }
 
 /**
- * Las fechas guardadas en JSON vuelven como texto ISO, no como Date: Prisma
- * serializa la columna Json tal cual y no reconstruye tipos. Sin esto, lo que
- * se escribiría en User.licenseIssuedAt sería un string y Prisma lo rechazaría
- * en runtime, mucho después de compilar.
+ * Lo declarado, recuperado de la fila.
+ *
+ * Devuelve null cuando no hay: es el caso de las filas anteriores a este
+ * cambio, y quien llama decide qué hacer (no se puede cruzar contra nada, así
+ * que no se puede aprobar sola).
+ *
+ * `expiresAt` sale de la COLUMNA y no del JSON porque es la columna la que se
+ * mantiene al día: un admin puede corregirla sin tocar el declarado.
  */
-function aDate(valor: Date | string | null | undefined): Date | null {
+function readDeclared(row: DocumentVerification): DeclaredDocumentData | null {
+  const raw = row.declared as Record<string, unknown> | null;
+  if (!raw) return null;
+
+  const expiresAt = row.expiresAt ?? aDate(raw.expiresAt);
+  if (!expiresAt) return null;
+
+  return {
+    expiresAt,
+    issuedAt: aDate(raw.issuedAt),
+    licenseClass:
+      typeof raw.licenseClass === "string" ? raw.licenseClass : null,
+    isBeginner: raw.isBeginner === true,
+    beginnerUntil: aDate(raw.beginnerUntil),
+  };
+}
+
+/** Lo declarado, como se le devuelve al front: fechas en YYYY-MM-DD. */
+function declaredView(row: DocumentVerification): DeclaredView | null {
+  const declared = readDeclared(row);
+  if (!declared) return null;
+  return {
+    expiresAt: isoCorto(declared.expiresAt),
+    issuedAt: declared.issuedAt ? isoCorto(declared.issuedAt) : null,
+    licenseClass: declared.licenseClass ?? null,
+    isBeginner: declared.isBeginner ?? null,
+    beginnerUntil: declared.beginnerUntil
+      ? isoCorto(declared.beginnerUntil)
+      : null,
+  };
+}
+
+/**
+ * "2026-10-28" → Date, en UTC A MEDIODÍA.
+ *
+ * A mediodía y no a medianoche, que es lo que hace `new Date("2026-10-28")`.
+ * Una fecha sin hora guardada a medianoche UTC, leída en Argentina (UTC-3),
+ * cae el día anterior a las 21:00: una licencia que vence el 28 figuraría
+ * venciendo el 27. El mediodía deja doce horas de margen para cada lado, que
+ * cubre cualquier zona horaria del mundo.
+ */
+function parseFecha(iso: string | undefined | null): Date | null {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const fecha = new Date(`${iso}T12:00:00.000Z`);
+  if (Number.isNaN(fecha.getTime())) return null;
+  // Round-trip: descarta fechas que no existen (2025-02-31 se convertiría en
+  // marzo sin avisar).
+  return fecha.toISOString().slice(0, 10) === iso ? fecha : null;
+}
+
+/**
+ * Las fechas guardadas en JSON vuelven como texto ISO, no como Date: Prisma
+ * serializa la columna Json tal cual y no reconstruye tipos.
+ */
+function aDate(valor: unknown): Date | null {
   if (!valor) return null;
-  const fecha = valor instanceof Date ? valor : new Date(valor);
+  if (valor instanceof Date) return valor;
+  if (typeof valor !== "string") return null;
+  const fecha = new Date(valor);
   return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+function isoCorto(fecha: Date): string {
+  return fecha.toISOString().slice(0, 10);
 }
 
 /**
@@ -1119,9 +1526,20 @@ export function readReasons(matchReport: unknown): VerificationReason[] {
     typeof matchReport === "object" &&
     Array.isArray((matchReport as { reasons?: unknown }).reasons)
   ) {
-    return (matchReport as { reasons: VerificationReason[] }).reasons.filter(
-      (reason) => reason && typeof reason.code === "string",
-    );
+    return (matchReport as { reasons: VerificationReason[] }).reasons
+      .filter((reason) => reason && typeof reason.code === "string")
+      .map((reason) => ({
+        ...reason,
+        // Las filas guardadas antes de este cambio no tienen `action` ni
+        // `slots`. Se completan para que el front reciba SIEMPRE la misma
+        // forma y no tenga que preguntarse si este motivo es de los de antes.
+        // El respaldo es REQUEST_REVIEW porque es la salida que siempre
+        // existe: sobre un motivo viejo no sabemos si alcanzaba con repetir
+        // una foto, y mandar a repetir una foto que no era el problema es
+        // peor que ofrecer que lo mire alguien.
+        action: reason.action ?? ("REQUEST_REVIEW" as ReasonAction),
+        slots: reason.slots ?? ([] as DocumentSlot[]),
+      }));
   }
   return [];
 }

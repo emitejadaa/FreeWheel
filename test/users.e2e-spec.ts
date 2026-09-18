@@ -68,21 +68,29 @@ describe("Users", () => {
       .expect(400);
   });
 
-  it("PATCH /users/me stores dni/cuil/address, normalizing the CUIL", async () => {
+  it("PATCH /users/me stores dni/cuil, normalizing the CUIL", async () => {
     const user = await registerUser(app, { verified: false });
     const dni = "12345678";
     const res = await request(app.getHttpServer())
       .patch("/users/me")
       .set("Authorization", `Bearer ${user.token}`)
-      .send({
-        dni,
-        cuil: "20-12345678-6",
-        address: "Av. Corrientes 1234, CABA",
-      })
+      .send({ dni, cuil: "20-12345678-6" })
       .expect(200);
     expect(res.body.dni).toBe(dni);
     expect(res.body.cuil).toBe("20123456786");
-    expect(res.body.address).toBe("Av. Corrientes 1234, CABA");
+  });
+
+  it("el domicilio ya no es un dato de la cuenta: no se guarda ni se devuelve", async () => {
+    // Se sacó a propósito: no se comparaba contra el documento, no habilitaba
+    // nada, y era el dato más sensible que guardábamos de una persona. La
+    // única dirección que el sistema necesita es la del auto.
+    const user = await registerUser(app, { verified: false });
+    const res = await request(app.getHttpServer())
+      .patch("/users/me")
+      .set("Authorization", `Bearer ${user.token}`)
+      .send({ address: "Av. Corrientes 1234, CABA" })
+      .expect(200);
+    expect(res.body.address).toBeUndefined();
   });
 
   it("PATCH /users/me rejects a CUIL with a bad check digit (400)", async () => {
@@ -110,7 +118,7 @@ describe("Users", () => {
     await request(app.getHttpServer())
       .patch("/users/me")
       .set("Authorization", `Bearer ${first.token}`)
-      .send({ dni, cuil: cuilFor(dni), address: "Calle Falsa 123, CABA" })
+      .send({ dni, cuil: cuilFor(dni) })
       .expect(200);
 
     const second = await registerUser(app, { verified: false });

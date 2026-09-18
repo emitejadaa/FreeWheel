@@ -40,6 +40,16 @@ import {
 // Enumeration-safe reply: identical whether or not the email belongs to a user.
 const PASSWORD_RESET_REPLY = "If that email exists, we sent you a link.";
 
+/**
+ * Un hash de bcrypt contra el que comparar cuando el mail no existe.
+ *
+ * No es la contraseña de nadie: es el hash de una cadena aleatoria que nadie
+ * conoce, y lo único que se busca es que comparar contra él CUESTE lo mismo
+ * que comparar contra el hash de una cuenta real. Ver el uso en `login`.
+ */
+const HASH_DE_DESCARTE =
+  "$2b$10$C6UzMDM.H6dfI/f/IKcEe.7VGjLPMSAkPCq/9H7g9SCrWhHNJ0kSO";
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -141,6 +151,15 @@ export class AuthService {
 
     if (!user) {
       this.logger.warn(`Login failed (unknown email): ${loginDto.email}`);
+      // Se compara contra un hash de descarte ANTES de contestar.
+      //
+      // Sin esto, un mail que no existe contestaba enseguida y uno que sí
+      // existe tardaba los ~100 ms que tarda bcrypt. Esa diferencia es
+      // medible desde afuera y convierte la pantalla de login en una lista de
+      // qué direcciones tienen cuenta acá — que es el primer paso de cualquier
+      // campaña de phishing dirigida. El costo es esos mismos 100 ms sobre un
+      // pedido que ya va a fallar.
+      await bcrypt.compare(loginDto.password, HASH_DE_DESCARTE);
       throw new UnauthorizedException("Invalid credentials");
     }
 

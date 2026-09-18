@@ -16,12 +16,29 @@ const logger = new Logger("Bootstrap");
 let cachedServer: Express | null = null;
 let cachedApp: Promise<INestApplication> | null = null;
 
+/** La ruta que necesita el cuerpo del pedido sin parsear. */
+export const STRIPE_WEBHOOK_PATH = "/payments/stripe/webhook";
+
 /**
- * Applies the global pipes and filters that every environment must share.
- * Exported so the E2E test harness can build an app that behaves exactly like
- * the one served in production.
+ * Applies the global pipes, filters and body parsing that every environment
+ * must share. Exported so the E2E test harness can build an app that behaves
+ * exactly like the one served in production.
  */
 export function configureApp(app: INestApplication): void {
+  // EL CUERPO CRUDO DEL WEBHOOK, ANTES QUE CUALQUIER PARSER.
+  //
+  // La firma de Stripe se verifica sobre los BYTES EXACTOS que Stripe mandó.
+  // Si algo los parsea primero, lo único que queda es un objeto, y
+  // reconstruirlo con JSON.stringify da otros bytes —otro orden de claves,
+  // otros espacios— así que la verificación falla o, peor, pasa sobre algo que
+  // no es lo que Stripe firmó.
+  //
+  // Esto vivía solo en createServer(), o sea solo en el deploy. Los tests
+  // corrían contra un app SIN este middleware y el controlador reconstruía el
+  // buffer a mano para que funcionaran: el camino más sensible del sistema se
+  // probaba distinto de como corre. Ahora es el mismo en los dos lados.
+  app.use(STRIPE_WEBHOOK_PATH, express.raw({ type: "*/*", limit: "1mb" }));
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -88,9 +105,12 @@ export function createServer(): Express {
 
     // El webhook de Stripe necesita el body crudo (Buffer) para verificar la
     // firma. Se registra ANTES del JSON parser global y solo para esa ruta, así
-    // el resto de la API sigue recibiendo JSON parseado.
+    // el resto de la API sigue recibiendo JSON parseado. `configureApp` lo
+    // vuelve a registrar sobre el app de Nest para que los tests corran contra
+    // lo mismo; express ignora el duplicado porque el primero ya dejó el body
+    // puesto.
     cachedServer.use(
-      "/payments/stripe/webhook",
+      STRIPE_WEBHOOK_PATH,
       express.raw({ type: "*/*", limit: "1mb" }),
     );
 

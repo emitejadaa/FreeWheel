@@ -1,4 +1,7 @@
-import { evaluateDrivingEligibility } from "./driving-eligibility";
+import {
+  evaluateDrivingEligibility,
+  evaluateIdentityValidity,
+} from "./driving-eligibility";
 
 /**
  * Este control decide, en cada pedido, si alguien puede alquilar un auto. Los
@@ -161,52 +164,58 @@ describe("evaluateDrivingEligibility", () => {
 });
 
 /**
- * La misma concesión de fase de prueba que en el cruce de identidad, pero en
- * la capa de habilitación. Va aparte porque son dos decisiones distintas:
- * "sos quien decís ser" y "hoy podés manejar". Sin las dos, la cuenta de
- * prueba queda verificada pero no puede reservar nada, y el bloqueo reaparece
- * una capa más adelante.
+ * EL OTRO CONTROL: ¿la identidad de esta persona sigue respaldada hoy?
+ *
+ * Es paralelo al de manejar pero gobierna todo lo demás —reservar, publicar,
+ * pagar, cobrar—. La distinción que cuida este bloque es que un DNI vencido NO
+ * desverifica la cuenta: la persona no dejó de ser quien es, así que no
+ * empieza de cero, pero mientras tanto no puede operar.
  */
-describe("evaluateDrivingEligibility · la cuenta de prueba", () => {
-  const VENCIDA_Y_PRINCIPIANTE = {
-    ...HABILITADO,
-    licenseExpiresAt: dia("2020-01-01"),
-    licenseBeginnerUntil: dia("2030-01-01"),
-    email: "demo@freewheel.test",
-  };
+describe("evaluateIdentityValidity", () => {
+  const HOY = new Date("2026-09-18T15:00:00.000Z");
+  const dia = (iso: string) => new Date(`${iso}T12:00:00.000Z`);
 
-  afterEach(() => {
-    delete process.env.VERIFICACION_CUENTA_DE_PRUEBA;
+  it("con el DNI vigente, la identidad vale", () => {
+    const r = evaluateIdentityValidity(
+      { dniExpiresAt: dia("2039-01-01") },
+      HOY,
+    );
+    expect(r.valid).toBe(true);
+    expect(r.reasons).toEqual([]);
   });
 
-  it("deja alquilar aunque la licencia esté vencida y sea de principiante", () => {
-    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
-
-    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
-
-    expect(resultado.canRent).toBe(true);
+  it("con el DNI vencido, no vale, y dice desde cuándo", () => {
+    const r = evaluateIdentityValidity(
+      { dniExpiresAt: dia("2021-03-07") },
+      HOY,
+    );
+    expect(r.valid).toBe(false);
+    expect(r.reasons[0].code).toBe("DNI_VENCIDO");
+    expect(r.reasons[0].message).toContain("7/3/2021");
   });
 
-  it("conserva los motivos, para que se vea qué lo habría frenado", () => {
-    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
-
-    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
-
-    expect(codigos(resultado)).toContain("LICENCIA_VENCIDA");
-    expect(codigos(resultado)).toContain("LICENCIA_PRINCIPIANTE");
+  it("el día del vencimiento todavía vale: se compara por día, no por hora", () => {
+    const r = evaluateIdentityValidity(
+      { dniExpiresAt: dia("2026-09-18") },
+      HOY,
+    );
+    expect(r.valid).toBe(true);
   });
 
-  it("sin la variable configurada, la misma cuenta no puede alquilar", () => {
-    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
-
-    expect(resultado.canRent).toBe(false);
+  it("un vencimiento desconocido NO bloquea", () => {
+    // Hay cuentas verificadas de antes de que este dato existiera. Tratarlas
+    // como vencidas las dejaría afuera el día del deploy sin atrapar ningún
+    // fraude.
+    const r = evaluateIdentityValidity({ dniExpiresAt: null }, HOY);
+    expect(r.valid).toBe(true);
   });
 
-  it("no le da el privilegio a otra cuenta", () => {
-    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "otra@freewheel.test";
-
-    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
-
-    expect(resultado.canRent).toBe(false);
+  it("avisa cuando faltan menos de 30 días, sin bloquear todavía", () => {
+    const r = evaluateIdentityValidity(
+      { dniExpiresAt: dia("2026-10-01") },
+      HOY,
+    );
+    expect(r.valid).toBe(true);
+    expect(r.expiresSoon).toBe(true);
   });
 });

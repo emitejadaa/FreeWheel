@@ -8,7 +8,10 @@ import { Reflector } from "@nestjs/core";
 import { VerificationStatus } from "@prisma/client";
 import { REQUIRE_VERIFIED_ACCOUNT_KEY } from "../decorators/require-verified-account.decorator";
 import { REQUIRE_DRIVING_ELIGIBILITY_KEY } from "../decorators/require-driving-eligibility.decorator";
-import { evaluateDrivingEligibility } from "../../verification/identity/driving-eligibility";
+import {
+  evaluateDrivingEligibility,
+  evaluateIdentityValidity,
+} from "../../verification/identity/driving-eligibility";
 import type { CurrentUserPayload } from "../types/current-user.type";
 
 /**
@@ -49,6 +52,7 @@ export class VerifiedAccountGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<{
       user?: CurrentUserPayload;
+      method?: string;
     }>();
     const user = request.user;
 
@@ -63,9 +67,40 @@ export class VerifiedAccountGuard implements CanActivate {
         statusCode: 403,
         code: "ACCOUNT_NOT_VERIFIED",
         message:
-          "Tu cuenta debe estar verificada (teléfono, DNI y licencia) para realizar esta acción",
+          "Tu cuenta debe estar verificada (email, teléfono y DNI) para realizar esta acción",
         verificationStatus: user.verificationStatus,
       });
+    }
+
+    // UNA CUENTA VERIFICADA CON EL DNI VENCIDO NO DEJA DE ESTAR VERIFICADA,
+    // PERO NO PUEDE OPERAR.
+    //
+    // La persona no dejó de ser quien es, así que la cuenta no vuelve a cero y
+    // no hay que verificarse de nuevo desde el principio: alcanza con renovar
+    // el documento y volver a enviarlo. Pero mientras tanto su identidad no
+    // tiene respaldo documental vigente, y todo lo que este guard protege
+    // —reservar, publicar, pagar, cobrar— es plata y responsabilidad de por
+    // medio.
+    //
+    // Un vencimiento desconocido NO bloquea: hay cuentas verificadas de antes
+    // de que este dato existiera, y tratarlas como vencidas las dejaría afuera
+    // el día del deploy sin atrapar ningún fraude.
+    //
+    // SOLO SOBRE ESCRITURAS. Leer lo que ya existe —el estado de pago de una
+    // reserva vieja, el historial de sus cobros— no es una acción sensible, y
+    // bloquearlo dejaba a alguien con el DNI vencido sin poder siquiera mirar
+    // sus propias reservas. Eso no protege nada y parece una cuenta rota.
+    if (required && (request.method ?? "GET") !== "GET") {
+      const identity = evaluateIdentityValidity(user);
+      if (!identity.valid) {
+        throw new ForbiddenException({
+          statusCode: 403,
+          code: "IDENTITY_DOCUMENT_EXPIRED",
+          message: identity.reasons.map((r) => r.message).join(" "),
+          reasons: identity.reasons,
+          dniExpiresAt: identity.dniExpiresAt,
+        });
+      }
     }
 
     if (needsLicense) {
