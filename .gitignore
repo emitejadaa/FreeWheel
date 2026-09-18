@@ -90,3 +90,4 @@ thunderEnvironment.json
 
 # Salida de la herramienta graphify: caché regenerable.
 graphify-out/
+.vercel
