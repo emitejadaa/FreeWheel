@@ -3,6 +3,7 @@ import {
   verificationReason,
 } from "../errors/verification-reasons";
 import { habilitaAuto } from "./identity-match.service";
+import { esLaCuentaDePrueba } from "../../common/cuenta-de-prueba";
 
 /**
  * ¿ESTA PERSONA PUEDE ALQUILAR UN AUTO AHORA MISMO?
@@ -37,6 +38,14 @@ export interface DrivingCredentials {
   licenseExpiresAt: Date | null;
   licenseClass: string | null;
   licenseBeginnerUntil: Date | null;
+  /**
+   * Solo lo mira la cuenta de prueba de la fase de demo. Opcional para que
+   * quien llame no tenga que cargarlo si no le interesa; las tres llamadas de
+   * hoy pasan el usuario entero, así que ya viene puesto.
+   *
+   * FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts.
+   */
+  email?: string | null;
 }
 
 export interface DrivingEligibility {
@@ -94,8 +103,13 @@ export function evaluateDrivingEligibility(
     );
   }
 
+  // FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts (ver ese archivo).
+  // Los motivos se devuelven igual: la cuenta de prueba puede alquilar, pero
+  // el informe sigue diciendo qué la habría frenado.
+  const esPrueba = esLaCuentaDePrueba(credentials.email);
+
   return {
-    canRent: reasons.length === 0,
+    canRent: reasons.length === 0 || esPrueba,
     reasons,
     licenseExpiresAt: vence,
     expiresSoon:

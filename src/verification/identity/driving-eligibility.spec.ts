@@ -159,3 +159,54 @@ describe("evaluateDrivingEligibility", () => {
     });
   });
 });
+
+/**
+ * La misma concesión de fase de prueba que en el cruce de identidad, pero en
+ * la capa de habilitación. Va aparte porque son dos decisiones distintas:
+ * "sos quien decís ser" y "hoy podés manejar". Sin las dos, la cuenta de
+ * prueba queda verificada pero no puede reservar nada, y el bloqueo reaparece
+ * una capa más adelante.
+ */
+describe("evaluateDrivingEligibility · la cuenta de prueba", () => {
+  const VENCIDA_Y_PRINCIPIANTE = {
+    ...HABILITADO,
+    licenseExpiresAt: dia("2020-01-01"),
+    licenseBeginnerUntil: dia("2030-01-01"),
+    email: "demo@freewheel.test",
+  };
+
+  afterEach(() => {
+    delete process.env.VERIFICACION_CUENTA_DE_PRUEBA;
+  });
+
+  it("deja alquilar aunque la licencia esté vencida y sea de principiante", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
+
+    expect(resultado.canRent).toBe(true);
+  });
+
+  it("conserva los motivos, para que se vea qué lo habría frenado", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
+
+    expect(codigos(resultado)).toContain("LICENCIA_VENCIDA");
+    expect(codigos(resultado)).toContain("LICENCIA_PRINCIPIANTE");
+  });
+
+  it("sin la variable configurada, la misma cuenta no puede alquilar", () => {
+    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
+
+    expect(resultado.canRent).toBe(false);
+  });
+
+  it("no le da el privilegio a otra cuenta", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "otra@freewheel.test";
+
+    const resultado = evaluateDrivingEligibility(VENCIDA_Y_PRINCIPIANTE, HOY);
+
+    expect(resultado.canRent).toBe(false);
+  });
+});

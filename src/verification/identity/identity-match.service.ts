@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { User, VerifiedDocumentType } from "@prisma/client";
 import { DocverifyField, DocverifyResult } from "./docverify.client";
+import { esLaCuentaDePrueba } from "../../common/cuenta-de-prueba";
 import {
   fieldLabel,
   VerificationReason,
@@ -219,13 +220,18 @@ export class IdentityMatchService {
     const facts = extraerHechos(type, lecturas, fields);
     reasons.push(...this.controlesDeVigencia(type, facts));
 
+    // Cualquier motivo manda a revisión manual. No hay motivos "leves": si
+    // algo no cerró, lo mira una persona. Lo que sí hay son motivos que no
+    // impiden aprobar —los de habilitación— y esos se filtran acá.
+    const algoNoCerro = reasons.some((r) => !NO_IMPIDEN_APROBAR.has(r.code));
+
+    // FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts (ver ese archivo).
+    // El análisis ya se hizo entero y los motivos quedan en `reasons` tal cual
+    // salieron: lo único que esto cambia es el veredicto.
+    const esPrueba = esLaCuentaDePrueba(user.email);
+
     return {
-      // Cualquier motivo manda a revisión manual. No hay motivos "leves": si
-      // algo no cerró, lo mira una persona. Lo que sí hay son motivos que no
-      // impiden aprobar —los de habilitación— y esos se filtran abajo.
-      verdict: reasons.some((r) => !NO_IMPIDEN_APROBAR.has(r.code))
-        ? "MANUAL_REVIEW"
-        : "APPROVE",
+      verdict: algoNoCerro && !esPrueba ? "MANUAL_REVIEW" : "APPROVE",
       reasons,
       fields,
       facts,
@@ -440,7 +446,74 @@ function mismoValor(
  * apellidos distintos y no hay que darlos por iguales.
  */
 function mismoTexto(campo: string, a: string, b: string): boolean {
-  return normalizarPara(campo, a) === normalizarPara(campo, b);
+  const leido = normalizarPara(campo, a);
+  const cuenta = normalizarPara(campo, b);
+  if (leido === cuenta) return true;
+
+  /**
+   * UNA letra de diferencia en el nombre o el apellido no alcanza para mandar
+   * a alguien a revisión manual. El OCR confunde L con T y M con N sobre una
+   * foto con reflejo: "EMITIANO" donde dice "EMILIANO" es un defecto de la
+   * cámara, no una identidad distinta, y tratarlo como tal frena a una persona
+   * real por algo que no hizo.
+   *
+   * Solo acá. Un dígito de diferencia en un DNI SÍ es otro documento, y una
+   * fecha corrida un día es otra fecha: ahí no hay nada que perdonar.
+   *
+   * Lo que esto acepta de más, y es a sabiendas: dos nombres reales separados
+   * por una letra —MARIA y MARIO— pasan como iguales. Es tolerable porque el
+   * veredicto de este servicio nunca es RECHAZAR, así que lo peor que produce
+   * es aprobar de más, y eso lo atrapan después el control antifraude del
+   * número de documento y la revisión del administrador. Al revés —rechazar de
+   * menos— no lo atrapa nadie.
+   *
+   * Y no toca la comparación ENTRE orígenes, que se hace aparte con
+   * `normalizarPara` (ver `evaluarCampo`): que lo impreso y el código de
+   * barras digan cosas distintas sigue siendo la firma del fraude, y ahí la
+   * exigencia no se afloja ni una letra.
+   */
+  if (!TOLERAN_UN_ERROR_DE_LECTURA.has(campo)) return false;
+
+  return distanciaAcotada(leido, cuenta, 1) <= 1;
+}
+
+/** Los campos donde una sola letra de diferencia se perdona. */
+const TOLERAN_UN_ERROR_DE_LECTURA = new Set(["nombre", "apellido"]);
+
+/**
+ * Cuántas letras hay que cambiar, agregar o sacar para convertir un texto en
+ * el otro (distancia de Levenshtein), pero cortando apenas pasa `tope`.
+ *
+ * El corte no es una optimización: es lo que hace que la función responda la
+ * única pregunta que interesa —"¿están a una letra?"— en vez de calcular cuán
+ * distintos son dos nombres que no tienen nada que ver.
+ */
+function distanciaAcotada(a: string, b: string, tope: number): number {
+  if (Math.abs(a.length - b.length) > tope) return tope + 1;
+
+  let anterior = Array.from({ length: b.length + 1 }, (_, i) => i);
+
+  for (let i = 1; i <= a.length; i++) {
+    const actual = [i];
+    let mejorDeLaFila = i;
+
+    for (let j = 1; j <= b.length; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1;
+      actual[j] = Math.min(
+        anterior[j] + 1, // sacar una letra
+        actual[j - 1] + 1, // agregar una letra
+        anterior[j - 1] + costo, // cambiarla
+      );
+      mejorDeLaFila = Math.min(mejorDeLaFila, actual[j]);
+    }
+
+    // Ninguna fila posterior puede mejorar el mínimo de ésta, así que si acá
+    // ya se pasó del tope, se pasó y punto.
+    if (mejorDeLaFila > tope) return tope + 1;
+    anterior = actual;
+  }
+
+  return anterior[b.length];
 }
 
 function normalizarPara(campo: string, valor: string): string {

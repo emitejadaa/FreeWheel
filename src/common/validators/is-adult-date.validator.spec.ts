@@ -44,3 +44,50 @@ describe("isAdultDate", () => {
     expect(isAdultDate(new Date())).toBe(false);
   });
 });
+
+/**
+ * FASE DE PRUEBA · borrar junto con cuenta-de-prueba.ts.
+ *
+ * La cuenta de prueba de la demo tiene 17 años, así que sin esto no puede
+ * siquiera registrarse y no hay nada que probar. El límite baja para ESE mail
+ * y nada más: es la única forma de aflojar la regla sin aflojarla para todos.
+ */
+describe("isAdultDate · la cuenta de prueba", () => {
+  afterEach(() => {
+    delete process.env.VERIFICACION_CUENTA_DE_PRUEBA;
+  });
+
+  it("acepta a alguien de 17 cuando el mail es el de la cuenta de prueba", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    expect(isAdultDate(yearsAgo(17), "demo@freewheel.test")).toBe(true);
+  });
+
+  it("baja el límite a 17, no lo saca: a los 16 sigue sin poder", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    expect(isAdultDate(yearsAgo(16), "demo@freewheel.test")).toBe(false);
+  });
+
+  it("no le baja el límite a ninguna otra cuenta", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    expect(isAdultDate(yearsAgo(17), "otra@freewheel.test")).toBe(false);
+  });
+
+  it("sin la variable configurada, ese mail no tiene ningún privilegio", () => {
+    expect(isAdultDate(yearsAgo(17), "demo@freewheel.test")).toBe(false);
+  });
+
+  it("sigue rechazando una fecha que no existe, cuenta de prueba o no", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    expect(isAdultDate("2000-02-31", "demo@freewheel.test")).toBe(false);
+  });
+
+  it("sin mail se comporta como siempre: 18", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    expect(isAdultDate(yearsAgo(17))).toBe(false);
+  });
+});

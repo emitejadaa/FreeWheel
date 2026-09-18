@@ -400,3 +400,161 @@ describe("IdentityMatchService · licencia", () => {
     expect(report.fields.apellido.value).toBe("TEJADA ARAGON");
   });
 });
+
+/**
+ * ─── Concesiones de la fase de prueba ────────────────────────────────────────
+ *
+ * Lo que sigue cubre dos aflojadas deliberadas. Están juntas y al final a
+ * propósito: son lo primero que hay que borrar cuando la plataforma deje de
+ * ser una demo. Los tests describen exactamente hasta dónde llega cada una,
+ * así que borrarlos es la forma de comprobar que la aflojada se fue completa.
+ */
+
+/** El mismo DNI de siempre, con otro nombre de pila en los tres orígenes. */
+const dniConNombre = (nombre: string) =>
+  lectura({
+    "frente.ocr": {
+      apellido: "TEJADA ARAGON",
+      nombre,
+      sexo: "M",
+      numero_documento: "49380010",
+      fecha_nacimiento: "2009-04-06",
+      fecha_vencimiento: "2039-04-06",
+    },
+    "frente.pdf417": {
+      apellido: "TEJADA ARAGON",
+      nombre,
+      sexo: "M",
+      numero_documento: "49380010",
+      fecha_nacimiento: "2009-04-06",
+    },
+    "dorso.ocr": { cuil: "20-49380010-9", numero_documento: "49380010" },
+    "dorso.mrz": {
+      tipo_documento: "ID",
+      pais_emisor: "ARG",
+      apellido: "TEJADA ARAGON",
+      nombre,
+      sexo: "M",
+      numero_documento: "49380010",
+      fecha_nacimiento: "2009-04-06",
+      fecha_vencimiento: "2039-04-06",
+    },
+  });
+
+describe("IdentityMatchService · un error de lectura en el nombre", () => {
+  it("aprueba un nombre con una sola letra mal leída", () => {
+    // El caso real que motivó esto: el OCR lee EMITIANO donde dice EMILIANO.
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      dniConNombre("EMITIANO"),
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+    expect(report.fields.nombre.matchesAccount).toBe(true);
+  });
+
+  it("no tolera dos letras: ahí ya puede ser otra persona", () => {
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      dniConNombre("EMITUANO"),
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("MANUAL_REVIEW");
+    expect(codigos(report)).toContain("DATO_NO_COINCIDE_CON_LA_CUENTA");
+  });
+
+  it("no afloja en el número de documento, donde una cifra es otro documento", () => {
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      lectura({
+        "frente.ocr": {
+          apellido: "TEJADA ARAGON",
+          nombre: "EMILIANO",
+          numero_documento: "49380011",
+          fecha_nacimiento: "2009-04-06",
+        },
+      }),
+      CUENTA,
+    );
+
+    expect(report.verdict).toBe("MANUAL_REVIEW");
+    expect(codigos(report)).toContain("DATO_NO_COINCIDE_CON_LA_CUENTA");
+  });
+});
+
+describe("IdentityMatchService · la cuenta de prueba", () => {
+  const CUENTA_DE_PRUEBA = {
+    ...CUENTA,
+    email: "demo@freewheel.test",
+  } as unknown as User;
+
+  /** Un DNI que es de otra persona: motivo de revisión para cualquiera. */
+  const DOCUMENTO_AJENO = dniConNombre("RODOLFO");
+
+  afterEach(() => {
+    delete process.env.VERIFICACION_CUENTA_DE_PRUEBA;
+  });
+
+  it("aprueba un documento que a cualquier otra cuenta le costaría una revisión", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      DOCUMENTO_AJENO,
+      CUENTA_DE_PRUEBA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+  });
+
+  it("conserva los motivos reales, para que se vea qué habría fallado", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "demo@freewheel.test";
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      DOCUMENTO_AJENO,
+      CUENTA_DE_PRUEBA,
+    );
+
+    expect(codigos(report)).toContain("DATO_NO_COINCIDE_CON_LA_CUENTA");
+  });
+
+  it("sin la variable configurada no tiene ningún privilegio", () => {
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      DOCUMENTO_AJENO,
+      CUENTA_DE_PRUEBA,
+    );
+
+    expect(report.verdict).toBe("MANUAL_REVIEW");
+  });
+
+  it("el privilegio es de un mail, no de la fase de prueba", () => {
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "otra@freewheel.test";
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      DOCUMENTO_AJENO,
+      CUENTA_DE_PRUEBA,
+    );
+
+    expect(report.verdict).toBe("MANUAL_REVIEW");
+  });
+
+  it("compara el mail sin distinguir mayúsculas ni espacios de más", () => {
+    // La variable la escribe una persona en un panel: va a tener un espacio
+    // pegado o una mayúscula, y eso no puede ser la diferencia entre que
+    // funcione y no.
+    process.env.VERIFICACION_CUENTA_DE_PRUEBA = "  DEMO@FreeWheel.test  ";
+
+    const report = matcher.evaluate(
+      VerifiedDocumentType.DNI,
+      DOCUMENTO_AJENO,
+      CUENTA_DE_PRUEBA,
+    );
+
+    expect(report.verdict).toBe("APPROVE");
+  });
+});
