@@ -27,6 +27,25 @@ const REQUIRED_SCHEMA: {
     table: "DocumentVerification",
     column: "reasonCodes",
   },
+  {
+    feature: "datos que declara el dueño del documento",
+    table: "DocumentVerification",
+    column: "declared",
+  },
+  {
+    feature: "qué foto hay que repetir",
+    table: "DocumentVerification",
+    column: "retakeSlots",
+  },
+  {
+    feature: "registro de lo que le pasa a cada cobro",
+    table: "PaymentEvent",
+  },
+  {
+    feature: "antifraude de pagos (tarjeta y riesgo)",
+    table: "PaymentRecord",
+    column: "cardFingerprint",
+  },
 ];
 
 export interface DatabaseHealth {

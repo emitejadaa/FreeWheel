@@ -26,6 +26,10 @@ const ALL_PRESENT: Row[] = [
   { table_name: "Vehicle", column_name: "category" },
   { table_name: "DocumentVerification", column_name: "documentNumber" },
   { table_name: "DocumentVerification", column_name: "reasonCodes" },
+  { table_name: "DocumentVerification", column_name: "declared" },
+  { table_name: "DocumentVerification", column_name: "retakeSlots" },
+  { table_name: "PaymentEvent", column_name: "id" },
+  { table_name: "PaymentRecord", column_name: "cardFingerprint" },
 ];
 
 describe("HealthService.checkDatabase", () => {
@@ -43,10 +47,12 @@ describe("HealthService.checkDatabase", () => {
 
   it("names what is missing when the migrations did not run", async () => {
     // La base vieja: sin tabla Favorite y sin Vehicle.category.
-    const { prisma } = makePrisma([
-      { table_name: "DocumentVerification", column_name: "documentNumber" },
-      { table_name: "DocumentVerification", column_name: "reasonCodes" },
-    ]);
+    const { prisma } = makePrisma(
+      ALL_PRESENT.filter(
+        (fila) =>
+          fila.table_name !== "Favorite" && fila.column_name !== "category",
+      ),
+    );
     const result = await new HealthService(prisma).checkDatabase();
 
     expect(result.database).toBe("ok");
@@ -55,6 +61,17 @@ describe("HealthService.checkDatabase", () => {
     expect(result.missing.join(" ")).toContain("Favorite");
     expect(result.missing.join(" ")).toContain("Vehicle.category");
     expect(result.hint).toContain("migraciones");
+  });
+
+  it("nombra lo que falta del cambio a identidad declarada y registro de pagos", () => {
+    // Es la lista que dice, sin entrar a la base, si el deploy alcanzó a
+    // aplicar la migración. Sin estas cuatro entradas el `db push` podía
+    // fallar y `schemaUpToDate` seguía diciendo true.
+    const nombres = ALL_PRESENT.map((f) => `${f.table_name}.${f.column_name}`);
+    expect(nombres).toContain("DocumentVerification.declared");
+    expect(nombres).toContain("DocumentVerification.retakeSlots");
+    expect(nombres).toContain("PaymentEvent.id");
+    expect(nombres).toContain("PaymentRecord.cardFingerprint");
   });
 
   it("reports the database as unreachable instead of throwing", async () => {
