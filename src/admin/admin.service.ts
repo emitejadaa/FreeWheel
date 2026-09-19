@@ -209,7 +209,21 @@ export class AdminService {
         front: signedUrl(verification.frontUrl),
         back: signedUrl(verification.backUrl),
       },
+      // LO QUE LA PERSONA DECLARÓ, que es contra lo que hay que mirar la foto.
+      //
+      // Sin esto el panel mostraba las fotos y los motivos del veredicto, pero
+      // no el dato que se estaba discutiendo: quien revisa tenía que adivinar
+      // si el problema era que la foto se leía mal o que el vencimiento
+      // cargado no era el que dice el documento. Son las dos mitades de la
+      // misma decisión y tienen que verse juntas.
+      declared: verification.declared,
+      // El resultado del cruce campo por campo, SIN los valores leídos (ver
+      // DocumentVerification.checks): dice qué coincidió y qué no, y sobre qué
+      // foto, que es lo que orienta la mirada.
+      checks: verification.checks,
       matchReport: verification.matchReport,
+      reasonCodes: verification.reasonCodes,
+      retakeSlots: verification.retakeSlots,
       notes: verification.notes,
     };
   }
