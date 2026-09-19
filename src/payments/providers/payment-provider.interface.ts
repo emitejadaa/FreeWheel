@@ -29,6 +29,37 @@ export interface CreateIntentInput {
   transferGroup?: string | null;
   metadata?: Record<string, string>;
   idempotencyKey?: string;
+  /**
+   * Dejar la tarjeta guardada en el cliente cuando el cobro salga bien.
+   *
+   * El alquiler se paga en tres tramos y cada uno es un cobro aparte. Sin
+   * esto, la misma persona escribe el mismo número de tarjeta tres veces
+   * seguidas en la misma pantalla, y cada vez que lo escribe es una vez más
+   * que puede equivocarse o abandonar.
+   *
+   * No guarda ningún número acá: el procesador guarda la tarjeta contra el
+   * cliente y devuelve un identificador. Es `listSavedCards` quien después la
+   * encuentra.
+   */
+  saveCard?: boolean;
+}
+
+/**
+ * UNA TARJETA QUE EL PROCESADOR YA TIENE GUARDADA, para no volver a pedirla.
+ *
+ * Lo único que viaja de la tarjeta son las señas que sirven para reconocerla
+ * —marca, últimos cuatro, vencimiento—. El número no existe de este lado.
+ *
+ * `id` es el identificador que le dio el procesador. Con él se confirma un
+ * cobro sin pedir la tarjeta de nuevo, y solo sirve para cobros del MISMO
+ * cliente: el procesador rechaza usarlo con otro.
+ */
+export interface SavedCard {
+  id: string;
+  brand: string | null;
+  last4: string | null;
+  expMonth: number | null;
+  expYear: number | null;
 }
 
 /**
@@ -205,6 +236,12 @@ export interface PaymentProvider {
   transferToOwner(input: TransferInput): Promise<TransferResult>;
 
   ensureCustomer(input: EnsureCustomerInput): Promise<string>;
+
+  /**
+   * Las tarjetas que este cliente ya dejó guardadas, de la más nueva a la más
+   * vieja. Lista vacía si no hay ninguna, que es el caso del primer cobro.
+   */
+  listSavedCards(customerId: string): Promise<SavedCard[]>;
 
   createConnectedAccount(
     input: CreateConnectedAccountInput,

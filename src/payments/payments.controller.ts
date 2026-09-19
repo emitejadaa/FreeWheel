@@ -150,6 +150,23 @@ export class PaymentsController {
     );
   }
 
+  /**
+   * LAS TARJETAS GUARDADAS DE QUIEN PREGUNTA. Solo las propias: no recibe
+   * ningún identificador, sale del token.
+   *
+   * Existe para que los tres tramos de un alquiler no obliguen a escribir la
+   * misma tarjeta tres veces seguidas (ver PaymentsService.listSavedCards).
+   * No devuelve ningún número de tarjeta —este servidor no los tiene—: marca,
+   * últimos cuatro, vencimiento, y el identificador con el que el procesador
+   * la reconoce, que solo sirve para cobros de esta misma persona.
+   */
+  @Get("methods")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  listSavedCards(@CurrentUser() user: CurrentUserPayload) {
+    return this.paymentsService.listSavedCards(user.id);
+  }
+
   @Get("bookings/:bookingId/status")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()

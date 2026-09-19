@@ -15,6 +15,7 @@ import {
   RefundInput,
   RefundResult,
   ReleaseHoldInput,
+  SavedCard,
   TransferInput,
   TransferResult,
   WebhookEvent,
@@ -89,6 +90,9 @@ export class UnconfiguredPaymentsProvider implements PaymentProvider {
     this.fail();
   }
   ensureCustomer(_input: EnsureCustomerInput): Promise<string> {
+    this.fail();
+  }
+  listSavedCards(_customerId: string): Promise<SavedCard[]> {
     this.fail();
   }
   createConnectedAccount(

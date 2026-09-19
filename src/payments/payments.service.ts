@@ -28,6 +28,7 @@ import type {
   PaymentIntentResult,
   PaymentProvider,
   PaymentRecordKindLike,
+  SavedCard,
 } from "./providers/payment-provider.interface";
 
 /** Estados en los que la plata efectivamente entró. */
@@ -114,6 +115,46 @@ export class PaymentsService {
     return this.createChargeIntent(renterId, bookingId, "DEPOSIT_HOLD", ctx);
   }
 
+  /**
+   * LAS TARJETAS QUE ESTA PERSONA YA NO TIENE QUE VOLVER A ESCRIBIR.
+   *
+   * ── Qué problema resuelve ─────────────────────────────────────────────────
+   * El alquiler se paga en tres tramos —seña, saldo, depósito— y cada uno es
+   * un cobro aparte contra el procesador. Sin esto, quien alquila escribe el
+   * mismo número de tarjeta TRES VECES en la misma pantalla, con el mismo
+   * vencimiento y el mismo código, en el mismo minuto. No es una molestia
+   * menor: cada vez que se escribe es una vez más que se puede tipear mal, y
+   * la tercera —el depósito— es la que más se abandona, que justo es la que
+   * deja el auto entregado sin garantía.
+   *
+   * ── Por qué es una ruta aparte y no un campo del estado ───────────────────
+   * Porque la pantalla de pago pregunta el estado de la reserva hasta catorce
+   * veces seguidas mientras espera el aviso del procesador (es la única forma
+   * de saber que el cobro entró). Colgar las tarjetas de ahí serían catorce
+   * llamadas al procesador por cobro, para un dato que no cambia durante la
+   * espera. Así es una sola, al abrir la pantalla.
+   *
+   * ── Por qué no crea nada ──────────────────────────────────────────────────
+   * Quien todavía no pagó nunca no tiene cliente en el procesador, y esto es
+   * una consulta: crear uno acá le daría un cliente a cada persona que abre la
+   * pantalla de pago y se va sin pagar. Sin cliente no hay tarjetas guardadas,
+   * que es exactamente la respuesta correcta.
+   */
+  async listSavedCards(userId: string): Promise<{ cards: SavedCard[] }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    assertFound(user, "User not found");
+    // Un identificador de otro proveedor (una `cus_mock_…` que quedó de cuando
+    // este deploy corría en simulación) no se le manda al procesador: contesta
+    // "No such customer" y rompe la pantalla por una comodidad.
+    if (!this.esDelProveedorActual(user.stripeCustomerId)) {
+      return { cards: [] };
+    }
+    const cards = await this.provider.listSavedCards(
+      user.stripeCustomerId as string,
+    );
+    return { cards };
+  }
+
   private async createChargeIntent(
     renterId: string,
     bookingId: string,
@@ -188,6 +229,16 @@ export class PaymentsService {
       // creado por $100 y otro por $120 compartían clave y Stripe devolvía el
       // primero, cobrando el precio viejo.
       idempotencyKey: `booking_${bookingId}_${kind.toLowerCase()}_${amountMinor}`,
+      /*
+        QUE LA TARJETA QUEDE GUARDADA, para que el tramo siguiente no la pida
+        de nuevo. Ver `listSavedCards` acá arriba para el porqué.
+
+        En el depósito no: es una retención con captura manual, puede terminar
+        soltada sin cobrar nada, y una tarjeta solo queda guardada cuando el
+        cobro se concreta. Pedirlo ahí daría una tarjeta guardada a veces sí y
+        a veces no. La guarda la seña, que es el primer tramo y siempre entra.
+      */
+      saveCard: kind !== "DEPOSIT_HOLD",
     };
 
     const intent =
