@@ -8,9 +8,13 @@ import { BookingStatus, DamageClaimStatus } from "@prisma/client";
 import { AuditLogService } from "../common/services/audit-log.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
+import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
-import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
+import {
+  USER_CONTACT_SELECT,
+  USER_PUBLIC_SELECT,
+} from "../common/constants/prisma-select";
 import { estadoDeLaRevision, HORAS_DE_REVISION } from "./claim-window";
 import { CreateDamageClaimDto } from "./dto/create-damage-claim.dto";
 import { ResolveDamageClaimDto } from "./dto/resolve-damage-claim.dto";
@@ -45,6 +49,7 @@ export class ClaimsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly payments: PaymentsService,
+    private readonly email: EmailService,
     private readonly auditLog: AuditLogService,
   ) {}
 
@@ -59,6 +64,7 @@ export class ClaimsService {
         status: true,
         currency: true,
         returnConfirmedAt: true,
+        ownerInspectedAt: true,
         depositSnapshot: true,
         depositCapturedAmount: true,
       },
@@ -81,6 +87,7 @@ export class ClaimsService {
     const revision = estadoDeLaRevision({
       status: booking.status,
       returnConfirmedAt: booking.returnConfirmedAt,
+      ownerInspectedAt: booking.ownerInspectedAt,
       hayReclamoAbierto: Boolean(abierto),
       ahora: new Date(),
     });
@@ -94,6 +101,7 @@ export class ClaimsService {
       horasDeRevision: HORAS_DE_REVISION,
       venceLaRevision: revision.vence,
       horasQueQuedan: revision.horasQueQuedan,
+      yaRevisada: revision.yaRevisada,
       depositoRetenido: booking.depositSnapshot,
       // Si ya se cobró algo de la garantía: la pantalla lo dice en vez de
       // ofrecer reclamar de nuevo sobre algo que ya se resolvió.
@@ -114,6 +122,7 @@ export class ClaimsService {
         status: true,
         currency: true,
         returnConfirmedAt: true,
+        ownerInspectedAt: true,
         depositSnapshot: true,
       },
     });
@@ -141,6 +150,7 @@ export class ClaimsService {
     const revision = estadoDeLaRevision({
       status: booking.status,
       returnConfirmedAt: booking.returnConfirmedAt,
+      ownerInspectedAt: booking.ownerInspectedAt,
       ahora: new Date(),
     });
     if (!revision.abierta) {
@@ -216,7 +226,13 @@ export class ClaimsService {
   async todoBien(ownerId: string, bookingId: string) {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      select: { id: true, ownerId: true, renterId: true, status: true },
+      select: {
+        id: true,
+        ownerId: true,
+        renterId: true,
+        status: true,
+        ownerInspectedAt: true,
+      },
     });
     assertFound(booking, "Booking not found");
     if (booking.ownerId !== ownerId) {
@@ -229,12 +245,35 @@ export class ClaimsService {
         message: "El auto todavía no fue devuelto.",
       });
     }
+    if (booking.ownerInspectedAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "ALREADY_INSPECTED",
+        message: "Ya revisaste este auto: la garantía está liberada.",
+      });
+    }
 
     const resultado = await this.payments.liberarDepositoSiCorresponde(
       ownerId,
       bookingId,
       { forzar: true },
     );
+
+    /*
+      LA MARCA SE PONE PASE LO QUE PASE CON LA PLATA, Y ES A PROPÓSITO.
+
+      Lo que esta marca dice es "el dueño ya miró el auto", y eso es cierto
+      aunque no haya habido retención que soltar —por ejemplo en una reserva
+      devuelta antes de que existiera la ventana, donde el depósito ya se había
+      liberado solo—. Atarla al resultado del cobro dejaría el botón para
+      siempre en la pantalla justo en esas reservas, que es el problema que
+      esto vino a arreglar.
+    */
+    const marcada = await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: { ownerInspectedAt: new Date() },
+      select: { ownerInspectedAt: true },
+    });
 
     await this.auditLog.create({
       actorId: ownerId,
@@ -245,7 +284,64 @@ export class ClaimsService {
       metadata: { liberado: resultado.liberado, motivo: resultado.motivo },
     });
 
-    return resultado;
+    /*
+      Y SE DEVUELVE LO QUE PASÓ DE VERDAD, no un "listo" a secas.
+
+      Antes esto contestaba igual hubiera soltado plata o no, así que la
+      pantalla decía "garantía liberada" sobre una reserva donde no había nada
+      retenido. Decir que se devolvió una plata que no se movió es la peor
+      mentira que puede decir una pantalla de pagos.
+    */
+    return {
+      ...resultado,
+      ownerInspectedAt: marcada.ownerInspectedAt,
+      yaRevisada: true,
+    };
+  }
+
+  /**
+   * El mail de "tu reclamo no prosperó", al dueño.
+   *
+   * No hace fallar la resolución: el reclamo ya quedó cerrado y el depósito ya
+   * se soltó cuando esto corre.
+   */
+  private async avisarDelRechazo(
+    bookingId: string,
+    reclamadoMinor: number,
+    nota: string,
+  ): Promise<void> {
+    try {
+      const booking = await this.prisma.booking.findUnique({
+        where: { id: bookingId },
+        select: {
+          currency: true,
+          owner: { select: USER_CONTACT_SELECT },
+          vehicle: { select: { brand: true, model: true, year: true } },
+        },
+      });
+      if (!booking?.owner?.email) return;
+      await this.email.sendDamageClaimRejected(booking.owner.email, {
+        ownerName:
+          booking.owner.displayName ??
+          `${booking.owner.firstName} ${booking.owner.lastName}`,
+        vehicleLabel:
+          [
+            booking.vehicle?.brand,
+            booking.vehicle?.model,
+            booking.vehicle?.year,
+          ]
+            .filter(Boolean)
+            .join(" ") || "el vehículo",
+        reclamado: reclamadoMinor / 100,
+        currency: booking.currency,
+        nota,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisarle al dueño del rechazo del reclamo de ${bookingId}: ${message}`,
+      );
+    }
   }
 
   /** Los reclamos abiertos, para el panel. */
@@ -312,6 +408,19 @@ export class ClaimsService {
         adminId,
         claim.bookingId,
         { forzar: true },
+      );
+      /*
+        Y AL DUEÑO SE LE DICE QUE NO, QUE ES LO QUE FALTABA.
+
+        Sin este mail, rechazar era una decisión que solo veía quien la tomaba:
+        el dueño mandaba fotos, esperaba, y del otro lado no pasaba nada
+        visible. La liberación del depósito le llega al INQUILINO, no a él. Un
+        reclamo que desaparece sin respuesta es peor que un no.
+      */
+      await this.avisarDelRechazo(
+        claim.bookingId,
+        cerrado.claimedAmountMinor,
+        dto.nota.trim(),
       );
       await this.auditLog.create({
         actorId: adminId,

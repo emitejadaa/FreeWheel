@@ -1251,6 +1251,7 @@ export class PaymentsService {
     const revision = estadoDeLaRevision({
       status: booking.status,
       returnConfirmedAt: booking.returnConfirmedAt,
+      ownerInspectedAt: booking.ownerInspectedAt,
       hayReclamoAbierto: false,
       ahora: new Date(),
     });
@@ -1289,6 +1290,86 @@ export class PaymentsService {
     */
     await this.avisarDeLaLiberacion(booking, hold);
     return { liberado: true, motivo: null };
+  }
+
+  /**
+   * LO QUE SE COBRÓ POR EL DAÑO VA AL DUEÑO.
+   *
+   * ── Por qué esto tiene que existir ────────────────────────────────────────
+   * Capturar el depósito mueve la plata del inquilino a la plataforma, y ahí se
+   * quedaba. O sea que un daño terminaba con el dueño sin auto entero y sin un
+   * peso, y con la plataforma cobrando por un perjuicio ajeno. El depósito es
+   * una garantía PARA EL DUEÑO: si no le llega, no es una garantía.
+   *
+   * ── Va entero, sin comisión ───────────────────────────────────────────────
+   * La comisión de la plataforma es sobre el alquiler, que es el servicio que
+   * presta. Un daño no es un servicio: es un arreglo que el dueño va a pagar.
+   * Quedarse con un porcentaje de eso sería cobrarle por haber tenido el
+   * problema.
+   *
+   * No hace fallar la captura: la plata del inquilino ya se movió cuando esto
+   * corre, y deshacerla porque el traspaso al dueño falló sería cambiar un
+   * problema por dos. Si falla, queda en el log y en la auditoría, y se
+   * reintenta con POST /payments/bookings/:id/settle.
+   */
+  private async transferirElDano(
+    actorId: string,
+    bookingId: string,
+    amountMinor: number,
+  ): Promise<void> {
+    try {
+      const booking = await this.findBookingWithUsers(bookingId);
+      const accountId = await this.ensureOwnerAccount(booking.owner);
+      const transfer = await this.provider.transferToOwner({
+        amountMinor,
+        currency: booking.currency,
+        destination: accountId,
+        transferGroup: booking.transferGroup,
+        metadata: { bookingId, motivo: "dano" },
+        idempotencyKey: `booking_${bookingId}_damage_${amountMinor}`,
+      });
+
+      const payout = await this.prisma.paymentRecord.create({
+        data: {
+          bookingId,
+          userId: booking.ownerId,
+          kind: PaymentRecordKind.OWNER_TRANSFER,
+          status: PaymentRecordStatus.PAID,
+          provider: this.provider.name,
+          providerId: transfer.id,
+          stripeTransferId: transfer.id,
+          amount: amountMinor / 100,
+          amountMinor,
+          currency: booking.currency,
+          paidAt: new Date(),
+          metadata: { motivo: "dano" } as Prisma.InputJsonValue,
+        },
+      });
+
+      await this.recordEvent({
+        record: payout,
+        bookingId,
+        actorId,
+        source: "api",
+        type: "transfer.created",
+        status: PaymentRecordStatus.PAID,
+        amountMinor,
+        currency: booking.currency,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Se cobró el daño de ${bookingId} pero no se le pudo transferir al ` +
+          `dueño: ${message}`,
+      );
+      await this.auditLog.create({
+        actorId,
+        action: "payment.damage_transfer_failed",
+        entityType: "Booking",
+        entityId: bookingId,
+        metadata: { amountMinor, reason: message },
+      });
+    }
   }
 
   /** "Toyota Corolla 2022", con lo que haya. */
@@ -1621,6 +1702,9 @@ export class PaymentsService {
       para decidir si está de acuerdo.
     */
     await this.avisarDeLaCaptura(bookingId, amountMinor, retenido, reason);
+
+    // Y lo cobrado va al dueño, que es de quien es la garantía.
+    await this.transferirElDano(actorId, bookingId, amountMinor);
 
     return this.getStatus(actorId, bookingId).catch(() => ({
       bookingId,

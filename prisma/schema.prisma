@@ -719,6 +719,14 @@ model Booking {
   ownerTransferId        String?
   depositPaymentIntentId String?
   depositCapturedAmount  Float?
+  /// Cuándo el dueño revisó el auto devuelto y dijo que estaba todo bien.
+  ///
+  /// Cierra la ventana de revisión antes de tiempo (ver claims/claim-window.ts)
+  /// y es lo que hace que el botón de revisar DESAPAREZCA. Sin esta marca, la
+  /// pantalla no tenía forma de saber que el dueño ya había mirado el auto: el
+  /// botón seguía ahí para siempre y se podía apretar infinitas veces, cada una
+  /// diciendo que la garantía se liberaba cuando ya estaba liberada.
+  ownerInspectedAt       DateTime?
   paidAt                 DateTime?
   refundedAt             DateTime?
   createdAt              DateTime      @default(now())

@@ -55,6 +55,8 @@ const MS_POR_HORA = 60 * 60 * 1000;
 export interface EstadoDeLaRevision {
   /** Si el dueño todavía puede abrir un reclamo. */
   abierta: boolean;
+  /** Si el dueño ya la cerró diciendo que estaba todo bien. */
+  yaRevisada: boolean;
   /** Si corresponde soltar el depósito ya. */
   sePuedeLiberar: boolean;
   /** Cuándo vence la ventana, o null si la reserva no llegó a devolverse. */
@@ -76,11 +78,14 @@ export interface EstadoDeLaRevision {
 export function estadoDeLaRevision({
   status,
   returnConfirmedAt,
+  ownerInspectedAt = null,
   hayReclamoAbierto = false,
   ahora,
 }: {
   status: BookingStatus;
   returnConfirmedAt: Date | null;
+  /** Cuándo el dueño dijo que estaba todo bien, si lo dijo. */
+  ownerInspectedAt?: Date | null;
   hayReclamoAbierto?: boolean;
   ahora: Date;
 }): EstadoDeLaRevision {
@@ -89,6 +94,7 @@ export function estadoDeLaRevision({
   if (status !== BookingStatus.COMPLETED || !returnConfirmedAt) {
     return {
       abierta: false,
+      yaRevisada: false,
       sePuedeLiberar: false,
       vence: null,
       horasQueQuedan: 0,
@@ -109,12 +115,40 @@ export function estadoDeLaRevision({
     decirlo. La ventana es para ABRIR el reclamo, no para resolverlo.
   */
   if (hayReclamoAbierto) {
-    return { abierta: false, sePuedeLiberar: false, vence, horasQueQuedan };
+    return {
+      abierta: false,
+      yaRevisada: false,
+      sePuedeLiberar: false,
+      vence,
+      horasQueQuedan,
+    };
+  }
+
+  /*
+    EL DUEÑO YA MIRÓ EL AUTO Y DIJO QUE ESTABA TODO BIEN.
+
+    Ahí la ventana se cierra, aunque queden treinta horas: revisar dos veces no
+    es una función, y sin esta marca el botón de revisar quedaba para siempre en
+    la pantalla del dueño, apretable infinitas veces y diciendo cada vez que la
+    garantía se liberaba cuando ya estaba liberada desde la primera.
+
+    `sePuedeLiberar` queda en false porque ya se liberó al decir que estaba todo
+    bien: no hay nada que soltar de nuevo.
+  */
+  if (ownerInspectedAt) {
+    return {
+      abierta: false,
+      yaRevisada: true,
+      sePuedeLiberar: false,
+      vence,
+      horasQueQuedan,
+    };
   }
 
   const vencida = horasQueQuedan <= 0;
   return {
     abierta: !vencida,
+    yaRevisada: false,
     sePuedeLiberar: vencida,
     vence,
     horasQueQuedan,

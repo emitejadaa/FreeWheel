@@ -965,6 +965,55 @@ export class EmailService {
   }
 
   /**
+   * AL DUEÑO: SU RECLAMO POR DAÑO NO PROSPERÓ.
+   *
+   * ── Por qué este mail tiene que existir ───────────────────────────────────
+   * Porque sin él, rechazar un reclamo era una decisión que solo veía el que la
+   * tomaba. El dueño mandaba fotos, esperaba, y del otro lado no pasaba nada
+   * visible: la garantía se liberaba —lo que le avisa al inquilino, no a él— y
+   * su reclamo desaparecía sin respuesta. Eso es peor que decirle que no.
+   *
+   * Lleva la explicación entera, por lo mismo que la lleva el mail del cobro:
+   * una resolución sin motivo sobre un reclamo propio no es una resolución, es
+   * un silencio con forma de trámite.
+   */
+  async sendDamageClaimRejected(
+    email: string,
+    params: {
+      ownerName?: string;
+      vehicleLabel: string;
+      reclamado: number;
+      currency: string;
+      nota: string;
+    },
+  ) {
+    const html = this.layout(
+      "Tu reclamo por daño no prosperó",
+      this.p(
+        `${this.saludo(params.ownerName)} revisamos el reclamo que hiciste por <strong>${params.vehicleLabel}</strong> y no corresponde cobrarlo del depósito en garantía.`,
+      ) +
+        this.cuadro([
+          {
+            etiqueta: "Reclamabas",
+            valor: this.formatMoney(params.reclamado, params.currency),
+          },
+          { etiqueta: "Auto", valor: params.vehicleLabel },
+        ]) +
+        this.p(`<strong>Motivo:</strong> ${params.nota}`) +
+        this.p(
+          "El depósito en garantía se libera entero y vuelve al límite de la " +
+            "tarjeta de quien alquiló.",
+        ) +
+        this.nota(
+          "Si tenés algo más para aportar —otra foto, el presupuesto del " +
+            "taller— respondé este mail y se vuelve a mirar.",
+        ) +
+        this.boton(this.misReservas, "Ver la reserva"),
+    );
+    await this.send(email, "Tu reclamo por daño no prosperó - Freewheel", html);
+  }
+
+  /**
    * "Tenés mensajes sin leer."
    *
    * QUÉ NO LLEVA, y por qué: no lleva el texto del mensaje ni el nombre de quien

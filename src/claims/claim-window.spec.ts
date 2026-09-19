@@ -11,6 +11,7 @@ const estado = (
     status?: BookingStatus;
     hayReclamoAbierto?: boolean;
     returnConfirmedAt?: Date | null;
+    ownerInspectedAt?: Date | null;
   } = {},
 ) =>
   estadoDeLaRevision({
@@ -19,6 +20,7 @@ const estado = (
       extra.returnConfirmedAt === undefined
         ? DEVUELTO
         : extra.returnConfirmedAt,
+    ownerInspectedAt: extra.ownerInspectedAt ?? null,
     hayReclamoAbierto: extra.hayReclamoAbierto ?? false,
     ahora: horasDespues(horas),
   });
@@ -88,5 +90,25 @@ describe("estadoDeLaRevision", () => {
     expect(e.vence?.toISOString()).toBe("2026-10-12T18:00:00.000Z");
     expect(e.horasQueQuedan).toBeCloseTo(42, 5);
     expect(estado(60).horasQueQuedan).toBeCloseTo(-12, 5);
+  });
+
+  it("EL DUEÑO QUE YA REVISÓ NO REVISA DOS VECES", () => {
+    /*
+      Sin esta marca, el botón de revisar quedaba para siempre en la pantalla
+      del dueño: apretable infinitas veces, y cada una diciendo que la garantía
+      se liberaba cuando ya estaba liberada desde la primera. Revisar dos veces
+      no es una función.
+    */
+    const e = estado(2, { ownerInspectedAt: horasDespues(1) });
+    expect(e.yaRevisada).toBe(true);
+    expect(e.abierta).toBe(false);
+    // Y no hay nada que soltar de nuevo: ya se soltó al decir que estaba bien.
+    expect(e.sePuedeLiberar).toBe(false);
+  });
+
+  it("y esa marca gana aunque queden horas de sobra", () => {
+    const e = estado(1, { ownerInspectedAt: horasDespues(0.5) });
+    expect(e.abierta).toBe(false);
+    expect(e.horasQueQuedan).toBeGreaterThan(0);
   });
 });

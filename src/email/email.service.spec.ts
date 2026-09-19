@@ -334,6 +334,28 @@ describe("EmailService", () => {
       expect(html).toContain("se transfiere junto con el resto");
     });
 
+    it("al dueño se le dice que su reclamo no prospero, y por que", async () => {
+      /*
+        Sin este mail, rechazar era una decision que solo veia quien la tomaba:
+        el dueño mandaba fotos, esperaba, y del otro lado no pasaba nada
+        visible. La liberacion del deposito le llega al INQUILINO, no a el.
+      */
+      await service.sendDamageClaimRejected("d@b.com", {
+        ownerName: "Ana",
+        vehicleLabel: "Toyota Corolla 2021",
+        reclamado: 60,
+        currency: "USD",
+        nota: "El rayon ya aparece en las fotos del retiro: no lo hizo quien alquilo.",
+      });
+
+      const { subject, html } = ultimo();
+      expect(subject).toContain("no prosper");
+      expect(html).toContain("60");
+      expect(html).toContain("El rayon ya aparece en las fotos del retiro");
+      // Y que el deposito vuelve entero, que es la consecuencia.
+      expect(html).toContain("se libera entero");
+    });
+
     it("si se cobra todo, no promete que vuelve algo", async () => {
       await service.sendDepositCaptured("a@b.com", {
         esDueño: false,
