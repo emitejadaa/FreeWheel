@@ -27,6 +27,7 @@ import {
 } from "../common/utils/authorization.util";
 import { generateOpaqueToken } from "../common/utils/verification-code.util";
 import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
+import { HORAS_DE_REVISION } from "../claims/claim-window";
 import { decidirCancelacion } from "./cancellation-policy";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
@@ -718,6 +719,10 @@ export class BookingsService {
           vehicleLabel: this.vehicleLabel(updated),
           confirmedAt: devueltoEl,
           esDueño: persona.esDueño,
+          // El dueño tiene una ventana para revisar el auto y reclamar un
+          // daño; mientras tanto el depósito sigue retenido. Este mail es el
+          // único momento en que se le puede decir (claims/claim-window.ts).
+          horasDeRevision: HORAS_DE_REVISION,
         });
       });
     }

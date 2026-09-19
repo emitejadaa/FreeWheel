@@ -194,6 +194,13 @@ enum ReportAiVerdict {
   UNCLEAR // no alcanza para decidir
 }
 
+/// En qué anda un reclamo por daño del dueño sobre el depósito en garantía.
+enum DamageClaimStatus {
+  OPEN // el dueño lo abrió, espera que un admin lo resuelva
+  ACCEPTED // se cobró del depósito (total o parte)
+  REJECTED // no corresponde: el depósito se libera entero
+}
+
 enum BookingStatus {
   REQUESTED
   ACCEPTED
@@ -430,6 +437,8 @@ model User {
   reportsMade               Report[]                   @relation("Reporter")
   reportsReceived           Report[]                   @relation("ReportedUser")
   reportsResolved           Report[]                   @relation("ReportResolver")
+  damageClaimsMade          DamageClaim[]              @relation("DamageClaimOwner")
+  damageClaimsResolved      DamageClaim[]              @relation("DamageClaimResolver")
 
   @@index([email])
   @@index([status])
@@ -718,6 +727,7 @@ model Booking {
   paymentRecords PaymentRecord[]
   contract       Contract?
   reviews        Review[]
+  damageClaims   DamageClaim[]
 
   @@index([listingId])
   @@index([vehicleId])
@@ -725,6 +735,57 @@ model Booking {
   @@index([renterId])
   @@index([status])
   @@index([startDate, endDate])
+}
+
+/// EL RECLAMO DE UN DAÑO SOBRE EL DEPÓSITO EN GARANTÍA.
+///
+/// Lo abre el DUEÑO cuando revisa el auto devuelto y encuentra algo. No cobra
+/// nada por sí solo: lo resuelve un administrador, que es quien captura del
+/// depósito. Si el dueño pudiera cobrar solo, el depósito sería un botón para
+/// quedarse con la garantía de quien alquiló sin que nadie mire, y las dos
+/// partes tienen intereses opuestos justamente acá.
+///
+/// El depósito NO se libera al confirmarse la devolución: queda retenido
+/// mientras dura la ventana de revisión del dueño (ver claims/claim-window.ts).
+/// Sin esa ventana un reclamo llegaría siempre tarde, porque la retención ya
+/// estaría soltada y no habría nada que capturar.
+model DamageClaim {
+  id        String @id @default(uuid())
+  bookingId String
+  /// Quién reclama: siempre el dueño del auto.
+  ownerId   String
+
+  /// Qué pasó, escrito por el dueño. Es lo que va a leer quien alquiló cuando
+  /// pregunte por qué le cobraron, así que se guarda entero.
+  description String
+
+  /// Cuánto pide, en centavos. No es lo que se cobra: es lo que reclama. Lo
+  /// que efectivamente se cobra lo decide el admin y queda en capturedAmountMinor.
+  claimedAmountMinor Int
+
+  /// Las fotos del daño (URLs de Cloudinary). Sin al menos una no se puede
+  /// abrir: un reclamo sin fotos es la palabra de uno contra la del otro, y
+  /// deja al admin sin nada con que decidir sobre plata ajena.
+  evidenceUrls String[]
+
+  status DamageClaimStatus @default(OPEN)
+
+  /// Resolución del admin.
+  resolvedById        String?
+  resolvedAt          DateTime?
+  resolutionNote      String?
+  /// Lo que finalmente se capturó del depósito, en centavos.
+  capturedAmountMinor Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  owner      User    @relation("DamageClaimOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  resolvedBy User?   @relation("DamageClaimResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([bookingId])
 }
 
 model PaymentRecord {

@@ -9,6 +9,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   Booking,
   BookingStatus,
+  DamageClaimStatus,
   PaymentRecord,
   PaymentRecordKind,
   PaymentRecordStatus,
@@ -23,6 +24,7 @@ import { EmailService } from "../email/email.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
 import { PrismaService } from "../prisma/prisma.service";
+import { estadoDeLaRevision } from "../claims/claim-window";
 import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
 import type {
   PaymentIntentResult,
@@ -422,6 +424,32 @@ export class PaymentsService {
 
   async getStatus(userId: string, bookingId: string) {
     const booking = await this.findBookingForParticipant(userId, bookingId);
+
+    /*
+      ACÁ SE SUELTA EL DEPÓSITO CUYA VENTANA VENCIÓ, Y NO ES UN CAPRICHO.
+
+      Este backend no tiene un programador de tareas, así que nadie se despierta
+      a las 48 horas a soltar la retención. Se hace cuando alguien pregunta por
+      esta reserva, que en la práctica es quien alquiló mirando si le volvió la
+      plata: el momento exacto en que importa.
+
+      No cuesta nada en el camino caliente: solo entra si la reserva está
+      devuelta, la ventana venció, no hay reclamo abierto y todavía queda una
+      retención viva. En cualquier otro caso son dos consultas y nada más. Y si
+      falla, no se lleva puesta la consulta del estado: el peor caso es que la
+      retención se caiga sola cuando expire en Stripe, a los 7 días.
+    */
+    if (booking.status === BookingStatus.COMPLETED) {
+      await this.liberarDepositoSiCorresponde(userId, bookingId).catch(
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.error(
+            `No se pudo soltar el depósito vencido de ${bookingId}: ${message}`,
+          );
+        },
+      );
+    }
+
     const records = await this.prisma.paymentRecord.findMany({
       where: { bookingId },
       orderBy: { createdAt: "asc" },
@@ -1140,6 +1168,91 @@ export class PaymentsService {
     }
   }
 
+  /**
+   * SOLTAR LA RETENCIÓN DEL DEPÓSITO, SI YA CORRESPONDE.
+   *
+   * Corresponde cuando la ventana de revisión del dueño se cerró: porque venció
+   * sola, o porque alguien la cerró antes (el dueño diciendo que está todo
+   * bien, un administrador rechazando un reclamo). Ver claims/claim-window.ts.
+   *
+   * ── LA REGLA QUE NO SE NEGOCIA ────────────────────────────────────────────
+   * Con un reclamo ABIERTO no se suelta nunca, ni con `forzar`. Soltarlo ahí
+   * sería resolver el reclamo a favor de una de las partes sin decirlo, y sin
+   * que nadie haya mirado las fotos. Quien rechaza un reclamo lo cierra primero
+   * y después libera, que es otra cosa y queda escrita.
+   *
+   * @param opciones.forzar  saltear el plazo (no el reclamo abierto): es lo que
+   *        usan "está todo bien" y el rechazo de un reclamo.
+   */
+  async liberarDepositoSiCorresponde(
+    actorId: string,
+    bookingId: string,
+    opciones: { forzar?: boolean } = {},
+  ): Promise<{ liberado: boolean; motivo: string | null }> {
+    const booking = await this.findBookingWithUsers(bookingId);
+
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (!hold?.stripePaymentIntentId) {
+      return { liberado: false, motivo: "sinRetencion" };
+    }
+
+    const reclamoAbierto = await this.prisma.damageClaim.findFirst({
+      where: { bookingId, status: DamageClaimStatus.OPEN },
+      select: { id: true },
+    });
+    if (reclamoAbierto) {
+      return { liberado: false, motivo: "reclamoAbierto" };
+    }
+
+    const revision = estadoDeLaRevision({
+      status: booking.status,
+      returnConfirmedAt: booking.returnConfirmedAt,
+      hayReclamoAbierto: false,
+      ahora: new Date(),
+    });
+    if (!opciones.forzar && !revision.sePuedeLiberar) {
+      return { liberado: false, motivo: "ventanaAbierta" };
+    }
+
+    await this.provider.releaseHold({
+      paymentIntentId: hold.stripePaymentIntentId,
+      idempotencyKey: `booking_${bookingId}_deposit_release`,
+    });
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: hold.id },
+      data: { status: PaymentRecordStatus.RELEASED, releasedAt: new Date() },
+    });
+    await this.recordEvent({
+      record: updated,
+      bookingId,
+      actorId,
+      source: "api",
+      type: "hold.released",
+      status: PaymentRecordStatus.RELEASED,
+      amountMinor: hold.amountMinor,
+      currency: hold.currency,
+    });
+
+    /*
+      Y SE LE AVISA, QUE ES LA PARTE QUE FALTABA.
+
+      El depósito es la única plata del alquiler que se ve salir y no se ve
+      volver: liberar una retención no genera ningún movimiento en el resumen de
+      la tarjeta, así que sin este mail la única señal es que el saldo
+      disponible deja de estar recortado. Nadie mira eso. El resultado era gente
+      esperando un reembolso que no iba a llegar nunca, porque no había nada que
+      reembolsar.
+    */
+    await this.avisarDeLaLiberacion(booking, hold);
+    return { liberado: true, motivo: null };
+  }
+
   /** "Toyota Corolla 2022", con lo que haya. */
   private vehicleLabel(booking: {
     vehicle?: {
@@ -1248,49 +1361,25 @@ export class PaymentsService {
       });
     }
 
-    // Soltar la retención del depósito (devolución sin daños).
-    const hold = await this.prisma.paymentRecord.findFirst({
-      where: {
-        bookingId,
-        kind: PaymentRecordKind.DEPOSIT_HOLD,
-        status: PaymentRecordStatus.AUTHORIZED,
-      },
-    });
-    if (hold?.stripePaymentIntentId) {
-      await this.provider.releaseHold({
-        paymentIntentId: hold.stripePaymentIntentId,
-        idempotencyKey: `booking_${bookingId}_deposit_release`,
-      });
-      const updated = await this.prisma.paymentRecord.update({
-        where: { id: hold.id },
-        data: {
-          status: PaymentRecordStatus.RELEASED,
-          releasedAt: new Date(),
-        },
-      });
-      await this.recordEvent({
-        record: updated,
-        bookingId,
-        actorId,
-        source: "api",
-        type: "hold.released",
-        status: PaymentRecordStatus.RELEASED,
-        amountMinor: hold.amountMinor,
-        currency: hold.currency,
-      });
+    /*
+      EL DEPÓSITO YA NO SE SUELTA ACÁ, Y ES EL CAMBIO IMPORTANTE.
 
-      /*
-        Y SE LE AVISA, QUE ES LA PARTE QUE FALTABA.
+      Se soltaba en el mismo instante en que se confirmaba la devolución, y eso
+      dejaba el reclamo por daños en una situación imposible: cuando el dueño se
+      acercaba al auto y veía el golpe, la retención ya no existía y no había
+      nada que capturar. El depósito servía para todo menos para lo único que
+      existe.
 
-        El depósito es la única plata del alquiler que se ve salir y no se ve
-        volver: liberar una retención no genera ningún movimiento en el resumen
-        de la tarjeta, así que sin este mail la única señal es que el saldo
-        disponible deja de estar recortado. Nadie mira eso. El resultado era
-        gente esperando un reembolso que no iba a llegar nunca, porque no había
-        nada que reembolsar.
-      */
-      await this.avisarDeLaLiberacion(booking, hold);
-    }
+      Ahora queda retenido mientras dura la ventana de revisión del dueño
+      —48 horas— y se suelta cuando pasa algo: el dueño dice que está todo bien,
+      un administrador rechaza un reclamo, o la ventana vence. Ver
+      claims/claim-window.ts, que explica por qué no hay nadie que lo suelte
+      solo y por qué la plata igual nunca queda trabada.
+
+      Se llama igual, por si esto corre desde un reintento posterior con la
+      ventana ya vencida: ahí sí corresponde soltarlo.
+    */
+    await this.liberarDepositoSiCorresponde(actorId, bookingId);
 
     /*
       TRANSFERIR AL DUEÑO LO QUE LE CORRESPONDE, UNA SOLA VEZ.

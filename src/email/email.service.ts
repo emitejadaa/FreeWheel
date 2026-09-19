@@ -757,6 +757,8 @@ export class EmailService {
       vehicleLabel: string;
       confirmedAt: Date;
       esDueño: boolean;
+      /** Las horas que el dueño tiene para revisar el auto y reclamar. */
+      horasDeRevision?: number;
     },
   ) {
     const html = this.layout(
@@ -774,6 +776,26 @@ export class EmailService {
             valor: params.otherPartyName,
           },
         ]) +
+        /*
+          AL DUEÑO SE LE PIDE QUE REVISE EL AUTO, Y ES LO PRIMERO.
+
+          El depósito en garantía queda retenido hasta que lo revise o hasta
+          que venza el plazo, así que este mail es el único momento en que se
+          le puede decir. Sin esto, el dueño no se entera de que tiene una
+          ventana para reclamar y la descubre cuando ya se cerró, que es
+          exactamente el caso para el que el depósito existe.
+
+          Y al inquilino no se le dice nada de esto: su garantía se libera sola
+          y ya recibe su propio mail cuando pasa.
+        */
+        (params.esDueño && params.horasDeRevision
+          ? this.p(
+              `<strong>Revisá el auto antes de ${params.horasDeRevision} horas.</strong> ` +
+                "Hasta entonces el depósito en garantía queda retenido: si " +
+                "encontrás un daño, podés reclamarlo desde la reserva, con fotos. " +
+                "Si está todo bien, confirmalo y la garantía se libera en el acto.",
+            )
+          : "") +
         this.p(
           `Ahora podés dejarle una reseña a ${params.otherPartyName}. Las reseñas son ` +
             "lo que le permite a la siguiente persona saber con quién está tratando.",

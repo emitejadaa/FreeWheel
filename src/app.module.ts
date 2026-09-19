@@ -15,6 +15,7 @@ import { FavoritesModule } from "./favorites/favorites.module";
 import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
 import { BookingsModule } from "./bookings/bookings.module";
+import { ClaimsModule } from "./claims/claims.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
@@ -47,6 +48,7 @@ import { ReportsModule } from "./reports/reports.module";
     VerificationModule,
     AdminModule,
     BookingsModule,
+    ClaimsModule,
     PaymentsModule,
     ContractsModule,
     MediaModule,

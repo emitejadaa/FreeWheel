@@ -1,0 +1,88 @@
+### claims.rest — Reclamo de daños sobre el depósito en garantía
+### Módulo: src/claims/claims.controller.ts (ClaimsModule)
+###
+### QUIÉN HACE QUÉ: el dueño RECLAMA, un admin RESUELVE. El dueño no captura
+### nunca. Es plata de otra persona y las dos partes tienen intereses opuestos
+### justamente acá.
+###
+### LA VENTANA: al confirmarse la devolución el depósito YA NO se suelta en el
+### acto. Queda retenido 48 h (claims/claim-window.ts) para que el dueño pueda
+### revisar el auto. Se libera cuando: el dueño dice que está todo bien, un
+### admin rechaza el reclamo, o alguien consulta el estado del pago con la
+### ventana ya vencida. Si no pasa ninguna, la autorización expira sola en
+### Stripe a los 7 días, que es también el techo para resolver un reclamo.
+###
+### Elegí entorno con "Switch Environment" (local/production). Ver REST_CLIENT.md.
+### Mantenimiento: si cambia este endpoint, actualizá este archivo en el mismo
+### cambio (ver CLAUDE.md).
+
+### ── Setup ──────────────────────────────────────────────────────────────────
+### Hace falta una reserva DEVUELTA (status COMPLETED): ver bookings.rest hasta
+### la request de confirm-return, y payments.rest para pagar los tres tramos
+### —sin depósito autorizado no hay nada que reclamar—.
+
+@bookingId = pega-aca-el-id-de-la-reserva
+@claimId = pega-aca-el-id-del-reclamo
+
+### ────────────────────────────────────────────────────────────────────────
+### El dueño
+### ────────────────────────────────────────────────────────────────────────
+
+### 1. En qué anda la revisión: si todavía se puede reclamar, hasta cuándo, y
+### los reclamos que haya. Lo ven las dos partes (al inquilino le explica por
+### qué su garantía sigue retenida).
+GET {{baseUrl}}/bookings/{{bookingId}}/damage
+Authorization: Bearer {{ownerToken}}
+
+### 2. Abre el reclamo. Mínimo 30 caracteres de descripción y AL MENOS UNA
+### foto: sin fotos es la palabra de uno contra la del otro, y hay plata de por
+### medio. No se puede reclamar más de lo retenido (400 CLAIM_OVER_DEPOSIT), ni
+### abrir dos a la vez (400 CLAIM_ALREADY_OPEN), ni fuera de plazo
+### (400 CLAIM_WINDOW_CLOSED).
+POST {{baseUrl}}/bookings/{{bookingId}}/damage
+Content-Type: {{contentType}}
+Authorization: Bearer {{ownerToken}}
+
+{
+  "description": "Rayon profundo en la puerta trasera izquierda. No estaba en las fotos del retiro.",
+  "claimedAmountMinor": 6000,
+  "evidenceUrls": ["https://res.cloudinary.com/demo/image/upload/dano1.jpg"]
+}
+
+### 3. "Está todo bien": el dueño revisó el auto y suelta la garantía sin
+### esperar a que venza el plazo. Es el camino normal.
+POST {{baseUrl}}/bookings/{{bookingId}}/inspection-ok
+Authorization: Bearer {{ownerToken}}
+
+### ────────────────────────────────────────────────────────────────────────
+### El administrador
+### ────────────────────────────────────────────────────────────────────────
+
+### 4. Los reclamos sin resolver.
+GET {{baseUrl}}/admin/damage-claims
+Authorization: Bearer {{adminToken}}
+
+### 5. Aceptar: cobra del depósito. El importe lo decide quien resuelve y puede
+### ser MENOS de lo reclamado; más de lo retenido no se puede. Manda los mails
+### a las dos partes.
+POST {{baseUrl}}/admin/damage-claims/{{claimId}}/resolve
+Content-Type: {{contentType}}
+Authorization: Bearer {{adminToken}}
+
+{
+  "aceptar": true,
+  "amountMinor": 4000,
+  "nota": "El rayon se ve en las fotos y no esta en las del retiro. Se cobra el presupuesto del taller, que es menor a lo reclamado."
+}
+
+### 6. Rechazar: libera la garantía entera. Cierra el reclamo primero y suelta
+### después, en ese orden: mientras el reclamo figure abierto, soltar el
+### deposito esta prohibido a proposito.
+POST {{baseUrl}}/admin/damage-claims/{{claimId}}/resolve
+Content-Type: {{contentType}}
+Authorization: Bearer {{adminToken}}
+
+{
+  "aceptar": false,
+  "nota": "El rayon ya aparece en las fotos del retiro: no lo hizo quien alquilo."
+}
