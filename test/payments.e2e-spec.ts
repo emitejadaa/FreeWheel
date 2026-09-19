@@ -507,6 +507,40 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       expect(fila.status).toBe("FAILED");
     });
 
+    it("DESPUÉS DE UN RECHAZO, LA RESERVA SE PUEDE SEGUIR PAGANDO", async () => {
+      /*
+        El error que esto vino a tapar, y costó caro: una tarjeta rechazada
+        dejaba el registro en FAILED, que el servicio trata como inservible, así
+        que salía a pedir otro intent. Pero la clave de idempotencia es la misma
+        —la reserva, el tramo y el importe no cambiaron—, así que Stripe
+        devolvía EL MISMO intent, y el servicio intentaba insertar un segundo
+        registro con el mismo stripePaymentIntentId, que es una columna única.
+
+        Violación de unicidad, error de Prisma sin atrapar, y un 500 mudo en la
+        pantalla de pago. O sea que después de UN rechazo, esa reserva no se
+        podía pagar nunca más, y el error no hablaba ni de la tarjeta ni del
+        cobro.
+      */
+      const { renter, bookingId } = await acceptedBooking();
+      const primero = await createIntent(app, "sena", bookingId, renter.token);
+      await sendWebhook(app, "payment_intent.payment_failed", {
+        id: primero.paymentIntentId,
+      }).expect(201);
+
+      const segundo = await http()
+        .post(`/payments/bookings/${bookingId}/sena-intent`)
+        .set("Authorization", auth(renter.token))
+        .expect(201);
+      expect(segundo.body.clientSecret).toBeTruthy();
+
+      // Y sigue habiendo UN registro de la seña, no dos por el mismo intent.
+      const filas = await prisma.paymentRecord.findMany({
+        where: { bookingId, kind: "SENA" },
+      });
+      const ids = new Set(filas.map((f) => f.stripePaymentIntentId));
+      expect(ids.size).toBe(filas.length);
+    });
+
     it("descarta un evento del modo REAL llegando a un deploy de prueba", async () => {
       // Si esto pasa, algo está cruzado. Procesarlo movería plata de verdad
       // sobre reservas de mentira.

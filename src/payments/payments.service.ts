@@ -248,27 +248,65 @@ export class PaymentsService {
         ? await this.provider.createDepositHold(input)
         : await this.provider.createPaymentIntent(input);
 
-    const record = await this.prisma.paymentRecord.create({
-      data: {
-        bookingId,
-        userId: booking.renterId,
-        kind: kind as PaymentRecordKind,
+    /*
+      UPSERT Y NO CREATE, Y ACÁ HAY UN ERROR QUE COSTÓ CARO.
+
+      ── Qué pasaba ─────────────────────────────────────────────────────────
+      Una tarjeta rechazada dejaba el registro en FAILED, que este código trata
+      como inservible: no lo reutiliza y sale a pedir otro intent. Pero la clave
+      de idempotencia es la misma —la reserva, el tramo y el importe no
+      cambiaron—, así que Stripe hacía lo correcto y devolvía EL MISMO intent de
+      antes. Y ahí esto intentaba INSERTAR un segundo registro con el mismo
+      `stripePaymentIntentId`, que es una columna única.
+
+      Resultado: violación de unicidad, un error de Prisma que nadie atrapaba, y
+      un 500 mudo "Internal server error" en la pantalla de pago. O sea que
+      después de UN rechazo de tarjeta, esa reserva no se podía pagar nunca más:
+      cada intento moría con un error que no hablaba de la tarjeta ni del cobro.
+
+      ── Por qué upsert es la respuesta y no una clave distinta ─────────────
+      Porque reintentar el MISMO intent es lo que Stripe espera: un intent que
+      falló vuelve a `requires_payment_method` y se puede confirmar de nuevo con
+      otra tarjeta. Inventarle una clave nueva a cada reintento crearía un
+      intent nuevo por cada tarjeta rechazada, que es basura en la cuenta y no
+      arregla nada.
+
+      Así que si Stripe devuelve el intent de antes, se reusa su fila y se la
+      vuelve a poner a la espera. El historial no se pierde: lo que pasó con ese
+      cobro —incluido el rechazo— vive en PaymentEvent, que es append-only y
+      para eso está.
+    */
+    const datos = {
+      bookingId,
+      userId: booking.renterId,
+      kind: kind as PaymentRecordKind,
+      status: PaymentRecordStatus.REQUIRES_ACTION,
+      provider: this.provider.name,
+      providerId: intent.id,
+      stripePaymentIntentId: intent.id,
+      amount: amountMinor / 100,
+      amountMinor,
+      currency,
+      initiatedIp: ctx.ip ?? null,
+      initiatedUserAgent: ctx.userAgent?.slice(0, 500) ?? null,
+      // `metadata` ya no lleva el client secret (ver arriba). Lleva las dos
+      // partes de la reserva, que es lo que hace falta para reconstruir un
+      // cobro sin tener que ir a buscar la reserva.
+      metadata: {
+        renterId: booking.renterId,
+        ownerId: booking.ownerId,
+      } as Prisma.InputJsonValue,
+    };
+    const record = await this.prisma.paymentRecord.upsert({
+      where: { stripePaymentIntentId: intent.id },
+      create: datos,
+      update: {
         status: PaymentRecordStatus.REQUIRES_ACTION,
-        provider: this.provider.name,
-        providerId: intent.id,
-        stripePaymentIntentId: intent.id,
-        amount: amountMinor / 100,
-        amountMinor,
-        currency,
-        initiatedIp: ctx.ip ?? null,
-        initiatedUserAgent: ctx.userAgent?.slice(0, 500) ?? null,
-        // `metadata` ya no lleva el client secret (ver arriba). Lleva las dos
-        // partes de la reserva, que es lo que hace falta para reconstruir un
-        // cobro sin tener que ir a buscar la reserva.
-        metadata: {
-          renterId: booking.renterId,
-          ownerId: booking.ownerId,
-        } as Prisma.InputJsonValue,
+        amount: datos.amount,
+        amountMinor: datos.amountMinor,
+        currency: datos.currency,
+        initiatedIp: datos.initiatedIp,
+        initiatedUserAgent: datos.initiatedUserAgent,
       },
     });
 
