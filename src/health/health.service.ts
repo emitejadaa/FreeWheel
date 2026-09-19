@@ -46,6 +46,16 @@ const REQUIRED_SCHEMA: {
     table: "PaymentRecord",
     column: "cardFingerprint",
   },
+  {
+    /*
+      Sin esta tabla, el dueño abre "Revisar el auto" y recibe un 500 sin
+      explicación: es exactamente la falla silenciosa que esta lista existe
+      para hacer visible. Y es la primera tabla nueva en mucho tiempo, o sea
+      la más probable de quedar afuera si una migración no corrió.
+    */
+    feature: "reclamo de daños sobre el depósito",
+    table: "DamageClaim",
+  },
 ];
 
 export interface DatabaseHealth {

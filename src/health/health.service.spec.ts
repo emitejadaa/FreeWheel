@@ -30,6 +30,7 @@ const ALL_PRESENT: Row[] = [
   { table_name: "DocumentVerification", column_name: "retakeSlots" },
   { table_name: "PaymentEvent", column_name: "id" },
   { table_name: "PaymentRecord", column_name: "cardFingerprint" },
+  { table_name: "DamageClaim", column_name: "id" },
 ];
 
 describe("HealthService.checkDatabase", () => {
