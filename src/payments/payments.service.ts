@@ -1429,7 +1429,20 @@ export class PaymentsService {
     });
     assertFound(owner, "User not found");
 
-    if (!owner.stripeAccountId) {
+    /*
+      Una cuenta que quedó de la simulación se trata como "todavía no tiene".
+
+      Preguntarle por ella a Stripe da "No such account", y decirle a alguien
+      que su cuenta de cobro está rota cuando lo que hay que hacer es crearla
+      lo manda a buscar un problema que no existe. Así, el front le ofrece
+      hacer el alta, que es exactamente lo que corresponde.
+
+      El identificador se copia a una constante para que TypeScript sepa que
+      después del `if` ya no puede ser null: la comprobación es una llamada a
+      un método, y eso no alcanza para que estreche el tipo solo.
+    */
+    const cuentaDeCobro = owner.stripeAccountId;
+    if (!this.esDelProveedorActual(cuentaDeCobro)) {
       return {
         connected: false,
         status: StripeAccountStatus.NONE,
@@ -1440,7 +1453,7 @@ export class PaymentsService {
     }
 
     const estado = await this.provider.getConnectedAccountStatus(
-      owner.stripeAccountId,
+      cuentaDeCobro as string,
     );
     const status = estado.payoutsEnabled
       ? StripeAccountStatus.ENABLED
@@ -1578,8 +1591,47 @@ export class PaymentsService {
     );
   }
 
+  /**
+   * SI UN IDENTIFICADOR GUARDADO LO CREÓ EL PROVEEDOR QUE ESTÁ CORRIENDO HOY.
+   *
+   * ── El problema que esto resuelve ────────────────────────────────────────
+   * Los identificadores de cliente y de cuenta se guardan en la base la
+   * primera vez y se reusan siempre. Eso está bien mientras el proveedor no
+   * cambie. Pero este deploy corrió un tiempo con PAYMENTS_PROVIDER=mock, y el
+   * proveedor de simulación inventa identificadores propios —`cus_mock_…`,
+   * `acct_mock_…`— que quedaron escritos en las filas de quienes usaron la app
+   * en ese momento.
+   *
+   * Al pasar a Stripe de verdad, esas filas siguen teniendo el identificador
+   * viejo. Se reusa, se le manda a Stripe, y Stripe contesta lo único que
+   * puede contestar: "No such customer: 'cus_mock_…'". El cobro falla, y no
+   * hay nada en la app que explique por qué: la cuenta parece normal y la
+   * tarjeta es válida.
+   *
+   * No se arregla borrando esas filas a mano, porque vuelve a pasar con cada
+   * cuenta que quede de un modo anterior. Se arregla acá: un identificador que
+   * no es de este proveedor vale lo mismo que no tener ninguno, y se crea uno
+   * nuevo.
+   *
+   * Sirve para los dos lados: un identificador real guardado mientras corre la
+   * simulación también es inservible, y esta misma cuenta lo detecta.
+   *
+   * ── Lo que NO detecta ────────────────────────────────────────────────────
+   * Un identificador de OTRA cuenta de Stripe (si se cambia la clave secreta
+   * por la de otra cuenta). Eso solo se sabe preguntándole a Stripe, que es
+   * una llamada de red en cada cobro para un caso que pasa una vez en la vida.
+   * Cuando pasa, el filtro de errores ya lo dice con todas las letras.
+   */
+  private esDelProveedorActual(id: string | null | undefined): boolean {
+    if (!id) return false;
+    const deSimulacion = id.includes("_mock_");
+    return deSimulacion === (this.provider.name === "mock");
+  }
+
   private async ensureRenterCustomer(renter: User): Promise<string> {
-    if (renter.stripeCustomerId) return renter.stripeCustomerId;
+    if (this.esDelProveedorActual(renter.stripeCustomerId)) {
+      return renter.stripeCustomerId as string;
+    }
     const customerId = await this.provider.ensureCustomer({
       userId: renter.id,
       email: renter.email,
@@ -1593,7 +1645,12 @@ export class PaymentsService {
   }
 
   private async ensureOwnerAccount(owner: User): Promise<string> {
-    if (owner.stripeAccountId) return owner.stripeAccountId;
+    // Mismo caso que en ensureRenterCustomer: una `acct_mock_…` guardada
+    // cuando corría la simulación hace fallar la transferencia al dueño al
+    // final del alquiler, que es el peor momento para enterarse.
+    if (this.esDelProveedorActual(owner.stripeAccountId)) {
+      return owner.stripeAccountId as string;
+    }
     const account = await this.provider.createConnectedAccount({
       userId: owner.id,
       email: owner.email,
