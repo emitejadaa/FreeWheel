@@ -27,6 +27,7 @@ import {
 } from "../common/utils/authorization.util";
 import { generateOpaqueToken } from "../common/utils/verification-code.util";
 import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
+import { decidirCancelacion } from "./cancellation-policy";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
@@ -310,24 +311,38 @@ export class BookingsService {
     const booking = await this.findById(id);
     this.assertBookingParticipant(booking, userId);
 
-    if (
-      !(
-        [
-          BookingStatus.REQUESTED,
-          BookingStatus.ACCEPTED,
-          BookingStatus.READY_FOR_PICKUP,
-        ] as BookingStatus[]
-      ).includes(booking.status)
-    ) {
-      throw new BadRequestException(
-        "Booking cannot be cancelled in this status",
-      );
+    const laCancelaElDueno = userId !== booking.renterId;
+
+    /*
+      LA POLÍTICA DE CANCELACIÓN, en un solo lugar y con sus pruebas.
+
+      Hasta acá se devolvía el CIEN POR CIENTO en cualquier momento, hasta el
+      minuto anterior al retiro. Suena generoso y es un agujero: alguien podía
+      tener un auto bloqueado un mes, soltarlo el día anterior sin costo, y el
+      dueño se quedaba sin el alquiler Y sin las fechas. Ver
+      cancellation-policy.ts, que explica los plazos y por qué son esos.
+    */
+    const decision = decidirCancelacion({
+      status: booking.status,
+      startDate: booking.startDate,
+      ahora: new Date(),
+      laCancelaElDueno,
+    });
+    if (!decision.puede) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: decision.motivo,
+        message:
+          decision.motivo === "BOOKING_IN_PROGRESS"
+            ? "El auto ya está entregado: esta reserva no se cancela, se " +
+              "devuelve el auto. Devolverlo antes libera las fechas que sobran."
+            : "Esta reserva ya no se puede cancelar.",
+      });
     }
 
-    const status =
-      userId === booking.renterId
-        ? BookingStatus.CANCELLED_BY_RENTER
-        : BookingStatus.CANCELLED_BY_OWNER;
+    const status = laCancelaElDueno
+      ? BookingStatus.CANCELLED_BY_OWNER
+      : BookingStatus.CANCELLED_BY_RENTER;
 
     const updated = await this.prisma.booking.update({
       where: { id },
@@ -344,8 +359,49 @@ export class BookingsService {
       PaymentStatus.FULLY_PAID,
       PaymentStatus.PARTIALLY_REFUNDED,
     ];
+    /*
+      LA CANCELACIÓN NO SE CAE SI LA DEVOLUCIÓN DE LA PLATA FALLA.
+
+      Es el mismo caso que en confirmReturn y por el mismo motivo: la reserva
+      ya quedó cancelada tres líneas más arriba —las fechas están liberadas y
+      la otra parte ya lo puede ver— así que una excepción acá contestaba 500
+      sobre algo que ya había pasado. Quien cancela ve un error, recarga, y la
+      reserva está cancelada igual.
+
+      La plata se reintenta; la cancelación no se deshace. Falla casi siempre
+      por lo mismo —el dueño sin el alta de cobros terminada, cuando hay que
+      transferirle la seña retenida— y queda dicho en la respuesta para que la
+      pantalla lo pueda contar.
+    */
+    let refund: {
+      ok: boolean;
+      code: string | null;
+      message: string | null;
+    } = { ok: true, code: null, message: null };
     if (refundable.includes(booking.paymentStatus)) {
-      await this.payments.refundOnCancel(userId, id);
+      try {
+        await this.payments.refundOnCancel(userId, id, {
+          retenerSena: decision.retieneSena,
+        });
+      } catch (error) {
+        const detalle = error instanceof Error ? error.message : String(error);
+        refund = {
+          ok: false,
+          code: this.codigoDelError(error),
+          message: detalle,
+        };
+        this.logger.error(
+          `Reserva ${id} cancelada, pero la devolución de la plata falló: ${detalle}`,
+        );
+        await this.auditLog.create({
+          actorId: userId,
+          targetUserId: booking.renterId,
+          action: "booking.refund_failed",
+          entityType: "Booking",
+          entityId: id,
+          metadata: { reason: detalle },
+        });
+      }
     }
 
     await this.auditLog.create({
@@ -366,35 +422,54 @@ export class BookingsService {
     const canceloElInquilino = status === BookingStatus.CANCELLED_BY_RENTER;
     const seDevuelvePlata = refundable.includes(booking.paymentStatus);
 
-    await this.safeNotify(() => {
-      if (!updated.renter?.email) return;
-      return this.email.sendBookingCancelled(updated.renter.email, {
-        recipientName: this.personName(updated.renter),
-        otherPartyName: this.personName(updated.owner),
-        vehicleLabel: this.vehicleLabel(updated),
-        startDate: updated.startDate,
-        endDate: updated.endDate,
-        reason: updated.cancellationReason,
+    /*
+      EL MAIL DICE QUÉ POLÍTICA SE APLICÓ Y CUÁNTO VUELVE.
+
+      Una política clara que no se cuenta en el momento en que se aplica no es
+      clara: quien cancela la noche anterior tiene que leer POR QUÉ no le
+      vuelve la seña, ahí, en el mismo mail que le confirma la cancelación, y
+      no descubrirlo tres días después mirando el resumen de la tarjeta.
+    */
+    const senaRetenida =
+      decision.retieneSena && seDevuelvePlata
+        ? (booking.senaAmountSnapshot ?? null)
+        : null;
+
+    for (const parte of [
+      {
+        datos: updated.renter,
+        otra: updated.owner,
         cancelaste: canceloElInquilino,
-        refunded: seDevuelvePlata,
-      });
-    });
-
-    await this.safeNotify(() => {
-      if (!updated.owner?.email) return;
-      return this.email.sendBookingCancelled(updated.owner.email, {
-        recipientName: this.personName(updated.owner),
-        otherPartyName: this.personName(updated.renter),
-        vehicleLabel: this.vehicleLabel(updated),
-        startDate: updated.startDate,
-        endDate: updated.endDate,
-        reason: updated.cancellationReason,
+      },
+      {
+        datos: updated.owner,
+        otra: updated.renter,
         cancelaste: !canceloElInquilino,
-        refunded: seDevuelvePlata,
+      },
+    ]) {
+      await this.safeNotify(() => {
+        if (!parte.datos?.email) return;
+        return this.email.sendBookingCancelled(parte.datos.email, {
+          recipientName: this.personName(parte.datos),
+          otherPartyName: this.personName(parte.otra),
+          vehicleLabel: this.vehicleLabel(updated),
+          startDate: updated.startDate,
+          endDate: updated.endDate,
+          reason: updated.cancellationReason,
+          cancelaste: parte.cancelaste,
+          refunded: seDevuelvePlata,
+          tier: decision.tier,
+          senaRetenida: senaRetenida != null ? Number(senaRetenida) : null,
+          currency: updated.currency,
+        });
       });
-    });
+    }
 
-    return updated;
+    return {
+      ...updated,
+      cancellation: { tier: decision.tier, retieneSena: decision.retieneSena },
+      refund,
+    };
   }
 
   async readyForPickup(ownerId: string, id: string) {

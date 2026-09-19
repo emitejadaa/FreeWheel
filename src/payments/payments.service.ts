@@ -1092,6 +1092,101 @@ export class PaymentsService {
   // ── Liquidación en la devolución (soltar depósito + pagar al dueño) ────
 
   /**
+   * Los mails de "se cobró parte del depósito", a las dos partes.
+   *
+   * No hace fallar la captura: la plata ya se movió cuando esto corre, y
+   * deshacerla por un mail que no salió sería cambiar un problema chico por
+   * uno grande.
+   */
+  private async avisarDeLaCaptura(
+    bookingId: string,
+    capturadoMinor: number,
+    retenidoMinor: number,
+    motivo: string,
+  ): Promise<void> {
+    try {
+      const booking = await this.findBookingWithUsers(bookingId);
+      const liberadoMinor = Math.max(0, retenidoMinor - capturadoMinor);
+      const nombre = (persona?: {
+        displayName?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+      }) =>
+        persona?.displayName ||
+        [persona?.firstName, persona?.lastName].filter(Boolean).join(" ") ||
+        "";
+
+      for (const parte of [
+        { datos: booking.renter, otra: booking.owner, esDueño: false },
+        { datos: booking.owner, otra: booking.renter, esDueño: true },
+      ]) {
+        if (!parte.datos?.email) continue;
+        await this.email.sendDepositCaptured(parte.datos.email, {
+          recipientName: nombre(parte.datos),
+          esDueño: parte.esDueño,
+          otherPartyName: nombre(parte.otra),
+          capturado: capturadoMinor / 100,
+          liberado: liberadoMinor / 100,
+          currency: booking.currency,
+          vehicleLabel: this.vehicleLabel(booking),
+          motivo,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisar de la captura del depósito de ${bookingId}: ${message}`,
+      );
+    }
+  }
+
+  /** "Toyota Corolla 2022", con lo que haya. */
+  private vehicleLabel(booking: {
+    vehicle?: {
+      brand?: string | null;
+      model?: string | null;
+      year?: number | null;
+    } | null;
+  }): string {
+    return (
+      [booking.vehicle?.brand, booking.vehicle?.model, booking.vehicle?.year]
+        .filter(Boolean)
+        .join(" ") || "el vehículo"
+    );
+  }
+
+  /**
+   * El mail de "se liberó tu depósito".
+   *
+   * NUNCA HACE FALLAR LA LIQUIDACIÓN: la plata ya se soltó cuando esto corre, y
+   * una excepción acá desharía por un mail algo que salió bien. Es el mismo
+   * criterio que en el resto de los avisos.
+   */
+  private async avisarDeLaLiberacion(
+    booking: Awaited<ReturnType<PaymentsService["findBookingWithUsers"]>>,
+    hold: PaymentRecord,
+  ): Promise<void> {
+    try {
+      if (!booking.renter?.email) return;
+      await this.email.sendDepositReleased(booking.renter.email, {
+        renterName:
+          booking.renter.displayName ??
+          `${booking.renter.firstName} ${booking.renter.lastName}`,
+        amount: (hold.amountMinor ?? 0) / 100,
+        currency: hold.currency ?? booking.currency,
+        vehicleLabel: this.vehicleLabel(booking),
+        cardBrand: hold.cardBrand,
+        cardLast4: hold.cardLast4,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisar de la liberación del depósito de ${booking.id}: ${message}`,
+      );
+    }
+  }
+
+  /**
    * VOLVER A LIQUIDAR UNA RESERVA QUE QUEDÓ DEVUELTA Y SIN LIQUIDAR.
    *
    * ── Por qué hace falta ────────────────────────────────────────────────────
@@ -1183,6 +1278,18 @@ export class PaymentsService {
         amountMinor: hold.amountMinor,
         currency: hold.currency,
       });
+
+      /*
+        Y SE LE AVISA, QUE ES LA PARTE QUE FALTABA.
+
+        El depósito es la única plata del alquiler que se ve salir y no se ve
+        volver: liberar una retención no genera ningún movimiento en el resumen
+        de la tarjeta, así que sin este mail la única señal es que el saldo
+        disponible deja de estar recortado. Nadie mira eso. El resultado era
+        gente esperando un reembolso que no iba a llegar nunca, porque no había
+        nada que reembolsar.
+      */
+      await this.avisarDeLaLiberacion(booking, hold);
     }
 
     /*
@@ -1376,6 +1483,18 @@ export class PaymentsService {
       metadata: { amountMinor, heldMinor: retenido, reason },
     });
 
+    /*
+      Y SE LES AVISA A LAS DOS PARTES, QUE ES LO QUE FALTABA.
+
+      Cobrar parte del depósito sin avisar es la peor cosa que hace un sistema
+      de pagos: alguien esperando que le vuelvan doscientos dólares descubre
+      tres días después, mirando el resumen, que le cobraron sesenta, sin saber
+      por qué ni a quién preguntarle. El motivo lo escribió quien resolvió el
+      reclamo y viaja entero, sin recortar: es lo que esa persona va a leer
+      para decidir si está de acuerdo.
+    */
+    await this.avisarDeLaCaptura(bookingId, amountMinor, retenido, reason);
+
     return this.getStatus(actorId, bookingId).catch(() => ({
       bookingId,
       capturedMinor: amountMinor,
@@ -1384,12 +1503,25 @@ export class PaymentsService {
 
   // ── Devolución al cancelar ─────────────────────────────────────────────
 
-  async refundOnCancel(actorId: string, bookingId: string) {
-    const booking = await this.findBooking(bookingId);
+  /**
+   * @param opciones.retenerSena  la seña NO se devuelve. Lo decide la política
+   *        de cancelación (bookings/cancellation-policy.ts): cancelar sobre la
+   *        fecha deja al dueño sin el alquiler y sin poder realquilar esos
+   *        días, y la seña es justamente lo que se paga para reservarlos.
+   */
+  async refundOnCancel(
+    actorId: string,
+    bookingId: string,
+    opciones: { retenerSena?: boolean } = {},
+  ) {
+    const booking = await this.findBookingWithUsers(bookingId);
+    const devolver: PaymentRecordKind[] = opciones.retenerSena
+      ? [PaymentRecordKind.BALANCE]
+      : [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE];
     const charged = await this.prisma.paymentRecord.findMany({
       where: {
         bookingId,
-        kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
+        kind: { in: devolver },
         status: { in: PAID_RECORD_STATUSES },
       },
     });
@@ -1483,10 +1615,17 @@ export class PaymentsService {
       await this.prisma.booking.update({
         where: { id: bookingId },
         data: {
-          paymentStatus: PaymentStatus.REFUNDED,
+          paymentStatus: opciones.retenerSena
+            ? PaymentStatus.PARTIALLY_REFUNDED
+            : PaymentStatus.REFUNDED,
           refundedAt: new Date(),
         },
       });
+    }
+
+    // La seña retenida es del DUEÑO, no de la plataforma.
+    if (opciones.retenerSena) {
+      await this.transferirLaSenaRetenida(actorId, booking);
     }
 
     await this.auditLog.create({
@@ -1495,7 +1634,98 @@ export class PaymentsService {
       action: "payment.refunded",
       entityType: "Booking",
       entityId: bookingId,
-      metadata: { refunded: charged.length },
+      metadata: {
+        refunded: charged.length,
+        retuvoSena: Boolean(opciones.retenerSena),
+      },
+    });
+  }
+
+  /**
+   * LA SEÑA QUE NO SE DEVOLVIÓ VA AL DUEÑO.
+   *
+   * Sin esto, "se retiene la seña" significaría que se la queda la plataforma,
+   * que no es ni justo ni lo que dice la política: lo que la seña compensa es
+   * al dueño, que quedó sin el alquiler y con las fechas bloqueadas hasta el
+   * último momento. Quedársela sería cobrar por el perjuicio de otro.
+   *
+   * ── Cuánto ────────────────────────────────────────────────────────────────
+   * La misma proporción que le tocaba del alquiler entero. La reserva ya la
+   * tiene calculada: `ownerPayoutSnapshot` sobre `totalPriceSnapshot` es lo que
+   * queda para el dueño después de la comisión y el seguro, así que aplicarla
+   * sobre la seña le deja al dueño su parte y a la plataforma la suya, sin
+   * inventar una cuenta nueva.
+   *
+   * ── Una sola vez ──────────────────────────────────────────────────────────
+   * Misma guarda que en la liquidación del final: si esta reserva ya transfirió
+   * —no debería, pero una reserva se cancela una sola vez y el código se puede
+   * reintentar— no sale otra.
+   */
+  private async transferirLaSenaRetenida(
+    actorId: string,
+    booking: Awaited<ReturnType<PaymentsService["findBookingWithUsers"]>>,
+  ): Promise<void> {
+    if (booking.ownerTransferId) return;
+
+    const sena = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId: booking.id,
+        kind: PaymentRecordKind.SENA,
+        status: { in: PAID_RECORD_STATUSES },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const retenidoMinor =
+      (sena?.amountMinor ?? 0) - (sena?.refundedAmountMinor ?? 0);
+    if (retenidoMinor <= 0) return;
+
+    const total = booking.totalPriceSnapshot ?? 0;
+    const alDueno = booking.ownerPayoutSnapshot ?? 0;
+    const proporcion = total > 0 ? alDueno / total : 0;
+    const amountMinor = Math.round(retenidoMinor * proporcion);
+    if (amountMinor <= 0) return;
+
+    const accountId = await this.ensureOwnerAccount(booking.owner);
+    const transfer = await this.provider.transferToOwner({
+      amountMinor,
+      currency: booking.currency,
+      destination: accountId,
+      transferGroup: booking.transferGroup,
+      metadata: { bookingId: booking.id, motivo: "sena_retenida" },
+      idempotencyKey: `booking_${booking.id}_cancel_transfer`,
+    });
+
+    const [payout] = await this.prisma.$transaction([
+      this.prisma.paymentRecord.create({
+        data: {
+          bookingId: booking.id,
+          userId: booking.ownerId,
+          kind: PaymentRecordKind.OWNER_TRANSFER,
+          status: PaymentRecordStatus.PAID,
+          provider: this.provider.name,
+          providerId: transfer.id,
+          stripeTransferId: transfer.id,
+          amount: amountMinor / 100,
+          amountMinor,
+          currency: booking.currency,
+          paidAt: new Date(),
+        },
+      }),
+      this.prisma.booking.update({
+        where: { id: booking.id },
+        data: { ownerTransferId: transfer.id },
+      }),
+    ]);
+
+    await this.recordEvent({
+      record: payout,
+      bookingId: booking.id,
+      actorId,
+      source: "api",
+      type: "transfer.created",
+      status: PaymentRecordStatus.PAID,
+      amountMinor,
+      currency: booking.currency,
     });
   }
 
@@ -1790,7 +2020,10 @@ export class PaymentsService {
   private async findBookingWithUsers(bookingId: string) {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { owner: true, renter: true },
+      // El vehículo viene para poder nombrarlo en los mails: "se liberó tu
+      // depósito de Toyota Corolla 2022" dice de cuál de las tres reservas
+      // está hablando, y "se liberó tu depósito" no.
+      include: { owner: true, renter: true, vehicle: true },
     });
     assertFound(booking, "Booking not found");
     return booking;
