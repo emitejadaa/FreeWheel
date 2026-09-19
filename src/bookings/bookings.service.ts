@@ -565,8 +565,57 @@ export class BookingsService {
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
-    // Release the deposit hold (clean return) and transfer the owner payout.
-    await this.payments.settleOnReturn(renterId, id);
+    /*
+      EL AUTO YA VOLVIÓ. LA PLATA ES OTRA COSA, Y NO PUEDE DESHACER ESO.
+
+      Acá se sueltan el depósito y la transferencia al dueño, y las dos hablan
+      con Stripe. Hasta ahora esto iba suelto, sin red: si Stripe decía que no
+      —el caso más común es el dueño que todavía no terminó el alta de cobros,
+      y entonces la transferencia se rechaza— la excepción subía hasta el final
+      y el pedido contestaba 500.
+
+      Solo que la devolución ya estaba escrita cuatro líneas más arriba: el
+      código se consumió, el estado quedó en COMPLETED y las reseñas se
+      habilitaron. O sea que quien devolvía el auto veía "error del servidor",
+      recargaba, y encontraba todo hecho. Dos pantallas contradiciéndose sobre
+      lo mismo, que es peor que cualquiera de las dos solas.
+
+      Y deshacerlo tampoco servía: la entrega FÍSICA pasó. El auto está
+      devuelto aunque la transferencia falle; lo que falta es plata, y la plata
+      se reintenta (POST /payments/bookings/:id/settle, que un administrador
+      puede volver a correr porque settleOnReturn no duplica nada).
+
+      Así que se atrapa, se deja dicho en el log y en la auditoría, y se
+      DEVUELVE en la respuesta: la pantalla necesita poder decir "el auto quedó
+      devuelto, el depósito se libera en un rato" en vez de un error rojo.
+    */
+    let settlement: {
+      ok: boolean;
+      code: string | null;
+      message: string | null;
+    } = { ok: true, code: null, message: null };
+    try {
+      await this.payments.settleOnReturn(renterId, id);
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+      settlement = {
+        ok: false,
+        code: this.codigoDelError(error),
+        message: detalle,
+      };
+      this.logger.error(
+        `Reserva ${id} devuelta, pero la liquidación falló: ${detalle}. ` +
+          "El depósito y/o la transferencia al dueño quedaron pendientes.",
+      );
+      await this.auditLog.create({
+        actorId: renterId,
+        targetUserId: booking.ownerId,
+        action: "booking.settlement_failed",
+        entityType: "Booking",
+        entityId: id,
+        metadata: { reason: detalle },
+      });
+    }
 
     await this.auditLog.create({
       actorId: renterId,
@@ -598,7 +647,32 @@ export class BookingsService {
       });
     }
 
-    return updated;
+    return { ...updated, settlement };
+  }
+
+  /**
+   * El código corto de un error, si lo trae.
+   *
+   * Las excepciones de este backend llevan uno adentro del cuerpo
+   * (PAYMENT_DISPUTED, PAYMENTS_NOT_CONFIGURED); las de Stripe lo llevan en
+   * `code`. Sirve para que el front pueda distinguir "hay una disputa abierta"
+   * de "falló la transferencia" sin leer un mensaje en castellano.
+   */
+  private codigoDelError(error: unknown): string | null {
+    if (typeof error !== "object" || error === null) return null;
+    const conCode = error as { code?: unknown; getResponse?: () => unknown };
+    if (typeof conCode.code === "string") return conCode.code;
+    if (typeof conCode.getResponse === "function") {
+      const cuerpo = conCode.getResponse();
+      if (
+        typeof cuerpo === "object" &&
+        cuerpo !== null &&
+        typeof (cuerpo as { code?: unknown }).code === "string"
+      ) {
+        return (cuerpo as { code: string }).code;
+      }
+    }
+    return null;
   }
 
   private async findById(id: string) {

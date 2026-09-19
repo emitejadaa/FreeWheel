@@ -1091,6 +1091,42 @@ export class PaymentsService {
 
   // ── Liquidación en la devolución (soltar depósito + pagar al dueño) ────
 
+  /**
+   * VOLVER A LIQUIDAR UNA RESERVA QUE QUEDÓ DEVUELTA Y SIN LIQUIDAR.
+   *
+   * ── Por qué hace falta ────────────────────────────────────────────────────
+   * La liquidación corre cuando se confirma la devolución y habla con Stripe
+   * dos veces: suelta el depósito y transfiere al dueño. Cualquiera de las dos
+   * puede fallar por motivos que no tienen nada que ver con la devolución —el
+   * dueño no terminó el alta de cobros, Stripe no contesta— y la devolución no
+   * se cae por eso: el auto volvió igual.
+   *
+   * Pero entonces la reserva queda COMPLETED, con el depósito todavía retenido
+   * y el dueño sin cobrar, y no hay forma de volver a intentarlo: confirmar la
+   * devolución otra vez no se puede (el código ya se consumió y el estado ya no
+   * lo permite). Esto es esa forma.
+   *
+   * ── Por qué solo un administrador ─────────────────────────────────────────
+   * Mueve plata entre dos personas. Es la misma razón por la que capturar el
+   * depósito tampoco lo hace el dueño.
+   *
+   * No duplica nada: el depósito solo se suelta si sigue retenido y la
+   * transferencia solo sale si no salió antes.
+   */
+  async resettle(actorId: string, bookingId: string) {
+    const booking = await this.findBooking(bookingId);
+    if (booking.status !== BookingStatus.COMPLETED) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "BOOKING_NOT_COMPLETED",
+        message:
+          "Solo se liquida una reserva ya devuelta. Esta todavía no lo está.",
+      });
+    }
+    await this.settleOnReturn(actorId, bookingId);
+    return { settled: true, bookingId };
+  }
+
   async settleOnReturn(actorId: string, bookingId: string) {
     const booking = await this.findBookingWithUsers(bookingId);
 
@@ -1149,10 +1185,33 @@ export class PaymentsService {
       });
     }
 
-    // Transferir al dueño lo que le corresponde.
-    const accountId = await this.ensureOwnerAccount(booking.owner);
+    /*
+      TRANSFERIR AL DUEÑO LO QUE LE CORRESPONDE, UNA SOLA VEZ.
+
+      La guarda no es decorativa: esto se puede volver a correr. La devolución
+      del auto ya no se cae cuando la liquidación falla (ver
+      BookingsService.confirmReturn), así que una reserva puede quedar
+      devuelta y sin liquidar, y alguien la tiene que poder reintentar.
+
+      Sin la guarda, el reintento de una reserva que SÍ había transferido
+      escribía un segundo registro de pago por el mismo dinero. La clave de
+      idempotencia hace que Stripe devuelva la transferencia original en vez de
+      mandar la plata dos veces —eso estaba bien—, pero la contabilidad de este
+      lado quedaba contando el doble.
+    */
     const amountMinor = Math.round((booking.ownerPayoutSnapshot ?? 0) * 100);
-    if (amountMinor > 0) {
+    const yaTransferido =
+      Boolean(booking.ownerTransferId) ||
+      (await this.prisma.paymentRecord.findFirst({
+        where: { bookingId, kind: PaymentRecordKind.OWNER_TRANSFER },
+        select: { id: true },
+      })) !== null;
+
+    if (amountMinor > 0 && !yaTransferido) {
+      // El alta de la cuenta del dueño se pide acá adentro y no antes: si ya
+      // se transfirió, no hay nada que dar de alta y era una llamada al
+      // procesador en cada reintento.
+      const accountId = await this.ensureOwnerAccount(booking.owner);
       const transfer = await this.provider.transferToOwner({
         amountMinor,
         currency: booking.currency,

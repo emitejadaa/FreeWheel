@@ -168,6 +168,11 @@ Authorization: Bearer {{ownerToken}}
 ### 9. El renter confirma el return con el token que le mostró el owner.
 ### Al completarse: booking → COMPLETED, se libera el hold y se transfiere el
 ### payout al owner.
+### La respuesta trae `settlement: { ok, code, message }`. Si la liquidación
+### falla (por ejemplo el owner no terminó el alta de Connect y la transferencia
+### se rechaza) la devolución SE CONFIRMA IGUAL —el auto volvió— y ok queda en
+### false: el depósito y/o el payout quedan pendientes y un ADMIN los reintenta
+### con POST /payments/bookings/:id/settle (ver payments.rest).
 POST {{baseUrl}}/bookings/{{bookingId}}/confirm-return
 Content-Type: {{contentType}}
 Authorization: Bearer {{renterToken}}

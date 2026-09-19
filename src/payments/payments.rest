@@ -179,6 +179,13 @@ Authorization: Bearer {{renterToken}}
 POST {{baseUrl}}/payments/connect/onboarding
 Authorization: Bearer {{ownerToken}}
 
+### 10. Volver a liquidar una reserva ya devuelta (ADMIN). Suelta el depósito
+### si sigue retenido y transfiere al owner si no se transfirió antes; no
+### duplica ninguna de las dos cosas. Existe porque confirmar la devolución no
+### se puede repetir: el token se consumió y el estado ya no lo permite.
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/settle
+Authorization: Bearer {{adminToken}}
+
 ### ────────────────────────────────────────────────────────────────────────
 ### Webhook de Stripe (público — autentica por firma sobre el raw body, NUNCA
 ### se llama a mano con datos inventados: la firma no va a validar. Se deja
@@ -186,7 +193,7 @@ Authorization: Bearer {{ownerToken}}
 ### o el forwarder de la CLI de Stripe apuntando a este endpoint.)
 ### ────────────────────────────────────────────────────────────────────────
 
-### 10. Ejemplo de forma (fallará con 400 "Invalid Stripe webhook signature"
+### 11. Ejemplo de forma (fallará con 400 "Invalid Stripe webhook signature"
 ### salvo que Stripe-Signature sea una firma real calculada con STRIPE_WEBHOOK_SECRET).
 POST {{baseUrl}}/payments/stripe/webhook
 Content-Type: application/json

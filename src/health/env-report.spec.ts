@@ -136,6 +136,11 @@ describe("buildEnvReport", () => {
       DOCVERIFY_URL: "https://docverify.onrender.com",
       DOCVERIFY_TOKEN: "t",
       PUBLIC_URL: "https://freewheel-api.vercel.app",
+      // Los cobros entraron a la lista después que esta prueba, y "con todo
+      // cargado" tiene que querer decir TODO: sin estas dos no se puede pagar
+      // ninguna reserva, que es la falla que el reporte existe para mostrar.
+      STRIPE_SECRET_KEY: "sk_test_x",
+      STRIPE_WEBHOOK_SECRET: "whsec_x",
     });
 
     const reporte = buildEnvReport();

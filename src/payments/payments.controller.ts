@@ -245,6 +245,28 @@ export class PaymentsController {
   }
 
   /**
+   * VOLVER A LIQUIDAR UNA RESERVA DEVUELTA Y SIN LIQUIDAR.
+   *
+   * Solo un administrador, por lo mismo que la captura del depósito: mueve
+   * plata entre dos personas.
+   *
+   * Existe porque la devolución del auto no se cae cuando la liquidación
+   * falla: el auto volvió igual, y lo que falta es plata. Sin esto, una
+   * reserva que quedó devuelta con el depósito todavía retenido y el dueño sin
+   * cobrar no tenía forma de arreglarse, porque confirmar la devolución otra
+   * vez ya no se puede.
+   */
+  @Post("bookings/:bookingId/settle")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  settle(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.resettle(user.id, bookingId);
+  }
+
+  /**
    * El aviso de Stripe. Público, pero verificado por firma contra el cuerpo
    * CRUDO del pedido (express.raw está registrado para esta ruta exacta en
    * app.factory, antes del parser de JSON, así que `req.body` acá es el Buffer
