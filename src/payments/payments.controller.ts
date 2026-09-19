@@ -5,6 +5,7 @@ import {
   Param,
   Post,
   Req,
+  UseFilters,
   UseGuards,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
@@ -18,6 +19,7 @@ import { RequireVerifiedAccount } from "../common/decorators/require-verified-ac
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { CaptureDepositDto } from "./dto/capture-deposit.dto";
+import { StripeErrorFilter } from "./filters/stripe-error.filter";
 import { SimulatePaymentDto } from "./dto/simulate-payment.dto";
 import { PaymentsService } from "./payments.service";
 import type { PaymentContext } from "./payments.service";
@@ -43,6 +45,13 @@ function contextOf(req: Request, actorId?: string): PaymentContext {
 
 // Toda acción de pago exige una cuenta verificada, con el DNI vigente. El
 // webhook de Stripe queda público: se autentica por firma.
+//
+// EL FILTRO HACE QUE UN ERROR DE STRIPE DIGA QUÉ PASÓ. Sin él, cualquier
+// rechazo del procesador —una tarjeta sin fondos, una moneda que esa cuenta no
+// cobra— llega al filtro global, que lo trata como un error inesperado y
+// contesta "Internal server error". El detalle quedaba solo en los logs del
+// deploy, que administra otra persona. Ver filters/stripe-error.filter.ts.
+@UseFilters(StripeErrorFilter)
 @Controller("payments")
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
