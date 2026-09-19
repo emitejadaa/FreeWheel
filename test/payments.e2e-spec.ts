@@ -135,7 +135,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       .expect(400);
   });
 
-  it("runs the full settlement: ready → pickup → return transfers the owner payout and releases the hold", async () => {
+  it("runs the full settlement: ready → pickup → return transfers the owner payout and HOLDS the deposit until the owner checks the car", async () => {
     const { owner, renter, bookingId, pickupToken, returnToken } =
       await acceptedBooking();
 
@@ -166,7 +166,33 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       (r: { kind: string; status: string }) => `${r.kind}:${r.status}`,
     );
     expect(kinds).toContain("OWNER_TRANSFER:PAID");
-    expect(kinds).toContain("DEPOSIT_HOLD:RELEASED");
+    /*
+      EL DEPÓSITO SIGUE RETENIDO, Y ES EL CAMBIO.
+
+      Antes se soltaba en el mismo instante en que se confirmaba la devolución,
+      y eso dejaba el reclamo por daños en una situación imposible: cuando el
+      dueño se acercaba al auto y veía el golpe, la retención ya no existía y no
+      había nada que capturar. Ahora queda retenido mientras dura la ventana de
+      revisión (claims/claim-window.ts).
+    */
+    expect(kinds).toContain("DEPOSIT_HOLD:AUTHORIZED");
+    expect(kinds).not.toContain("DEPOSIT_HOLD:RELEASED");
+
+    // Y se suelta cuando el dueño dice que está todo bien, que es el camino
+    // normal y el que el mail le pide.
+    await http()
+      .post(`/bookings/${bookingId}/inspection-ok`)
+      .set("Authorization", auth(owner.token))
+      .expect(201);
+
+    const despues = await http()
+      .get(`/payments/bookings/${bookingId}/status`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    const kindsDespues = despues.body.records.map(
+      (r: { kind: string; status: string }) => `${r.kind}:${r.status}`,
+    );
+    expect(kindsDespues).toContain("DEPOSIT_HOLD:RELEASED");
 
     // Owner now has a connected account on file.
     const ownerRow = await prisma.user.findUnique({ where: { id: owner.id } });
@@ -418,12 +444,31 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       expect(disputado.status).toBe("DISPUTED");
       expect(disputado.disputedAt).not.toBeNull();
 
+      /*
+        LA DEVOLUCIÓN SE CONFIRMA IGUAL, LA LIQUIDACIÓN NO.
+
+        Antes esto contestaba 400 y la devolución no se escribía. Pero el auto
+        volvió: frenar la entrega física por un problema de plata dejaba la
+        reserva abierta para siempre, y encima con el auto ya en la playa del
+        dueño. Lo que hay que frenar es la plata, no la devolución.
+
+        Así que ahora la devolución entra, y el motivo vuelve en `settlement`
+        para que la pantalla lo pueda contar sin llamarlo error.
+      */
       const res = await http()
         .post(`/bookings/${bookingId}/confirm-return`)
         .set("Authorization", auth(renter.token))
         .send({ token: returnToken })
-        .expect(400);
-      expect(res.body.code).toBe("PAYMENT_DISPUTED");
+        .expect(201);
+      expect(res.body.status).toBe("COMPLETED");
+      expect(res.body.settlement.ok).toBe(false);
+      expect(res.body.settlement.code).toBe("PAYMENT_DISPUTED");
+
+      // Y lo importante: al dueño no le llegó un peso.
+      const conDisputa = await prisma.booking.findFirstOrThrow({
+        where: { id: bookingId },
+      });
+      expect(conDisputa.ownerTransferId).toBeNull();
     });
 
     it("una devolución hecha desde el panel de Stripe llega igual a la base", async () => {
@@ -572,5 +617,4 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         .expect(400);
     });
   });
-
 });
