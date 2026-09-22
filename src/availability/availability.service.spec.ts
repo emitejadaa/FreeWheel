@@ -137,3 +137,53 @@ describe("assertDateRange", () => {
     ).not.toThrow();
   });
 });
+
+/**
+ * CUÁNTOS DÍAS SE COBRAN.
+ *
+ * Es la cuenta que fija el precio de todo, así que se prueba en el borde: el
+ * día entero, el día entero más una pizca, y lo que de verdad es un día más.
+ */
+describe("calculateDays", () => {
+  const service = new AvailabilityService({} as unknown as PrismaService);
+  const dias = (desde: string, hasta: string) =>
+    service.calculateDays(new Date(desde), new Date(hasta));
+
+  it("cuenta los días que cualquiera diría que son", () => {
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-08T10:00:00.000Z")).toBe(
+      3,
+    );
+    expect(dias("2026-07-05T00:00:00.000Z", "2026-07-06T00:00:00.000Z")).toBe(
+      1,
+    );
+  });
+
+  it("un milisegundo de más NO cuesta un día entero", () => {
+    // Era el caso real: dos fechas armadas con `new Date()` en instantes
+    // distintos quedaban a "3 días y dos milisegundos", y se cobraban 4.
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-08T10:00:00.002Z")).toBe(
+      3,
+    );
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-08T10:14:00.000Z")).toBe(
+      3,
+    );
+  });
+
+  it("pasarse de verdad sí cuesta el día siguiente", () => {
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-08T11:00:00.000Z")).toBe(
+      4,
+    );
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-08T22:00:00.000Z")).toBe(
+      4,
+    );
+  });
+
+  it("un rato corto es un día, y un rango al revés no es ninguno", () => {
+    expect(dias("2026-07-05T10:00:00.000Z", "2026-07-05T11:00:00.000Z")).toBe(
+      1,
+    );
+    expect(
+      dias("2026-07-08T10:00:00.000Z", "2026-07-05T10:00:00.000Z"),
+    ).toBeLessThanOrEqual(0);
+  });
+});

@@ -252,9 +252,34 @@ export class AvailabilityService {
     }
   }
 
+  /**
+   * CUÁNTOS DÍAS SE COBRAN, con quince minutos de gracia.
+   *
+   * Un alquiler se cobra por día empezado: pasarse unas horas del día número
+   * tres cuesta el cuarto día, y así funciona en cualquier rentadora.
+   *
+   * Lo que NO puede pasar es que pasarse por un milisegundo cueste lo mismo.
+   * Antes esto era un `ceil` pelado sobre la diferencia en milisegundos, así
+   * que una reserva "del 5 al 8" armada con la hora exacta de cada momento
+   * —que es lo que manda un formulario cuando las dos fechas no se generan en
+   * el mismo instante— daba 3 días y una pizca, y se cobraban 4. Un día
+   * entero de más por un redondeo es justamente el cobro que después hay que
+   * explicarle a alguien que reclama, y tiene razón.
+   *
+   * Con quince minutos de gracia, la misma hora de un día posterior cuenta
+   * los días que cualquiera diría que son, y pasarse de verdad sigue
+   * costando el día siguiente.
+   */
   calculateDays(startDate: Date, endDate: Date) {
+    const DIA = 1000 * 60 * 60 * 24;
+    const GRACIA = 15 * 60 * 1000;
     const milliseconds = endDate.getTime() - startDate.getTime();
-    return Math.ceil(milliseconds / (1000 * 60 * 60 * 24));
+
+    // Cero o negativo se devuelve tal cual: quien llama lo rechaza, y
+    // restarle la gracia acá convertiría un error en "cero días".
+    if (milliseconds <= 0) return Math.ceil(milliseconds / DIA);
+
+    return Math.max(1, Math.ceil((milliseconds - GRACIA) / DIA));
   }
 
   async assertNoManualBlockOverlap(
