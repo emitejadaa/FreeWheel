@@ -1,0 +1,37 @@
+# Qué NO se manda al daemon de Docker al construir la imagen.
+#
+# El Dockerfile solo copia `requirements.txt` y `app/`, así que nada de lo de
+# acá abajo terminaría dentro de la imagen igual. Lo que evita esta lista es
+# que se empaquete y se transfiera al construir: un `.venv/` con 300 MB de
+# wheels convierte un build de segundos en uno de minutos.
+#
+# La primera línea, además, no es performance: es que un `.env` con el token de
+# producción no se cuele en el contexto de build de nadie.
+
+.env
+.env.*
+!.env.example
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Salidas de depurar.py: recortes e imágenes de calibración.
+.debug/
+
+# Documentación y herramientas de desarrollo: no corren en el servidor.
+README.md
+DEPLOY.md
+depurar.py
+probar_imagenes.py
+
+# Los propios archivos de Docker: cambiarlos no tiene que invalidar capas.
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+.git/
+.gitignore
+.vscode/

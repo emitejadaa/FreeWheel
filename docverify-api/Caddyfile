@@ -1,0 +1,46 @@
+# Configuración del reverse proxy que publica la API con HTTPS.
+# Se usa desde docker-compose.https.yml. El dominio y el mail salen del .env.
+
+# Let's Encrypt no necesita un mail: Caddy registra la cuenta sin contacto y el
+# certificado se renueva igual. Si querés que te avise cuando una renovación
+# falla, descomentá este bloque y completá ACME_EMAIL en el .env.
+#
+# Tiene que quedar comentado MIENTRAS ACME_EMAIL ESTÉ VACÍO: un `email` sin
+# valor no es un mail vacío para Caddy, es un error de sintaxis, y el proxy
+# entra en bucle de reinicio antes de levantar.
+#
+#	{
+#		email {$ACME_EMAIL}
+#	}
+
+{$DOMINIO} {
+	# El certificado se pide, se instala y se renueva solo la primera vez que
+	# alguien entra. No hay nada que ejecutar a mano.
+
+	encode zstd gzip
+
+	# Tope de tamaño del cuerpo del pedido. La API ya rechaza con 413 las
+	# imágenes de más de DOCVERIFY_MAX_KB (15.000 KB por default), pero para
+	# poder rechazarlas primero tiene que recibirlas enteras; cortarlo acá le
+	# ahorra al servidor subir 100 MB para después tirarlos. Dejar este número
+	# POR ENCIMA de DOCVERIFY_MAX_KB: un pedido con las dos caras en base64
+	# pesa cerca del doble que una sola imagen, más el ~33% que agrega base64.
+	request_body {
+		max_size 45MB
+	}
+
+	reverse_proxy api:8000 {
+		# Un análisis sincrónico (sin callback_url) puede tardar minutos. Sin
+		# esto el proxy cortaría la conexión antes de que la API conteste y
+		# quien llamó vería un 502 en vez de su resultado.
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
