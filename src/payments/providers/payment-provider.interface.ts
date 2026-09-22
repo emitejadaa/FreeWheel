@@ -18,7 +18,11 @@
 
 export const PAYMENT_PROVIDER = Symbol("PAYMENT_PROVIDER");
 
-export type PaymentRecordKindLike = "SENA" | "BALANCE" | "DEPOSIT_HOLD";
+export type PaymentRecordKindLike =
+  | "CHECKOUT"
+  | "SENA"
+  | "BALANCE"
+  | "DEPOSIT_HOLD";
 
 export interface CreateIntentInput {
   bookingId: string;
@@ -29,6 +33,16 @@ export interface CreateIntentInput {
   transferGroup?: string | null;
   metadata?: Record<string, string>;
   idempotencyKey?: string;
+  /**
+   * Guardar el medio de pago para usarlo después sin el cliente presente. El
+   * cobro único lo pide para poder autorizar el depósito cerca del retiro sin
+   * volver a pedirle la tarjeta a nadie.
+   */
+  setupFutureUsage?: "off_session";
+  /** Un medio de pago ya guardado (pm_…) con el que operar. */
+  paymentMethodId?: string | null;
+  /** Operar sin el cliente presente (confirmar en el servidor). */
+  offSession?: boolean;
 }
 
 /**
@@ -59,6 +73,13 @@ export interface PaymentIntentResult {
   card?: CardDetails | null;
   risk?: RiskDetails | null;
   failure?: FailureDetails | null;
+  /** El medio de pago con que se pagó, para reutilizarlo (depósito). */
+  paymentMethodId?: string | null;
+  /**
+   * Hasta cuándo se puede capturar una retención. Pasado ese momento el
+   * emisor la suelta sola y no hay de dónde cobrar un daño.
+   */
+  captureBefore?: Date | null;
 }
 
 /** Las señas de la tarjeta que pagó. Nunca el número. */

@@ -28,8 +28,20 @@ const ALL_PRESENT: Row[] = [
   { table_name: "DocumentVerification", column_name: "reasonCodes" },
   { table_name: "DocumentVerification", column_name: "declared" },
   { table_name: "DocumentVerification", column_name: "retakeSlots" },
+  { table_name: "DocumentVerification", column_name: "photosPurgedAt" },
   { table_name: "PaymentEvent", column_name: "id" },
   { table_name: "PaymentRecord", column_name: "cardFingerprint" },
+  // El cambio a cobro único, reclamos por daños y contratos firmados.
+  { table_name: "Booking", column_name: "checkoutPaymentIntentId" },
+  { table_name: "Booking", column_name: "inspectionEndsAt" },
+  { table_name: "DamageClaim", column_name: "id" },
+  { table_name: "LedgerJournal", column_name: "id" },
+  { table_name: "LedgerEntry", column_name: "id" },
+  { table_name: "ContractAcceptance", column_name: "id" },
+  { table_name: "Contract", column_name: "contentHash" },
+  { table_name: "VehicleVerification", column_name: "id" },
+  { table_name: "RateLimitBucket", column_name: "id" },
+  { table_name: "User", column_name: "loginLockedUntil" },
 ];
 
 describe("HealthService.checkDatabase", () => {

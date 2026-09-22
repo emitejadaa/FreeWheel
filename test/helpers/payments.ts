@@ -51,9 +51,10 @@ export function sendWebhook(
     .send(payload);
 }
 
-type IntentKind = "sena" | "balance" | "deposit";
+type IntentKind = "checkout" | "sena" | "balance" | "deposit";
 
 const PATHS: Record<IntentKind, string> = {
+  checkout: "checkout",
   sena: "sena-intent",
   balance: "balance-intent",
   deposit: "deposit-hold",
@@ -77,32 +78,43 @@ export async function createIntent(
   return res.body;
 }
 
-/** Drives a booking through seña + balance + authorized deposit hold. */
+/** Quien alquila firma el contrato. Sin esto, el cobro se niega con 409. */
+export async function acceptContract(
+  app: INestApplication,
+  bookingId: string,
+  token: string,
+): Promise<void> {
+  await request(app.getHttpServer())
+    .post(`/contracts/bookings/${bookingId}/accept`)
+    .set("Authorization", `Bearer ${token}`)
+    .expect(201);
+}
+
+/**
+ * DEJA LA RESERVA PAGA, como la deja una persona en el front.
+ *
+ * Son tres pasos y ninguno sobra:
+ *   1. firmar el contrato (el cobro se niega si no está firmado);
+ *   2. crear el cobro único —alquiler + cobertura, todo junto—;
+ *   3. avisar que Stripe lo confirmó, que es lo que de verdad marca la
+ *      reserva como pagada. Sin el webhook, crear el intent no cobró nada.
+ *
+ * El depósito en garantía NO se pide acá: se autoriza solo, sin el cliente
+ * presente, cuando el dueño marca el auto listo para entregar, usando la
+ * tarjeta que quedó guardada en el paso 2.
+ */
 export async function payBookingFully(
   app: INestApplication,
   bookingId: string,
   token: string,
-): Promise<{
-  sena: { paymentIntentId: string };
-  balance: { paymentIntentId: string };
-  hold: { paymentIntentId: string };
-}> {
-  const sena = await createIntent(app, "sena", bookingId, token);
+): Promise<{ checkout: { paymentIntentId: string } }> {
+  await acceptContract(app, bookingId, token);
+
+  const checkout = await createIntent(app, "checkout", bookingId, token);
   await sendWebhook(app, "payment_intent.succeeded", {
-    id: sena.paymentIntentId,
-    latest_charge: "ch_test_sena",
+    id: checkout.paymentIntentId,
+    latest_charge: "ch_test_checkout",
   }).expect(201);
 
-  const balance = await createIntent(app, "balance", bookingId, token);
-  await sendWebhook(app, "payment_intent.succeeded", {
-    id: balance.paymentIntentId,
-    latest_charge: "ch_test_balance",
-  }).expect(201);
-
-  const hold = await createIntent(app, "deposit", bookingId, token);
-  await sendWebhook(app, "payment_intent.amount_capturable_updated", {
-    id: hold.paymentIntentId,
-  }).expect(201);
-
-  return { sena, balance, hold };
+  return { checkout };
 }

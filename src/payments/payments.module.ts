@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import { CommonModule } from "../common/common.module";
 import { EmailModule } from "../email/email.module";
 import { PrismaModule } from "../prisma/prisma.module";
+import { LedgerModule } from "../ledger/ledger.module";
+import { ContractsModule } from "../contracts/contracts.module";
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
 import { PricingService } from "./pricing.service";
@@ -63,9 +65,15 @@ const paymentProvider: Provider = {
 };
 
 @Module({
-  imports: [PrismaModule, CommonModule, EmailModule],
+  imports: [
+    PrismaModule,
+    CommonModule,
+    EmailModule,
+    LedgerModule,
+    ContractsModule,
+  ],
   controllers: [PaymentsController],
   providers: [PaymentsService, PricingService, paymentProvider],
-  exports: [PaymentsService, PricingService],
+  exports: [PaymentsService, PricingService, LedgerModule],
 })
 export class PaymentsModule {}

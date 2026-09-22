@@ -11,6 +11,7 @@ import { Throttle } from "@nestjs/throttler";
 import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { AnalysisCallbackDto } from "./dto/analysis-callback.dto";
 import { ConfirmCodeDto } from "./dto/confirm-code.dto";
@@ -76,11 +77,24 @@ export class VerificationController {
     private readonly documentVerification: DocumentVerificationService,
   ) {}
 
+  @SensitiveRateLimit({
+    name: "verif.email.request",
+    limit: 5,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("email/request")
   requestEmail(@CurrentUser() user: CurrentUserPayload) {
     return this.verificationService.requestEmailCode(user.id);
   }
 
+  @SensitiveRateLimit({
+    name: "verif.email.confirm",
+    limit: 10,
+    windowSec: 900,
+    blockSec: 900,
+    by: "user",
+  })
   @Post("email/confirm")
   confirmEmail(
     @CurrentUser() user: CurrentUserPayload,
@@ -92,11 +106,24 @@ export class VerificationController {
     );
   }
 
+  @SensitiveRateLimit({
+    name: "verif.phone.request",
+    limit: 5,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("phone/request")
   requestPhone(@CurrentUser() user: CurrentUserPayload) {
     return this.verificationService.requestPhoneCode(user.id);
   }
 
+  @SensitiveRateLimit({
+    name: "verif.phone.confirm",
+    limit: 10,
+    windowSec: 900,
+    blockSec: 900,
+    by: "user",
+  })
   @Post("phone/confirm")
   confirmPhone(
     @CurrentUser() user: CurrentUserPayload,
@@ -119,6 +146,12 @@ export class VerificationController {
    * por el backend y el asset queda privado.
    */
   @Throttle({ default: { limit: 10, ttl: 300_000 } })
+  @SensitiveRateLimit({
+    name: "verif.upload-signature",
+    limit: 20,
+    windowSec: 900,
+    by: "ip+user",
+  })
   @Post("identity/upload-signature")
   signIdentityUpload(
     @CurrentUser() user: CurrentUserPayload,
@@ -136,6 +169,12 @@ export class VerificationController {
    * dice exactamente qué chequeo falló, qué se esperaba y qué llegó.
    */
   @Throttle({ default: { limit: 30, ttl: 300_000 } })
+  @SensitiveRateLimit({
+    name: "verif.inspect-url",
+    limit: 30,
+    windowSec: 300,
+    by: "ip+user",
+  })
   @Post("identity/inspect-url")
   inspectDocumentUrl(
     @CurrentUser() user: CurrentUserPayload,
@@ -152,6 +191,12 @@ export class VerificationController {
    * requests) o cada uno cuando el usuario quiera.
    */
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "verif.submit",
+    limit: 6,
+    windowSec: 900,
+    by: "ip+user",
+  })
   @Post("identity/:document/submit")
   submitDocument(
     @CurrentUser() user: CurrentUserPayload,
@@ -167,6 +212,12 @@ export class VerificationController {
 
   /** Manda el documento enviado a la cola de revisión de un admin. */
   @Throttle({ default: { limit: 3, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "verif.request-review",
+    limit: 3,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("identity/:document/request-review")
   requestManualReview(
     @CurrentUser() user: CurrentUserPayload,
@@ -193,6 +244,12 @@ export class VerificationController {
    * otro.
    */
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "verif.retry-analysis",
+    limit: 6,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("identity/:document/retry-analysis")
   retryAnalysis(
     @CurrentUser() user: CurrentUserPayload,

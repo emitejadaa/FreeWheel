@@ -15,6 +15,11 @@ import {
 } from "../../common/validators/phone.validator";
 import { IsAdultDate } from "../../common/validators/is-adult-date.validator";
 import { normalizeEmail } from "../../common/utils/email.util";
+import {
+  PASSWORD_LENGTH_MESSAGE,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+} from "./password-policy";
 
 export class RegisterCompleteDto {
   // Tiene que quedar igual que en /auth/register/start: es la dirección con la
@@ -29,9 +34,10 @@ export class RegisterCompleteDto {
   @Length(6, 6)
   code!: string;
 
+  /** Ver PASSWORD_MIN_LENGTH: la misma regla en todo lugar que pone una. */
   @IsString()
-  @MinLength(6)
-  @MaxLength(128)
+  @MinLength(PASSWORD_MIN_LENGTH, { message: PASSWORD_LENGTH_MESSAGE })
+  @MaxLength(PASSWORD_MAX_LENGTH, { message: PASSWORD_LENGTH_MESSAGE })
   password!: string;
 
   @IsString()

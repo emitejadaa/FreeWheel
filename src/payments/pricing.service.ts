@@ -67,7 +67,21 @@ export class PricingService {
     const insuranceMinor = Math.round(rentalSubtotalMinor * insurancePct);
     const commissionMinor = Math.round(rentalSubtotalMinor * feePct);
     const totalMinor = rentalSubtotalMinor + insuranceMinor;
-    const senaMinor = Math.round(totalMinor * senaPct);
+    // LA SEÑA ES UNA PARTE DEL ALQUILER, no del total.
+    //
+    // Es lo que el Código Civil y Comercial (art. 1059) llama señal: un
+    // adelanto sobre el precio de lo que se contrata, que es el alquiler del
+    // auto. La cobertura no es precio del alquiler —es plata de la
+    // aseguradora— y no tiene sentido que alguien la "pierda" a favor del
+    // dueño si cancela. Antes se calculaba sobre el total y por eso incluía un
+    // pedazo del seguro.
+    //
+    // No es un cobro aparte: el pago es uno solo. La seña es la porción de
+    // ese pago que queda sujeta a la regla penitencial si alguien se arrepiente
+    // (ver cancellation-policy.ts).
+    const senaMinor = Math.round(rentalSubtotalMinor * senaPct);
+    // Lo que no es seña dentro del mismo pago. Se conserva por compatibilidad
+    // con quien lo mostraba; ya no es un segundo cobro.
     const balanceMinor = totalMinor - senaMinor;
     const ownerPayoutMinor = rentalSubtotalMinor - commissionMinor;
     const depositMinor = Math.round(depositUsd * 100);

@@ -297,9 +297,34 @@ export class AdminService {
       const bookingIds = bookings.map((b) => b.id);
 
       if (bookingIds.length > 0) {
-        // El contrato referencia a la reserva con Restrict: va primero, o el
-        // borrado corta con un error de clave foránea.
+        // Todo lo que apunta a la reserva con Restrict, antes que la reserva:
+        // firmas del contrato, el contrato, el reclamo por daños, los asientos
+        // contables y el registro de cada cobro. Si falta uno, el borrado
+        // corta con un error de clave foránea a mitad de camino.
+        const contratos = await tx.contract.findMany({
+          where: { bookingId: { in: bookingIds } },
+          select: { id: true },
+        });
+        await tx.contractAcceptance.deleteMany({
+          where: { contractId: { in: contratos.map((c) => c.id) } },
+        });
         await tx.contract.deleteMany({
+          where: { bookingId: { in: bookingIds } },
+        });
+        await tx.damageClaim.deleteMany({
+          where: { bookingId: { in: bookingIds } },
+        });
+        const asientos = await tx.ledgerJournal.findMany({
+          where: { bookingId: { in: bookingIds } },
+          select: { id: true },
+        });
+        await tx.ledgerEntry.deleteMany({
+          where: { journalId: { in: asientos.map((a) => a.id) } },
+        });
+        await tx.ledgerJournal.deleteMany({
+          where: { bookingId: { in: bookingIds } },
+        });
+        await tx.paymentEvent.deleteMany({
           where: { bookingId: { in: bookingIds } },
         });
         await tx.paymentRecord.deleteMany({
@@ -462,12 +487,59 @@ export class AdminService {
         },
       });
 
-      // El contrato de una reserva la referencia con Restrict, así que va
-      // ANTES que la reserva. Faltaba: sin esto, borrar una cuenta que hubiera
-      // llegado a firmar un contrato fallaba con un error de clave foránea, que
-      // es justo el caso de una cuenta de demostración usada de punta a punta.
+      // ── Todo lo que cuelga de una reserva, en orden ────────────────────
+      //
+      // Cada una de estas tablas referencia a la reserva o al contrato con
+      // Restrict, a propósito: una firma, un asiento contable o un reclamo no
+      // se borran solos porque alguien borró lo que describen. Para borrar la
+      // CUENTA entera hay que sacarlos explícitamente, y el orden importa:
+      // primero lo que apunta, después lo apuntado.
+      const contratos = await tx.contract.findMany({
+        where: { bookingId: { in: bookingIds } },
+        select: { id: true },
+      });
+      await tx.contractAcceptance.deleteMany({
+        where: {
+          OR: [
+            { contractId: { in: contratos.map((c) => c.id) } },
+            { userId: id },
+          ],
+        },
+      });
       await tx.contract.deleteMany({
         where: { bookingId: { in: bookingIds } },
+      });
+
+      await tx.damageClaim.deleteMany({
+        where: {
+          OR: [
+            { bookingId: { in: bookingIds } },
+            { ownerId: id },
+            { renterId: id },
+          ],
+        },
+      });
+
+      // Las partidas antes que el asiento que las agrupa.
+      const asientos = await tx.ledgerJournal.findMany({
+        where: { bookingId: { in: bookingIds } },
+        select: { id: true },
+      });
+      await tx.ledgerEntry.deleteMany({
+        where: {
+          OR: [
+            { journalId: { in: asientos.map((a) => a.id) } },
+            { userId: id },
+          ],
+        },
+      });
+      await tx.ledgerJournal.deleteMany({
+        where: { bookingId: { in: bookingIds } },
+      });
+
+      // El registro de auditoría de cada cobro apunta al cobro con Restrict.
+      await tx.paymentEvent.deleteMany({
+        where: { OR: [{ bookingId: { in: bookingIds } }, { actorId: id }] },
       });
 
       await tx.paymentRecord.deleteMany({
@@ -493,6 +565,8 @@ export class AdminService {
       });
 
       await tx.listing.deleteMany({ where: { ownerId: id } });
+      // La verificación del auto apunta al auto: va antes que el auto.
+      await tx.vehicleVerification.deleteMany({ where: { ownerId: id } });
       const vehicles = await tx.vehicle.deleteMany({ where: { ownerId: id } });
       await tx.mediaAsset.deleteMany({ where: { ownerId: id } });
       await tx.verificationCode.deleteMany({ where: { userId: id } });

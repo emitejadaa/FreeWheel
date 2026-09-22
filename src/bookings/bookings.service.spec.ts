@@ -6,6 +6,9 @@ import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
 import { ContractsService } from "../contracts/contracts.service";
 import { EmailService } from "../email/email.service";
+import { ConfigService } from "@nestjs/config";
+import { EncryptionService } from "../common/crypto/encryption.service";
+import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -38,6 +41,22 @@ const PRICING = {
   ownerPayoutMinor: 18000,
 };
 
+/**
+ * `expect.objectContaining` devuelve `any`, y meterlo adentro de otro objeto
+ * deja a eslint marcando cada uso. Es el mismo matcher, con un tipo puesto.
+ */
+function contiene(esperado: Record<string, unknown>): unknown {
+  return expect.objectContaining(esperado);
+}
+
+/** El último argumento con el que se llamó a un mock, ya tipado. */
+function ultimoArgumento<T>(mock: jest.Mock): T {
+  const llamadas = mock.mock.calls as T[][];
+  const ultima = llamadas.at(-1);
+  if (!ultima) throw new Error("el mock no se llamó ninguna vez");
+  return ultima[0];
+}
+
 describe("BookingsService", () => {
   let service: BookingsService;
   let prisma: {
@@ -56,11 +75,18 @@ describe("BookingsService", () => {
   };
   let payments: {
     assertReadyForPickup: jest.Mock;
+    authorizeDepositForPickup: jest.Mock;
+    cancelAndSettle: jest.Mock;
+    previewCancellation: jest.Mock;
+    settleBooking: jest.Mock;
     refundOnCancel: jest.Mock;
-    settleOnReturn: jest.Mock;
   };
   let pricing: { computeBooking: jest.Mock };
-  let contracts: { createForBooking: jest.Mock };
+  let contracts: {
+    createForBooking: jest.Mock;
+    ensureForBooking: jest.Mock;
+    accept: jest.Mock;
+  };
   let email: Record<string, jest.Mock>;
 
   const listing = {
@@ -104,11 +130,20 @@ describe("BookingsService", () => {
     };
     payments = {
       assertReadyForPickup: jest.fn().mockResolvedValue(undefined),
+      authorizeDepositForPickup: jest
+        .fn()
+        .mockResolvedValue({ authorized: true, requiresRenterAction: false }),
+      cancelAndSettle: jest.fn().mockResolvedValue(null),
+      previewCancellation: jest.fn(),
+      settleBooking: jest.fn().mockResolvedValue({ settled: true }),
       refundOnCancel: jest.fn(),
-      settleOnReturn: jest.fn(),
     };
     pricing = { computeBooking: jest.fn().mockReturnValue(PRICING) };
-    contracts = { createForBooking: jest.fn() };
+    contracts = {
+      createForBooking: jest.fn(),
+      ensureForBooking: jest.fn(),
+      accept: jest.fn(),
+    };
     email = {
       sendBookingRequestedToOwner: jest.fn(),
       sendBookingRequestedToRenter: jest.fn(),
@@ -129,6 +164,21 @@ describe("BookingsService", () => {
         { provide: ContractsService, useValue: contracts },
         { provide: AuditLogService, useValue: { create: jest.fn() } },
         { provide: EmailService, useValue: email },
+        {
+          provide: EncryptionService,
+          useValue: {
+            // En los tests el cifrado es identidad: lo que importa acá es que
+            // el servicio lo use, no cómo cifra (eso se prueba aparte).
+            encrypt: (v: string | null) => v,
+            decrypt: (v: string | null) => v,
+            tryDecrypt: (v: string | null) => v,
+          },
+        },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        {
+          provide: VehicleVerificationService,
+          useValue: { assertVehicleVerified: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -146,7 +196,12 @@ describe("BookingsService", () => {
       endDate: booking.endDate,
     });
 
-    expect(result).toBe(booking);
+    // La respuesta es la reserva SIN los códigos de entrega y devolución:
+    // con el de devolución a la vista, quien alquila podía confirmar sola que
+    // devolvió el auto sin haberlo devuelto.
+    expect(result).toMatchObject({ id: booking.id, status: booking.status });
+    expect(result).not.toHaveProperty("pickupTokenHash");
+    expect(result).not.toHaveProperty("returnTokenPreview");
     expect(availability.assertListingIsBookable).toHaveBeenCalledWith(
       listing.id,
       booking.startDate,
@@ -154,7 +209,7 @@ describe("BookingsService", () => {
     );
     expect(prisma.booking.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        data: contiene({
           ownerId: listing.ownerId,
           renterId: "renter-1",
           totalPriceSnapshot: 200,
@@ -199,24 +254,33 @@ describe("BookingsService", () => {
 
     const result = await service.accept("owner-1", booking.id);
 
-    expect(result.pickupQrToken).toBeDefined();
+    // Al dueño se le devuelve SOLO el código de devolución: el de entrega es
+    // de quien alquila, y dárselo al dueño le permitiría confirmar solo una
+    // entrega que no hizo.
     expect(result.returnQrToken).toBeDefined();
+    expect(result).not.toHaveProperty("pickupQrToken");
+    expect(result).not.toHaveProperty("pickupTokenPreview");
+    expect(result).not.toHaveProperty("returnTokenPreview");
     expect(pricing.computeBooking).toHaveBeenCalledWith({
       pricePerDay: 100,
       days: 2,
     });
     expect(prisma.booking.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        data: contiene({
           senaAmountSnapshot: PRICING.sena,
-          balanceAmountSnapshot: PRICING.balance,
+          // Ya no hay saldo aparte: el pago es uno solo.
+          balanceAmountSnapshot: null,
           depositSnapshot: PRICING.deposit,
           ownerPayoutSnapshot: PRICING.ownerPayout,
           transferGroup: `booking_${booking.id}`,
         }),
       }),
     );
-    expect(contracts.createForBooking).toHaveBeenCalledWith(booking.id);
+    expect(contracts.ensureForBooking).toHaveBeenCalledWith(booking.id);
+    // Aceptar la reserva ES aceptar el contrato para el dueño, y queda
+    // registrado con su IP (la prueba de la firma electrónica).
+    expect(contracts.accept).toHaveBeenCalledWith("owner-1", booking.id, {});
   });
 
   it("rejects ready for pickup when payment is not settled", async () => {
@@ -224,17 +288,38 @@ describe("BookingsService", () => {
       ...booking,
       status: BookingStatus.ACCEPTED,
     });
-    payments.assertReadyForPickup.mockRejectedValue(new BadRequestException());
+    // La reserva sin pagar ni siquiera llega a intentar autorizar el depósito.
+    await expect(
+      service.readyForPickup("owner-1", booking.id),
+    ).rejects.toMatchObject({ response: { code: "CHECKOUT_NOT_PAID" } });
+    expect(payments.authorizeDepositForPickup).not.toHaveBeenCalled();
+  });
+
+  it("no deja marcar listo si el banco no autorizó el depósito solo", async () => {
+    // El caso real: una tarjeta que pide autenticación. No es un error del
+    // sistema; quien alquila tiene que autorizarla desde la app.
+    prisma.booking.findUnique.mockResolvedValue({
+      ...booking,
+      status: BookingStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.FULLY_PAID,
+    });
+    payments.authorizeDepositForPickup.mockResolvedValue({
+      authorized: false,
+      requiresRenterAction: true,
+    });
 
     await expect(
       service.readyForPickup("owner-1", booking.id),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toMatchObject({
+      response: { code: "DEPOSIT_AUTHORIZATION_REQUIRED" },
+    });
   });
 
   it("marks ready for pickup once payment is settled", async () => {
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
       status: BookingStatus.ACCEPTED,
+      paymentStatus: PaymentStatus.FULLY_PAID,
     });
     prisma.booking.update.mockResolvedValue({
       ...booking,
@@ -243,6 +328,10 @@ describe("BookingsService", () => {
 
     const result = await service.readyForPickup("owner-1", booking.id);
 
+    expect(payments.authorizeDepositForPickup).toHaveBeenCalledWith(
+      booking.id,
+      "owner-1",
+    );
     expect(payments.assertReadyForPickup).toHaveBeenCalledWith(booking.id);
     expect(result.status).toBe(BookingStatus.READY_FOR_PICKUP);
   });
@@ -286,24 +375,29 @@ describe("BookingsService", () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it("confirms return and settles the payment", async () => {
+  it("la devolución abre la ventana de inspección, no cierra la reserva", async () => {
+    // Devuelto no es cerrado: el dueño tiene 48 horas para reportar un daño.
+    // Antes la devolución liquidaba todo en el acto y el dueño que encontraba
+    // un golpe al revisar el auto ya no tenía de dónde cobrarlo.
     prisma.booking.findUnique.mockResolvedValue({
       ...booking,
       status: BookingStatus.IN_PROGRESS,
     });
     prisma.booking.update.mockResolvedValue({
       ...booking,
-      status: BookingStatus.COMPLETED,
+      status: BookingStatus.INSPECTION,
     });
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
     const result = await service.confirmReturn("renter-1", booking.id, "token");
 
-    expect(result.status).toBe(BookingStatus.COMPLETED);
-    expect(payments.settleOnReturn).toHaveBeenCalledWith(
-      "renter-1",
-      booking.id,
-    );
+    expect(result.status).toBe(BookingStatus.INSPECTION);
+    expect(payments.settleBooking).not.toHaveBeenCalled();
+    const data = ultimoArgumento<{
+      data: { inspectionEndsAt: Date; status: BookingStatus };
+    }>(prisma.booking.update).data;
+    expect(data.status).toBe(BookingStatus.INSPECTION);
+    expect(data.inspectionEndsAt).toBeInstanceOf(Date);
   });
   /**
    * LOS AVISOS POR MAIL
@@ -361,7 +455,7 @@ describe("BookingsService", () => {
         endDate: booking.endDate,
       });
 
-      expect(result).toBe(conPartes);
+      expect(result).toMatchObject({ id: conPartes.id });
     });
 
     it("una cancelación le llega a las dos partes, y cada una sabe si canceló ella", async () => {
@@ -406,6 +500,17 @@ describe("BookingsService", () => {
         status: BookingStatus.CANCELLED_BY_OWNER,
       });
 
+      // El reparto devuelve lo que corresponde según la política; el mail
+      // avisa "se devuelve" solo si de verdad vuelve plata.
+      payments.cancelAndSettle.mockResolvedValue({
+        rule: "OWNER_RETURNS_SENA_DOUBLED",
+        refundToRenterMinor: 33000,
+        ownerReceivesMinor: 0,
+        platformReceivesMinor: 0,
+        ownerPenaltyMinor: 9000,
+        explanation: "",
+      });
+
       await service.cancel("owner-1", booking.id, { reason: "Se me rompió" });
 
       const [, params] = email.sendBookingCancelled.mock.calls[0] as [
@@ -413,7 +518,7 @@ describe("BookingsService", () => {
         { refunded?: boolean },
       ];
       expect(params.refunded).toBe(true);
-      expect(payments.refundOnCancel).toHaveBeenCalled();
+      expect(payments.cancelAndSettle).toHaveBeenCalled();
     });
 
     it("la entrega confirmada le llega a las dos partes, con el rol de cada una", async () => {

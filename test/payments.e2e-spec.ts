@@ -11,7 +11,12 @@ import {
   futureDate,
   registerUser,
 } from "./helpers/factory";
-import { createIntent, payBookingFully, sendWebhook } from "./helpers/payments";
+import {
+  acceptContract,
+  createIntent,
+  payBookingFully,
+  sendWebhook,
+} from "./helpers/payments";
 
 describe("Payments (Stripe flow, mocked provider)", () => {
   let app: INestApplication;
@@ -37,13 +42,12 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     owner: AuthedUser;
     renter: AuthedUser;
     bookingId: string;
-    pickupToken: string;
     returnToken: string;
   }> {
     const owner = await registerUser(app);
     const vehicle = await createVehicle(app, owner.token);
-    // pricePerDay 1000, 3 days => subtotal 3000, insurance 300, total 3300,
-    // sena 990, balance 2310, deposit 200, ownerPayout 2700.
+    // pricePerDay 1000, 3 días => alquiler 3000, cobertura 300, total 3300,
+    // seña 900 (30 % del ALQUILER), depósito 200, para el dueño 2700.
     const listing = await createListing(app, owner.token, vehicle.id, {
       pricePerDay: 1000,
     });
@@ -65,9 +69,39 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       owner,
       renter,
       bookingId: created.body.id,
-      pickupToken: accepted.body.pickupQrToken,
       returnToken: accepted.body.returnQrToken,
     };
+  }
+
+  /** El código de retiro, que quien alquila recibe recién con el auto listo. */
+  async function pickupToken(
+    bookingId: string,
+    renter: AuthedUser,
+  ): Promise<string> {
+    const res = await http()
+      .get(`/bookings/${bookingId}/tokens`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    return res.body.pickupQrToken;
+  }
+
+  /** Paga, marca listo y confirma el retiro: deja el auto en la calle. */
+  async function hastaElRetiro(
+    owner: AuthedUser,
+    renter: AuthedUser,
+    bookingId: string,
+  ): Promise<{ checkout: { paymentIntentId: string } }> {
+    const pagos = await payBookingFully(app, bookingId, renter.token);
+    await http()
+      .patch(`/bookings/${bookingId}/ready-for-pickup`)
+      .set("Authorization", auth(owner.token))
+      .expect(200);
+    await http()
+      .post(`/bookings/${bookingId}/confirm-pickup`)
+      .set("Authorization", auth(owner.token))
+      .send({ token: await pickupToken(bookingId, renter) })
+      .expect(201);
+    return pagos;
   }
 
   it("locks server-side pricing snapshots on accept", async () => {
@@ -80,8 +114,12 @@ describe("Payments (Stripe flow, mocked provider)", () => {
 
     expect(status.body.currency).toBe("usd");
     expect(status.body.total).toBe(3300);
-    expect(status.body.sena).toBe(990);
-    expect(status.body.balance).toBe(2310);
+    // La seña es el 30 % del ALQUILER (3000), no del total: la cobertura y la
+    // comisión no son parte de lo que se señó, así que no se pierden ni se
+    // duplican si alguien se arrepiente.
+    expect(status.body.sena).toBe(900);
+    // Ya no existe un "saldo" aparte: se paga todo junto.
+    expect(status.body.balance).toBeNull();
     expect(status.body.deposit).toBe(200);
     expect(status.body.commission).toBe(300);
     expect(status.body.insurance).toBe(300);
@@ -89,71 +127,125 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     expect(status.body.paymentStatus).toBe("PENDING");
   });
 
-  it("creates a seña intent with the server-computed amount in minor units", async () => {
+  /**
+   * EL TICKET: qué se cobra, desglosado, antes de poner la tarjeta. Las dos
+   * columnas —conceptos y destinos— tienen que dar el mismo total.
+   */
+  it("muestra el ticket desglosado antes de pagar", async () => {
     const { renter, bookingId } = await acceptedBooking();
 
-    const intent = await createIntent(app, "sena", bookingId, renter.token);
+    const ticket = await http()
+      .get(`/payments/bookings/${bookingId}/ticket`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+
+    expect(ticket.body.totalMinor).toBe(330_000);
+    expect(ticket.body.sena.amountMinor).toBe(90_000);
+    expect(ticket.body.sena.kind).toBe("PENITENCIAL");
+    // El depósito NO suma al total: es una retención, no un cobro.
+    expect(ticket.body.deposit.amountMinor).toBe(20_000);
+    expect(ticket.body.deposit.kind).toBe("HOLD");
+
+    const sumar = (xs: { amountMinor: number }[]) =>
+      xs.reduce((t, x) => t + x.amountMinor, 0);
+    expect(sumar(ticket.body.lines)).toBe(330_000);
+    expect(sumar(ticket.body.distribution)).toBe(330_000);
+  });
+
+  /**
+   * SIN CONTRATO FIRMADO NO SE COBRA.
+   *
+   * Es el orden que hace que el cobro tenga respaldo: primero la persona
+   * acepta un texto concreto —con su hash guardado— y recién después se le
+   * pide la tarjeta. Al revés, tendríamos plata cobrada sobre un acuerdo que
+   * nadie aceptó.
+   */
+  it("no deja pagar antes de aceptar el contrato", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+
+    const res = await http()
+      .post(`/payments/bookings/${bookingId}/checkout`)
+      .set("Authorization", auth(renter.token))
+      .expect(409);
+    expect(res.body.code).toBe("CONTRACT_NOT_ACCEPTED");
+
+    await acceptContract(app, bookingId, renter.token);
+    const ok = await http()
+      .post(`/payments/bookings/${bookingId}/checkout`)
+      .set("Authorization", auth(renter.token))
+      .expect(201);
+    expect(ok.body.paymentIntentId).toMatch(/^pi_/);
+  });
+
+  it("creates a single checkout intent with the server-computed amount", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+
+    const intent = await createIntent(app, "checkout", bookingId, renter.token);
     expect(intent.paymentIntentId).toMatch(/^pi_/);
     expect(intent.clientSecret).toEqual(expect.any(String));
-    expect(intent.amountMinor).toBe(99000); // 990.00 USD
+    // Alquiler + cobertura, todo junto: 3300.00 USD.
+    expect(intent.amountMinor).toBe(330_000);
     expect(intent.currency).toBe("usd");
   });
 
-  it("marks the booking DEPOSIT_PAID after the seña webhook, then FULLY_PAID after the balance", async () => {
+  it("marks the booking FULLY_PAID after the checkout webhook", async () => {
     const { renter, bookingId } = await acceptedBooking();
+    await payBookingFully(app, bookingId, renter.token);
 
-    const sena = await createIntent(app, "sena", bookingId, renter.token);
-    await sendWebhook(app, "payment_intent.succeeded", {
-      id: sena.paymentIntentId,
-      latest_charge: "ch_sena",
-    }).expect(201);
-
-    let status = await http()
-      .get(`/payments/bookings/${bookingId}/status`)
-      .set("Authorization", auth(renter.token))
-      .expect(200);
-    expect(status.body.paymentStatus).toBe("DEPOSIT_PAID");
-
-    const balance = await createIntent(app, "balance", bookingId, renter.token);
-    await sendWebhook(app, "payment_intent.succeeded", {
-      id: balance.paymentIntentId,
-      latest_charge: "ch_balance",
-    }).expect(201);
-
-    status = await http()
+    const status = await http()
       .get(`/payments/bookings/${bookingId}/status`)
       .set("Authorization", auth(renter.token))
       .expect(200);
     expect(status.body.paymentStatus).toBe("FULLY_PAID");
+    expect(status.body.paidAt).toEqual(expect.any(String));
   });
 
-  it("refuses to create the balance intent before the seña is paid", async () => {
+  /**
+   * El saldo por separado ya no existe. La ruta sigue publicada para no
+   * romper un front viejo, pero contesta un código que explica qué pasó en
+   * vez de un error genérico.
+   */
+  it("el cobro en dos tramos ya no existe, y se dice con un código", async () => {
     const { renter, bookingId } = await acceptedBooking();
-    await http()
+    const res = await http()
       .post(`/payments/bookings/${bookingId}/balance-intent`)
       .set("Authorization", auth(renter.token))
-      .expect(400);
+      .expect(409);
+    expect(res.body.code).toBe("PAYMENT_IS_SINGLE");
   });
 
-  it("runs the full settlement: ready → pickup → return transfers the owner payout and releases the hold", async () => {
-    const { owner, renter, bookingId, pickupToken, returnToken } =
-      await acceptedBooking();
+  /**
+   * EL CIERRE COMPLETO. Devolver abre la ventana de inspección; recién cuando
+   * se cierra sin reclamos se le transfiere al dueño y se suelta el depósito.
+   * Antes eso pasaba en el mismo instante de la devolución, sin darle a nadie
+   * tiempo de mirar el auto.
+   */
+  it("runs the full settlement: pickup → return → inspección vencida → pago al dueño", async () => {
+    const { owner, renter, bookingId, returnToken } = await acceptedBooking();
+    await hastaElRetiro(owner, renter, bookingId);
 
-    await payBookingFully(app, bookingId, renter.token);
-
-    await http()
-      .patch(`/bookings/${bookingId}/ready-for-pickup`)
-      .set("Authorization", auth(owner.token))
-      .expect(200);
-    await http()
-      .post(`/bookings/${bookingId}/confirm-pickup`)
-      .set("Authorization", auth(owner.token))
-      .send({ token: pickupToken })
-      .expect(201);
     await http()
       .post(`/bookings/${bookingId}/confirm-return`)
       .set("Authorization", auth(renter.token))
       .send({ token: returnToken })
+      .expect(201);
+
+    // Todavía no se le pagó a nadie: la ventana está abierta.
+    const enInspeccion = await http()
+      .get(`/payments/bookings/${bookingId}/status`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    expect(enInspeccion.body.ownerTransferId).toBeNull();
+    expect(enInspeccion.body.inspectionEndsAt).toEqual(expect.any(String));
+
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: { inspectionEndsAt: new Date(Date.now() - 60_000) },
+    });
+    await http()
+      .post(`/bookings/${bookingId}/settle`)
+      .set("Authorization", auth(owner.token))
       .expect(201);
 
     const status = await http()
@@ -173,24 +265,92 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     expect(ownerRow?.stripeAccountId).toMatch(/^acct_/);
   });
 
-  it("blocks ready-for-pickup until fully paid and the deposit is authorized", async () => {
+  /**
+   * EL LIBRO MAYOR: cada peso que entra tiene que estar en alguna cuenta, y
+   * las partidas de cada asiento tienen que sumar cero. Es lo que permite
+   * contestar "¿de quién es esta plata?" en cualquier momento, y lo que hace
+   * que un error de reparto se vea en vez de esconderse.
+   */
+  it("deja cada concepto en su propio bolsillo, y los asientos cierran", async () => {
     const { owner, renter, bookingId } = await acceptedBooking();
+    await payBookingFully(app, bookingId, renter.token);
 
-    // Only the seña is paid.
-    const sena = await createIntent(app, "sena", bookingId, renter.token);
-    await sendWebhook(app, "payment_intent.succeeded", {
-      id: sena.paymentIntentId,
-    }).expect(201);
+    const status = await http()
+      .get(`/payments/bookings/${bookingId}/status`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
 
-    await http()
+    // Lo retenido por esta reserva, por concepto, antes de liquidar.
+    expect(status.body.heldMinor).toMatchObject({
+      sena: 90_000,
+      rental: 210_000,
+      insurance: 30_000,
+    });
+
+    const admin = await createAdmin(app, prisma);
+    const asientos = await http()
+      .get(`/payments/admin/ledger/bookings/${bookingId}`)
+      .set("Authorization", auth(admin.token))
+      .expect(200);
+
+    expect(asientos.body.length).toBeGreaterThan(0);
+    for (const asiento of asientos.body as {
+      entries: { amountMinor: number }[];
+    }[]) {
+      const suma = asiento.entries.reduce((t, e) => t + e.amountMinor, 0);
+      expect(suma).toBe(0);
+    }
+    expect(owner.id).toEqual(expect.any(String));
+  });
+
+  it("blocks ready-for-pickup until the checkout is paid", async () => {
+    const { owner, renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+    // Intent creado pero sin confirmar: no entró un peso.
+    await createIntent(app, "checkout", bookingId, renter.token);
+
+    const res = await http()
       .patch(`/bookings/${bookingId}/ready-for-pickup`)
       .set("Authorization", auth(owner.token))
-      .expect(400);
+      .expect(409);
+    expect(res.body.code).toBe("CHECKOUT_NOT_PAID");
+  });
+
+  /**
+   * El depósito se autoriza SIN el cliente presente, con la tarjeta que quedó
+   * guardada del cobro, justo antes de la entrega. Se hace así porque una
+   * retención dura unos días: pedirla al pagar, semanas antes del viaje, la
+   * dejaría vencida para cuando el auto sale.
+   */
+  it("autoriza el depósito con la tarjeta guardada al marcar listo", async () => {
+    const { owner, renter, bookingId } = await acceptedBooking();
+    await payBookingFully(app, bookingId, renter.token);
+
+    const ready = await http()
+      .patch(`/bookings/${bookingId}/ready-for-pickup`)
+      .set("Authorization", auth(owner.token))
+      .expect(200);
+    expect(ready.body.status).toBe("READY_FOR_PICKUP");
+
+    const status = await http()
+      .get(`/payments/bookings/${bookingId}/status`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    const hold = (
+      status.body.records as { kind: string; status: string }[]
+    ).find((r) => r.kind === "DEPOSIT_HOLD");
+    expect(hold?.status).toBe("AUTHORIZED");
   });
 
   it("rejects a webhook with an invalid signature", async () => {
     const { renter, bookingId } = await acceptedBooking();
-    const sena = await createIntent(app, "sena", bookingId, renter.token);
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
     await http()
       .post("/payments/stripe/webhook")
       .set("Stripe-Signature", "t=1,v1=deadbeef")
@@ -199,7 +359,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         JSON.stringify({
           id: "evt_bad",
           type: "payment_intent.succeeded",
-          data: { object: { id: sena.paymentIntentId } },
+          data: { object: { id: checkout.paymentIntentId } },
         }),
       )
       .expect(400);
@@ -207,12 +367,18 @@ describe("Payments (Stripe flow, mocked provider)", () => {
 
   it("processes each webhook event id only once (idempotent)", async () => {
     const { renter, bookingId } = await acceptedBooking();
-    const sena = await createIntent(app, "sena", bookingId, renter.token);
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
 
     const first = await sendWebhook(
       app,
       "payment_intent.succeeded",
-      { id: sena.paymentIntentId },
+      { id: checkout.paymentIntentId },
       { id: "evt_dup_1" },
     ).expect(201);
     expect(first.body.duplicate).toBe(false);
@@ -220,7 +386,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     const second = await sendWebhook(
       app,
       "payment_intent.succeeded",
-      { id: sena.paymentIntentId },
+      { id: checkout.paymentIntentId },
       { id: "evt_dup_1" },
     ).expect(201);
     expect(second.body.duplicate).toBe(true);
@@ -240,15 +406,23 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       .expect(403);
   });
 
+  /**
+   * SI CANCELA EL DUEÑO, QUIEN ALQUILA NO PIERDE NADA. Además de devolverle
+   * todo, la seña doblada del artículo 1059 queda como deuda del dueño: la
+   * parte que no se puede devolver a la tarjeta no desaparece.
+   */
   it("refunds the captured charges when a paid booking is cancelled", async () => {
     const { owner, renter, bookingId } = await acceptedBooking();
     await payBookingFully(app, bookingId, renter.token);
 
-    await http()
+    const cancelada = await http()
       .patch(`/bookings/${bookingId}/cancel`)
       .set("Authorization", auth(owner.token))
       .send({ reason: "owner unavailable" })
       .expect(200);
+    expect(cancelada.body.cancellation.rule).toBe(
+      "OWNER_RETURNS_SENA_DOUBLED",
+    );
 
     const status = await http()
       .get(`/payments/bookings/${bookingId}/status`)
@@ -257,6 +431,24 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     expect(status.body.paymentStatus).toBe("REFUNDED");
     const kinds = status.body.records.map((r: { kind: string }) => r.kind);
     expect(kinds).toContain("REFUND");
+  });
+
+  /**
+   * Antes de cancelar se puede preguntar cuánto se devuelve. Sin esto, la
+   * única forma de averiguar que se perdía la seña era perderla.
+   */
+  it("dice cuánto se devuelve ANTES de cancelar", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await payBookingFully(app, bookingId, renter.token);
+
+    const previa = await http()
+      .get(`/bookings/${bookingId}/cancellation-preview`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+
+    expect(previa.body.rule).toEqual(expect.any(String));
+    expect(previa.body.refundToRenterMinor).toEqual(expect.any(Number));
+    expect(previa.body.refundToRenterMinor).toBeLessThanOrEqual(330_000);
   });
 
   it("lets the renter onboard nothing but the owner create a connected account", async () => {
@@ -277,28 +469,32 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // número de tarjeta no pasa nunca por acá: lo que se guarda son las
       // señas que devuelve el procesador.
       const { renter, bookingId } = await acceptedBooking();
+      await acceptContract(app, bookingId, renter.token);
 
-      const sena = await http()
-        .post(`/payments/bookings/${bookingId}/sena-intent`)
+      const checkout = await http()
+        .post(`/payments/bookings/${bookingId}/checkout`)
         .set("Authorization", auth(renter.token))
         .set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
         .set("User-Agent", "FreeWheelApp/1.0")
         .expect(201);
 
       const creado = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
-      // La IP del CLIENTE, no la del proxy: x-forwarded-for trae la cadena y
-      // el primero es quien pidió.
-      expect(creado.initiatedIp).toBe("203.0.113.7");
+      // La cabecera X-Forwarded-For NO se cree porque sí: la manda quien
+      // llama, así que cualquiera puede escribir la IP que quiera. Sin un
+      // proxy declarado se usa la de la conexión, que no se puede inventar.
+      // Si se creyera siempre, el tope de intentos por IP no valdría nada:
+      // basta cambiar un texto en cada pedido para tener un contador nuevo.
+      expect(creado.initiatedIp).toBe("::ffff:127.0.0.1");
       expect(creado.initiatedUserAgent).toBe("FreeWheelApp/1.0");
 
       await sendWebhook(app, "payment_intent.succeeded", {
-        id: sena.body.paymentIntentId,
+        id: checkout.body.paymentIntentId,
       }).expect(201);
 
       const cobrado = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
       expect(cobrado.status).toBe("CAPTURED");
       expect(cobrado.cardLast4).toBe("4242");
@@ -310,10 +506,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
 
     it("anota cada paso en un registro que no se pisa", async () => {
       const { renter, bookingId } = await acceptedBooking();
-      const sena = await createIntent(app, "sena", bookingId, renter.token);
-      await sendWebhook(app, "payment_intent.succeeded", {
-        id: sena.paymentIntentId,
-      }).expect(201);
+      await payBookingFully(app, bookingId, renter.token);
 
       const ledger = await http()
         .get(`/payments/bookings/${bookingId}/ledger`)
@@ -321,7 +514,12 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         .expect(200);
 
       const tipos = (ledger.body as { type: string }[]).map((e) => e.type);
-      expect(tipos).toEqual(["sena.intent.created", "intent.succeeded"]);
+      expect(tipos).toContain("checkout.intent.created");
+      expect(tipos).toContain("intent.succeeded");
+      // El orden importa: primero se pidió, después se cobró.
+      expect(tipos.indexOf("checkout.intent.created")).toBeLessThan(
+        tipos.indexOf("intent.succeeded"),
+      );
     });
 
     it("al que alquila no le muestra desde dónde se conectó el otro", async () => {
@@ -329,7 +527,8 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // administrador: al dueño del auto le sirve saber qué pasó y cuándo, no
       // desde dónde se conecta quien se lo alquiló. Eso es vigilancia.
       const { owner, renter, bookingId } = await acceptedBooking();
-      await createIntent(app, "sena", bookingId, renter.token);
+      await acceptContract(app, bookingId, renter.token);
+      await createIntent(app, "checkout", bookingId, renter.token);
 
       const comoDueno = await http()
         .get(`/payments/bookings/${bookingId}/ledger`)
@@ -341,10 +540,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
 
     it("el estado no devuelve el fingerprint ni la IP de quien pagó", async () => {
       const { owner, renter, bookingId } = await acceptedBooking();
-      const sena = await createIntent(app, "sena", bookingId, renter.token);
-      await sendWebhook(app, "payment_intent.succeeded", {
-        id: sena.paymentIntentId,
-      }).expect(201);
+      await payBookingFully(app, bookingId, renter.token);
 
       const status = await http()
         .get(`/payments/bookings/${bookingId}/status`)
@@ -358,6 +554,26 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // reconocer el cobro en su resumen de tarjeta.
       expect(status.body.records[0].cardLast4).toBe("4242");
     });
+
+    /**
+     * El estado tampoco puede devolver los identificadores del procesador ni
+     * la tarjeta guardada: con el id del intent y el del medio de pago se
+     * pueden intentar cobros contra esa tarjeta desde afuera.
+     */
+    it("no expone los identificadores internos del cobro", async () => {
+      const { renter, bookingId } = await acceptedBooking();
+      await payBookingFully(app, bookingId, renter.token);
+
+      const booking = await http()
+        .get(`/bookings/${bookingId}`)
+        .set("Authorization", auth(renter.token))
+        .expect(200);
+
+      expect(booking.body).not.toHaveProperty("savedPaymentMethodId");
+      expect(booking.body).not.toHaveProperty("checkoutPaymentIntentId");
+      expect(booking.body).not.toHaveProperty("depositPaymentIntentId");
+      expect(booking.body).not.toHaveProperty("transferGroup");
+    });
   });
 
   describe("lo que protege la plata", () => {
@@ -366,98 +582,112 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // devolver el viejo cobraría el importe anterior: el control de precio
       // del servidor no serviría de nada porque el cobro ya no pasa por él.
       const { renter, bookingId } = await acceptedBooking();
-      const primero = await createIntent(app, "sena", bookingId, renter.token);
+      await acceptContract(app, bookingId, renter.token);
+      const primero = await createIntent(
+        app,
+        "checkout",
+        bookingId,
+        renter.token,
+      );
 
       await prisma.booking.update({
         where: { id: bookingId },
-        data: { senaAmountSnapshot: 1500 },
+        data: { rentalSubtotalSnapshot: 4000, totalPriceSnapshot: 4300 },
       });
 
-      const segundo = await createIntent(app, "sena", bookingId, renter.token);
+      const segundo = await createIntent(
+        app,
+        "checkout",
+        bookingId,
+        renter.token,
+      );
       expect(segundo.paymentIntentId).not.toBe(primero.paymentIntentId);
-      expect(segundo.amountMinor).toBe(150000);
-    });
-
-    it("el saldo exige que la seña esté COBRADA, no que la reserva no esté pendiente", async () => {
-      const { renter, bookingId } = await acceptedBooking();
-      const res = await http()
-        .post(`/payments/bookings/${bookingId}/balance-intent`)
-        .set("Authorization", auth(renter.token))
-        .expect(400);
-      expect(res.body.code).toBe("SENA_NOT_PAID");
+      expect(segundo.amountMinor).toBe(430_000);
     });
 
     it("una disputa frena la liquidación al dueño", async () => {
       // Transferirle al dueño plata que el banco puede reclamar de vuelta
       // convierte una disputa en una pérdida.
-      const { owner, renter, bookingId, pickupToken, returnToken } =
+      const { owner, renter, bookingId, returnToken } =
         await acceptedBooking();
-      const { sena } = await payBookingFully(app, bookingId, renter.token);
-
-      await http()
-        .patch(`/bookings/${bookingId}/ready-for-pickup`)
-        .set("Authorization", auth(owner.token))
-        .expect(200);
-      await http()
-        .post(`/bookings/${bookingId}/confirm-pickup`)
-        .set("Authorization", auth(owner.token))
-        .send({ token: pickupToken })
-        .expect(201);
+      const { checkout } = await hastaElRetiro(owner, renter, bookingId);
 
       await sendWebhook(app, "charge.dispute.created", {
         id: "dp_1",
         charge: "ch_disputado",
-        payment_intent: sena.paymentIntentId,
-        amount: 99000,
+        payment_intent: checkout.paymentIntentId,
+        amount: 330_000,
         reason: "fraudulent",
       }).expect(201);
 
       const disputado = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
       expect(disputado.status).toBe("DISPUTED");
       expect(disputado.disputedAt).not.toBeNull();
 
-      const res = await http()
+      // Devolver el auto se puede: el auto es del dueño y tiene que volver.
+      // Lo que NO pasa es que se le transfiera la plata.
+      await http()
         .post(`/bookings/${bookingId}/confirm-return`)
         .set("Authorization", auth(renter.token))
         .send({ token: returnToken })
-        .expect(400);
+        .expect(201);
+
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: { inspectionEndsAt: new Date(Date.now() - 60_000) },
+      });
+
+      const res = await http()
+        .post(`/bookings/${bookingId}/settle`)
+        .set("Authorization", auth(owner.token))
+        .expect(409);
       expect(res.body.code).toBe("PAYMENT_DISPUTED");
+
+      const status = await http()
+        .get(`/payments/bookings/${bookingId}/status`)
+        .set("Authorization", auth(owner.token))
+        .expect(200);
+      expect(status.body.ownerTransferId).toBeNull();
+      expect(status.body.settledAt).toBeNull();
     });
 
     it("una devolución hecha desde el panel de Stripe llega igual a la base", async () => {
       // Antes este evento no se escuchaba: la base seguía diciendo "cobrado"
       // sobre plata que ya se había devuelto.
       const { renter, bookingId } = await acceptedBooking();
-      const sena = await createIntent(app, "sena", bookingId, renter.token);
-      await sendWebhook(app, "payment_intent.succeeded", {
-        id: sena.paymentIntentId,
-      }).expect(201);
+      const { checkout } = await payBookingFully(app, bookingId, renter.token);
 
       await sendWebhook(app, "charge.refunded", {
         id: "ch_x",
-        payment_intent: sena.paymentIntentId,
-        amount: 99000,
-        amount_refunded: 50000,
+        payment_intent: checkout.paymentIntentId,
+        amount: 330_000,
+        amount_refunded: 50_000,
       }).expect(201);
 
       const parcial = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
       expect(parcial.status).toBe("PARTIALLY_REFUNDED");
-      expect(parcial.refundedAmountMinor).toBe(50000);
+      expect(parcial.refundedAmountMinor).toBe(50_000);
     });
 
     it("un pago fallado guarda el motivo que dio el procesador", async () => {
       const { renter, bookingId } = await acceptedBooking();
-      const sena = await createIntent(app, "sena", bookingId, renter.token);
+      await acceptContract(app, bookingId, renter.token);
+      const checkout = await createIntent(
+        app,
+        "checkout",
+        bookingId,
+        renter.token,
+      );
       await sendWebhook(app, "payment_intent.payment_failed", {
-        id: sena.paymentIntentId,
+        id: checkout.paymentIntentId,
       }).expect(201);
 
       const fila = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
       expect(fila.status).toBe("FAILED");
     });
@@ -466,18 +696,24 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // Si esto pasa, algo está cruzado. Procesarlo movería plata de verdad
       // sobre reservas de mentira.
       const { renter, bookingId } = await acceptedBooking();
-      const sena = await createIntent(app, "sena", bookingId, renter.token);
+      await acceptContract(app, bookingId, renter.token);
+      const checkout = await createIntent(
+        app,
+        "checkout",
+        bookingId,
+        renter.token,
+      );
 
       const res = await sendWebhook(
         app,
         "payment_intent.succeeded",
-        { id: sena.paymentIntentId },
+        { id: checkout.paymentIntentId },
         { livemode: true },
       ).expect(201);
       expect(res.body.ignored).toBe("livemode_mismatch");
 
       const fila = await prisma.paymentRecord.findFirstOrThrow({
-        where: { bookingId, kind: "SENA" },
+        where: { bookingId, kind: "CHECKOUT" },
       });
       expect(fila.status).toBe("REQUIRES_ACTION");
     });
@@ -485,17 +721,8 @@ describe("Payments (Stripe flow, mocked provider)", () => {
 
   describe("el depósito en garantía", () => {
     it("un administrador puede cobrar parte por un daño, y queda registrado", async () => {
-      const { owner, renter, bookingId, pickupToken } = await acceptedBooking();
-      await payBookingFully(app, bookingId, renter.token);
-      await http()
-        .patch(`/bookings/${bookingId}/ready-for-pickup`)
-        .set("Authorization", auth(owner.token))
-        .expect(200);
-      await http()
-        .post(`/bookings/${bookingId}/confirm-pickup`)
-        .set("Authorization", auth(owner.token))
-        .send({ token: pickupToken })
-        .expect(201);
+      const { owner, renter, bookingId } = await acceptedBooking();
+      await hastaElRetiro(owner, renter, bookingId);
 
       const admin = await createAdmin(app, prisma);
       const res = await http()
@@ -518,17 +745,8 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     });
 
     it("no se puede cobrar más de lo retenido", async () => {
-      const { owner, renter, bookingId, pickupToken } = await acceptedBooking();
-      await payBookingFully(app, bookingId, renter.token);
-      await http()
-        .patch(`/bookings/${bookingId}/ready-for-pickup`)
-        .set("Authorization", auth(owner.token))
-        .expect(200);
-      await http()
-        .post(`/bookings/${bookingId}/confirm-pickup`)
-        .set("Authorization", auth(owner.token))
-        .send({ token: pickupToken })
-        .expect(201);
+      const { owner, renter, bookingId } = await acceptedBooking();
+      await hastaElRetiro(owner, renter, bookingId);
 
       const admin = await createAdmin(app, prisma);
       const res = await http()
@@ -543,17 +761,8 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // Es plata de otra persona y hay dos partes con intereses opuestos. Si
       // el dueño capturara solo, el depósito sería un botón para quedarse con
       // la garantía de quien alquiló sin que nadie mire.
-      const { owner, renter, bookingId, pickupToken } = await acceptedBooking();
-      await payBookingFully(app, bookingId, renter.token);
-      await http()
-        .patch(`/bookings/${bookingId}/ready-for-pickup`)
-        .set("Authorization", auth(owner.token))
-        .expect(200);
-      await http()
-        .post(`/bookings/${bookingId}/confirm-pickup`)
-        .set("Authorization", auth(owner.token))
-        .send({ token: pickupToken })
-        .expect(201);
+      const { owner, renter, bookingId } = await acceptedBooking();
+      await hastaElRetiro(owner, renter, bookingId);
 
       await http()
         .post(`/payments/bookings/${bookingId}/deposit-capture`)
@@ -572,5 +781,4 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         .expect(400);
     });
   });
-
 });

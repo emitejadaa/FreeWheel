@@ -136,6 +136,8 @@ describe("buildEnvReport", () => {
       DOCVERIFY_URL: "https://docverify.onrender.com",
       DOCVERIFY_TOKEN: "t",
       PUBLIC_URL: "https://freewheel-api.vercel.app",
+      DATA_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789a=",
+      CRON_SECRET: "cron",
     });
 
     const reporte = buildEnvReport();

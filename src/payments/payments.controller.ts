@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -18,27 +19,24 @@ import { RequireVerifiedAccount } from "../common/decorators/require-verified-ac
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { CaptureDepositDto } from "./dto/capture-deposit.dto";
+import { LedgerRemittanceDto } from "./dto/ledger-remittance.dto";
+import { clientIp, clientUserAgent } from "../common/utils/client-ip.util";
+import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
 import { SimulatePaymentDto } from "./dto/simulate-payment.dto";
 import { PaymentsService } from "./payments.service";
 import type { PaymentContext } from "./payments.service";
 
 /**
- * DE DÓNDE SALIÓ ESTE PEDIDO.
- *
- * La IP y el navegador se guardan con cada cobro. No es telemetría: es lo que
- * permite contestar un desconocimiento de cobro y ver a alguien probando
- * tarjetas robadas desde una misma conexión.
- *
- * `x-forwarded-for` trae la cadena de proxies y el PRIMERO es el cliente. Se
- * toma ese y no `req.ip`, que detrás del proxy de Vercel es siempre la IP del
- * proxy — o sea, la misma para todo el mundo, que no sirve para nada.
+ * DE DÓNDE SALIÓ ESTE PEDIDO: la IP real del cliente y su navegador, que se
+ * guardan con cada cobro (ver clientIp: detrás de Vercel, req.ip es la del
+ * proxy y no identifica a nadie).
  */
 function contextOf(req: Request, actorId?: string): PaymentContext {
-  const forwarded = req.headers["x-forwarded-for"];
-  const cadena = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  const ip = cadena?.split(",")[0]?.trim() || req.ip || null;
-  const userAgent = req.headers["user-agent"] ?? null;
-  return { actorId: actorId ?? null, ip, userAgent };
+  return {
+    actorId: actorId ?? null,
+    ip: clientIp(req),
+    userAgent: clientUserAgent(req),
+  };
 }
 
 // Toda acción de pago exige una cuenta verificada, con el DNI vigente. El
@@ -48,11 +46,54 @@ export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   /**
-   * Los límites de acá son más bajos que el general del servidor, y no es por
-   * costo: crear intents contra un procesador es la forma barata de probar
-   * tarjetas robadas de a cientos, y un límite es lo único que la frena.
+   * EL PAGO DE LA RESERVA: alquiler + cobertura, de una sola vez. Exige que
+   * quien alquila haya aceptado el contrato (409 CONTRACT_NOT_ACCEPTED).
+   *
+   * Los límites son más bajos que el general del servidor, y no es por costo:
+   * crear intents contra un procesador es la forma barata de probar tarjetas
+   * robadas de a cientos, y un límite es lo único que la frena.
    */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  @SensitiveRateLimit({
+    name: "payments.checkout",
+    limit: 20,
+    windowSec: 600,
+    by: "ip+user",
+  })
+  @Post("bookings/:bookingId/checkout")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  createCheckout(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.createCheckout(
+      user.id,
+      bookingId,
+      contextOf(req, user.id),
+    );
+  }
+
+  /** El detalle de lo que se paga y a dónde va cada peso, antes de pagar. */
+  @Get("bookings/:bookingId/ticket")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  getTicket(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.getTicket(user.id, bookingId);
+  }
+
+  /** DEPRECADO: alias del cobro único (ver createSenaIntent en el servicio). */
+  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  @SensitiveRateLimit({
+    name: "payments.checkout",
+    limit: 20,
+    windowSec: 600,
+    by: "ip+user",
+  })
   @Post("bookings/:bookingId/sena-intent")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
@@ -68,6 +109,7 @@ export class PaymentsController {
     );
   }
 
+  /** DEPRECADO: el pago es uno solo (409 PAYMENT_IS_SINGLE salvo reservas viejas). */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
   @Post("bookings/:bookingId/balance-intent")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
@@ -84,7 +126,17 @@ export class PaymentsController {
     );
   }
 
+  /**
+   * Autorizar el depósito con quien alquila presente. Es el plan B: lo normal
+   * es que el servidor lo autorice solo cuando el dueño marca el auto listo.
+   */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  @SensitiveRateLimit({
+    name: "payments.deposit",
+    limit: 20,
+    windowSec: 600,
+    by: "ip+user",
+  })
   @Post("bookings/:bookingId/deposit-hold")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
@@ -215,6 +267,62 @@ export class PaymentsController {
       dto.amountMinor,
       dto.reason,
       contextOf(req, user.id),
+    );
+  }
+
+  // ── Administración del libro ─────────────────────────────────────────
+
+  /**
+   * Cuánto hay en cada bolsillo: señas retenidas por reserva, lo que se le
+   * debe a cada dueño, lo cobrado por cuenta de la aseguradora, la comisión.
+   * `?prefix=owner:` filtra.
+   */
+  @Get("admin/ledger/balances")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  ledgerBalances(@Query("prefix") prefix?: string) {
+    return this.paymentsService.ledgerBalances(prefix);
+  }
+
+  /** Todos los asientos de una reserva, con sus líneas. */
+  @Get("admin/ledger/bookings/:bookingId")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  ledgerForBooking(@Param("bookingId") bookingId: string) {
+    return this.paymentsService.ledgerForBooking(bookingId);
+  }
+
+  /** Registra un pago a la aseguradora de lo cobrado por su cuenta. */
+  @Post("admin/ledger/insurance-remittance")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  insuranceRemittance(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() dto: LedgerRemittanceDto,
+  ) {
+    return this.paymentsService.recordInsuranceRemittance(
+      user.id,
+      dto.amountMinor,
+      dto.currency,
+      dto.reference,
+    );
+  }
+
+  /** Registra el pago de un crédito a quien alquiló (seña doblada). */
+  @Post("admin/ledger/renters/:renterId/compensation")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  renterCompensation(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("renterId") renterId: string,
+    @Body() dto: LedgerRemittanceDto,
+  ) {
+    return this.paymentsService.recordRenterCompensationPaid(
+      user.id,
+      renterId,
+      dto.amountMinor,
+      dto.currency,
+      dto.reference,
     );
   }
 

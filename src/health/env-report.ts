@@ -14,6 +14,8 @@
  * clave es peor que no tenerlo.
  */
 
+import { corsMode, origenesPermitidos } from "../cors.config";
+
 /** Un grupo de variables que habilitan una funcionalidad concreta. */
 type Grupo = {
   /** Cómo se llama esto para quien lo lee. */
@@ -89,6 +91,24 @@ const OPCIONALES: Grupo[] = [
     consecuencia: "los links de los mails apuntan a localhost",
   },
   {
+    // Sin esta clave, todo lo que se guarda cifrado (la IP con la que se firmó
+    // un contrato, las vistas previas de los códigos de entrega) deja de poder
+    // guardarse: en producción el servicio se niega en vez de guardar en claro.
+    feature: "cifrado de datos sensibles",
+    vars: ["DATA_ENCRYPTION_KEY"],
+    consecuencia:
+      "en producción, las operaciones que guardan datos cifrados contestan 503",
+  },
+  {
+    // Sin este secreto el trabajo diario no corre: las reservas cuyo plazo de
+    // 48 h venció se quedan sin liquidar (el dueño no cobra, el depósito no se
+    // suelta) hasta que alguien las cierre a mano.
+    feature: "trabajo programado (liquidaciones y borrados)",
+    vars: ["CRON_SECRET"],
+    consecuencia:
+      "no se liquidan solas las reservas ni se borran las fotos vencidas",
+  },
+  {
     feature: "entrar con Google",
     vars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
     consecuencia: "ese botón no funciona; el registro normal sí",
@@ -139,6 +159,18 @@ export function buildEnvReport(): EnvReport {
         process.env.REQUIRE_PHONE_VERIFICATION ?? "false (defecto)",
       GROQ_VISION_MODEL:
         process.env.GROQ_VISION_MODEL ?? "sin forzar (usa los del código)",
+      // En qué modo está el CORS y cuántos orígenes tiene la lista. El modo sí
+      // importa saberlo desde afuera: "report-only" quiere decir que la lista
+      // NO está frenando nada todavía. Los orígenes en sí no se listan.
+      CORS: `${corsMode()} (${origenesPermitidos().length} orígenes)`,
+      DAMAGE_REPORT_WINDOW_HOURS:
+        process.env.DAMAGE_REPORT_WINDOW_HOURS ?? "48 (defecto)",
+      DAMAGE_CLAIM_RESPONSE_HOURS:
+        process.env.DAMAGE_CLAIM_RESPONSE_HOURS ?? "48 (defecto)",
+      // Arranca apagada a propósito: prenderla saca de circulación todos los
+      // autos que todavía no pasaron por la revisión de cédula y seguro.
+      REQUIRE_VEHICLE_VERIFICATION:
+        process.env.REQUIRE_VEHICLE_VERIFICATION ?? "false (defecto)",
       // Cuántas cuentas administradoras nombra la variable, NO cuáles. La
       // dirección de la cuenta con control total de la plataforma no va en una
       // respuesta que se puede consultar: saber que hay una alcanza para

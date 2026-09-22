@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
 import { Throttle } from "@nestjs/throttler";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
@@ -56,8 +57,32 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  /*
+    DOS LÍMITES ENCIMA DE CADA RUTA, Y NO SOBRA NINGUNO.
+
+    @Throttle cuenta en la memoria del proceso: es instantáneo y no toca la
+    base, pero en Vercel cada invocación puede caer en una instancia distinta y
+    una instancia recién levantada arranca el conteo en cero. Sirve contra el
+    golpe rápido desde un solo lugar, no contra alguien que reparte.
+
+    @SensitiveRateLimit cuenta en la base, así que el número es uno solo para
+    todo el servidor y sobrevive a los reinicios. Es el que de verdad frena
+    probar contraseñas o pedir códigos en masa, y el que puede bloquear un rato
+    (blockSec) al que se pasa.
+
+    Encima de esto, las contraseñas tienen su propio candado POR CUENTA (5
+    intentos fallidos y queda trabada 15 minutos), que es lo único que frena a
+    quien prueba una contraseña desde mil IPs distintas.
+  */
+
   /** Step 1: email only — sends the verification code. No account yet. */
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "auth.register.start",
+    limit: 5,
+    windowSec: 900,
+    by: "ip",
+  })
   @Post("register/start")
   registerStart(@Body() dto: RegisterStartDto) {
     return this.authService.registerStart(dto);
@@ -65,12 +90,25 @@ export class AuthController {
 
   /** Step 2: code + full payload — creates the (email-verified) account. */
   @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "auth.register.complete",
+    limit: 10,
+    windowSec: 900,
+    by: "ip",
+  })
   @Post("register/complete")
   registerComplete(@Body() dto: RegisterCompleteDto) {
     return this.authService.registerComplete(dto);
   }
 
   @Throttle({ default: { limit: 10, ttl: 300_000 } })
+  @SensitiveRateLimit({
+    name: "auth.login",
+    limit: 20,
+    windowSec: 900,
+    blockSec: 900,
+    by: "ip",
+  })
   @Post("login")
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
@@ -78,6 +116,13 @@ export class AuthController {
 
   @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @UseGuards(OnboardingAuthGuard)
+  @SensitiveRateLimit({
+    name: "auth.verify-email",
+    limit: 10,
+    windowSec: 900,
+    blockSec: 900,
+    by: "user",
+  })
   @Post("verify-email")
   verifyEmail(
     @CurrentUser() user: CurrentUserPayload,
@@ -88,6 +133,12 @@ export class AuthController {
 
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @UseGuards(OnboardingAuthGuard)
+  @SensitiveRateLimit({
+    name: "auth.resend-verification",
+    limit: 5,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("resend-verification")
   resendVerification(@CurrentUser() user: CurrentUserPayload) {
     return this.authService.sendVerificationEmail(user.id, user.email);
@@ -104,12 +155,25 @@ export class AuthController {
   }
 
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "auth.forgot-password",
+    limit: 5,
+    windowSec: 900,
+    by: "ip",
+  })
   @Post("forgot-password")
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto);
   }
 
   @Throttle({ default: { limit: 10, ttl: 900_000 } })
+  @SensitiveRateLimit({
+    name: "auth.reset-password",
+    limit: 10,
+    windowSec: 900,
+    blockSec: 900,
+    by: "ip",
+  })
   @Post("reset-password")
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
@@ -159,6 +223,12 @@ export class AuthController {
    */
   @Throttle({ default: { limit: 5, ttl: 900_000 } })
   @UseGuards(JwtAuthGuard)
+  @SensitiveRateLimit({
+    name: "auth.email-change.request",
+    limit: 5,
+    windowSec: 900,
+    by: "user",
+  })
   @Post("request-email-change")
   requestEmailChange(@Req() req: Request, @Body() dto: RequestEmailChangeDto) {
     return this.authService.requestEmailChange(
@@ -169,6 +239,13 @@ export class AuthController {
 
   @Throttle({ default: { limit: 10, ttl: 900_000 } })
   @UseGuards(JwtAuthGuard)
+  @SensitiveRateLimit({
+    name: "auth.email-change.confirm",
+    limit: 10,
+    windowSec: 900,
+    blockSec: 900,
+    by: "user",
+  })
   @Post("confirm-email-change")
   confirmEmailChange(@Req() req: Request, @Body() dto: ConfirmEmailChangeDto) {
     // La dirección sale del código guardado, no del cuerpo del pedido.

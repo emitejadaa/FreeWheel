@@ -12,7 +12,7 @@ import { UsersModule } from "../users/users.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { EmailModule } from "../email/email.module";
 import { VerificationModule } from "../verification/verification.module";
-import { getJwtSecret } from "../config/jwt.config";
+import { getJwtSecret, JWT_ALGORITHM } from "../config/jwt.config";
 
 const googleStrategyProviders =
   process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
@@ -34,9 +34,14 @@ const googleStrategyProviders =
 
         return {
           secret: getJwtSecret(configService),
+          // El algoritmo se fija de los dos lados (ver JWT_ALGORITHM): los
+          // strategies de passport lo fijan al verificar, y esto al firmar y
+          // en cualquier `jwtService.verify` que se agregue más adelante.
           signOptions: {
             expiresIn: expiresIn as SignOptions["expiresIn"],
+            algorithm: JWT_ALGORITHM,
           },
+          verifyOptions: { algorithms: [JWT_ALGORITHM] },
         };
       },
     }),

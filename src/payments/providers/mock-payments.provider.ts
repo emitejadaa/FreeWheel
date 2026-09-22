@@ -72,12 +72,20 @@ export class MockPaymentsProvider implements PaymentProvider {
 
   createDepositHold(input: CreateIntentInput): Promise<PaymentIntentResult> {
     const id = this.id("pi_mock_deposit");
+    // Con un medio de pago guardado y sin el cliente presente, la retención
+    // queda autorizada en el acto, como con una tarjeta que no pide
+    // autenticación. Sin eso, espera que el cliente la confirme.
+    const autorizada = Boolean(input.offSession && input.paymentMethodId);
     return Promise.resolve({
       id,
       clientSecret: `${id}_secret_${randomBytes(6).toString("hex")}`,
-      status: "requires_payment_method",
+      status: autorizada ? "requires_capture" : "requires_payment_method",
       amountMinor: input.amountMinor,
       currency: input.currency,
+      paymentMethodId: input.paymentMethodId ?? null,
+      captureBefore: autorizada
+        ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        : null,
     });
   }
 
@@ -144,6 +152,8 @@ export class MockPaymentsProvider implements PaymentProvider {
       },
       risk: { level: "normal", score: 5 },
       failure: null,
+      paymentMethodId: "pm_mock_4242",
+      captureBefore: null,
     });
   }
 

@@ -1,15 +1,13 @@
-import { createCorsOptions } from "./cors.config";
+import { corsMode, createCorsOptions, origenesPermitidos } from "./cors.config";
 
 /**
  * Quién puede llamar a la API desde un navegador.
  *
- * HOY está abierto a cualquiera, a propósito, mientras se prueba la
- * verificación de documentos desde un HTML suelto. La lista blanca sigue
- * existiendo y se enciende con CORS_STRICT="true"; estas pruebas fijan las dos
- * cosas: que sin la variable no rebote nada, y que con ella la lista funcione
- * exactamente como antes. Lo segundo importa porque el día que esto se cierre,
- * un `origin` de más no se ve en ninguna pantalla: se nota cuando alguien usa
- * las rutas públicas —el chatbot, que gasta cuota de nuestra API key— desde el
+ * Tres modos: abierto (hoy, fuera de producción), report-only (producción sin
+ * decidir) y estricto. Estas pruebas fijan que la lista blanca filtre bien
+ * cuando está encendida, y que report-only NO rechace nada. Importa porque un
+ * `origin` de más no se ve en ninguna pantalla: se nota cuando alguien usa las
+ * rutas públicas —el chatbot, que gasta cuota de nuestra API key— desde el
  * navegador de los visitantes de otro sitio.
  */
 describe("CORS", () => {
@@ -236,12 +234,106 @@ describe("CORS abierto (sin CORS_STRICT)", () => {
     expect(permite("https://un-sitio-cualquiera.example")).toBe(false);
   });
 
-  it("cualquier otro valor de CORS_STRICT no cierra nada", () => {
-    // Que un "1" o un "yes" cierren la API sin querer sería peor que abrirla.
-    for (const valor of ["1", "yes", "TRUE ", "false", ""]) {
+  it("solo un valor explícito cierra la lista", () => {
+    // "true" y "1" son valores que alguien escribió a propósito. Un "yes" o un
+    // texto cualquiera NO cierran nada: que la API se cierre sin que nadie lo
+    // haya pedido es peor que dejarla abierta.
+    process.env.CORS_ORIGINS = "https://freewheel.com.ar";
+    for (const valor of ["1", "yes", "TRUE ", "false", "0", ""]) {
       process.env.CORS_STRICT = valor;
       const cerrado = !permite("https://un-sitio-cualquiera.example");
-      expect(cerrado).toBe(valor.trim().toLowerCase() === "true");
+      expect(cerrado).toBe(["true", "1"].includes(valor.trim().toLowerCase()));
     }
+  });
+});
+
+/**
+ * EL PASO INTERMEDIO. En producción, sin CORS_STRICT, no se rechaza nada pero
+ * se anota qué se habría rechazado. Es lo que permite prender la lista blanca
+ * sabiendo de antemano si el front queda adentro, en vez de averiguarlo cuando
+ * deja de andar.
+ */
+describe("CORS en report-only", () => {
+  const ORIGINALES = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINALES };
+  });
+
+  beforeEach(() => {
+    process.env.NODE_ENV = "production";
+    delete process.env.CORS_STRICT;
+    process.env.CORS_ORIGINS = "https://freewheel.com.ar";
+  });
+
+  function permite(origen: string): boolean {
+    const decidir = createCorsOptions().origin as (
+      origen: string | undefined,
+      callback: (error: Error | null, permitido?: boolean) => void,
+    ) => void;
+    let resultado: boolean | undefined;
+    decidir(origen, (_error, ok) => {
+      resultado = ok;
+    });
+    return resultado === true;
+  }
+
+  it("es el modo por defecto en producción", () => {
+    expect(corsMode()).toBe("report-only");
+  });
+
+  it("deja pasar igual a un origen que no está en la lista", () => {
+    expect(permite("https://un-sitio-cualquiera.example")).toBe(true);
+  });
+
+  it("sin orígenes propios, el modo estricto se apoya en los de desarrollo", () => {
+    // La lista nunca queda vacía —DEV_ORIGINS siempre aporta algo—, así que
+    // cerrar no puede dejar la API sin ningún origen válido. Lo que se fija
+    // acá es que pedir strict sin configurar nada no termine en un servidor
+    // que rechaza absolutamente todo.
+    process.env.CORS_STRICT = "true";
+    delete process.env.CORS_ORIGINS;
+    delete process.env.FRONTEND_URL;
+    delete process.env.PUBLIC_URL;
+    delete process.env.DEMO_ORIGINS;
+
+    expect(corsMode()).toBe("strict");
+    expect(origenesPermitidos().length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * El apex y el www son el mismo sitio para una persona y dos orígenes
+ * distintos para un navegador. Cargar uno solo y que el front se sirva desde el
+ * otro es el error de configuración más común que existe con CORS.
+ */
+describe("CORS: el gemelo con y sin www", () => {
+  const ORIGINALES = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINALES };
+  });
+
+  it("permite los dos aunque se cargue uno", () => {
+    process.env.CORS_ORIGINS = "https://freewheel.com.ar";
+    expect(origenesPermitidos()).toEqual(
+      expect.arrayContaining([
+        "https://freewheel.com.ar",
+        "https://www.freewheel.com.ar",
+      ]),
+    );
+
+    process.env.CORS_ORIGINS = "https://www.freewheel.com.ar";
+    expect(origenesPermitidos()).toEqual(
+      expect.arrayContaining([
+        "https://freewheel.com.ar",
+        "https://www.freewheel.com.ar",
+      ]),
+    );
+  });
+
+  it("no rompe con un valor que no es una URL", () => {
+    process.env.CORS_ORIGINS = "no-es-una-url";
+    expect(origenesPermitidos()).toContain("no-es-una-url");
   });
 });

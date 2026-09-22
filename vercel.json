@@ -12,5 +12,11 @@
       "source": "/(.*)",
       "destination": "/api"
     }
+  ],
+  "crons": [
+    {
+      "path": "/internal/cron/daily",
+      "schedule": "0 6 * * *"
+    }
   ]
 }

@@ -203,6 +203,13 @@ enum BookingStatus {
   READY_FOR_PICKUP
   IN_PROGRESS
   RETURN_PENDING
+  /// El auto volvió y corre la ventana para reportar daños (48 h por
+  /// omisión). La plata sigue retenida: recién cuando la ventana se cierra sin
+  /// reclamo —o el reclamo se resuelve— se libera el depósito y se le paga al
+  /// dueño. Existe para que "devuelto" y "cerrado" sean dos momentos
+  /// distintos: antes eran el mismo, y el dueño no tenía cómo reclamar un daño
+  /// que recién veía al revisar el auto.
+  INSPECTION
   COMPLETED
   DISPUTED
 }
@@ -258,6 +265,9 @@ enum PaymentRecordStatus {
 }
 
 enum PaymentRecordKind {
+  /// EL cobro de una reserva: alquiler + cobertura, de una sola vez. Reemplaza
+  /// al par SENA + BALANCE, que quedan para las reservas viejas.
+  CHECKOUT
   SENA
   BALANCE
   DEPOSIT_HOLD
@@ -272,6 +282,37 @@ enum StripeAccountStatus {
   PENDING
   ENABLED
   RESTRICTED
+}
+
+/// En qué anda un reclamo por daños sobre un auto devuelto.
+enum DamageClaimStatus {
+  /// El dueño lo abrió; espera la respuesta del inquilino.
+  OPEN
+  /// El inquilino aceptó el monto: se cobra del depósito sin intervención.
+  ACCEPTED
+  /// El inquilino lo rechazó: decide un administrador.
+  CONTESTED
+  /// Un administrador resolvió (el monto aprobado puede ser cero).
+  RESOLVED
+  /// El dueño lo retiró.
+  WITHDRAWN
+}
+
+/// Verificación de que un auto es de quien lo publica.
+enum VehicleVerificationStatus {
+  /// Enviada, esperando a un administrador.
+  PENDING
+  APPROVED
+  /// Rechazada; las fotos se borran y hay que volver a enviar.
+  REJECTED
+}
+
+/// En qué calidad publica alguien un auto.
+enum VehicleHolderRelation {
+  /// Es el titular registral: su nombre y DNI son los de la cédula.
+  TITULAR
+  /// Está autorizado por el titular, que es otra persona.
+  AUTORIZADO
 }
 
 enum ContractStatus {
@@ -407,6 +448,18 @@ model User {
   /// no tener que recorrer todas las reseñas cada vez que se muestra un perfil.
   ratingAverage           Float?
   ratingCount             Int                 @default(0)
+  /// ── Protección contra el robo de la cuenta ─────────────────────────────
+  ///
+  /// Intentos fallidos de login seguidos y hasta cuándo queda trabada. Es un
+  /// límite POR CUENTA, que es el que un atacante no puede esquivar cambiando
+  /// de IP: el límite por IP frena a uno que prueba muchas cuentas, este frena
+  /// a muchos que prueban una.
+  failedLoginAttempts     Int                 @default(0)
+  loginLockedUntil        DateTime?
+  /// Cuándo cambió la contraseña por última vez. Un token emitido ANTES de
+  /// este momento deja de valer: cambiar la contraseña después de un robo
+  /// tiene que echar al que la robó, y sin esto su sesión seguía viva 24 h.
+  passwordChangedAt       DateTime?
   createdAt               DateTime            @default(now())
   updatedAt               DateTime            @updatedAt
 
@@ -498,6 +551,11 @@ model DocumentVerification {
   reviewedBy          String?
   reviewedAt          DateTime?
   notes               String?
+  /// Cuándo se borraron las fotos por la política de conservación. La fila
+  /// queda —estado, datos declarados, número— porque es la prueba de que la
+  /// verificación se hizo; lo que se va es la imagen del documento, que no
+  /// hace falta guardar una vez que alguien la miró.
+  photosPurgedAt      DateTime?
   createdAt           DateTime                   @default(now())
   updatedAt           DateTime                   @updatedAt
 
@@ -575,8 +633,9 @@ model Vehicle {
   createdAt                     DateTime          @default(now())
   updatedAt                     DateTime          @updatedAt
 
-  listings Listing[]
-  bookings Booking[]
+  listings     Listing[]
+  bookings     Booking[]
+  verification VehicleVerification?
 
   @@index([ownerId])
   @@index([brand, model])
@@ -673,51 +732,75 @@ model ListingAvailabilityBlock {
 }
 
 model Booking {
-  id                     String        @id @default(uuid())
-  listingId              String
-  vehicleId              String
-  ownerId                String
-  renterId               String
-  listing                Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
-  vehicle                Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  owner                  User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  renter                 User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
-  startDate              DateTime
-  endDate                DateTime
-  status                 BookingStatus @default(REQUESTED)
-  pricePerDaySnapshot    Float
-  totalPriceSnapshot     Float
-  currency               String        @default("ARS")
-  pickupTokenHash        String?
-  returnTokenHash        String?
-  pickupTokenPreview     String?
-  returnTokenPreview     String?
-  pickupConfirmedAt      DateTime?
-  returnConfirmedAt      DateTime?
-  cancelledAt            DateTime?
-  cancellationReason     String?
-  paymentStatus          PaymentStatus @default(NOT_REQUIRED)
-  paymentProvider        String?
-  providerPaymentId      String?
-  platformFeeSnapshot    Float?
-  depositSnapshot        Float?
-  rentalSubtotalSnapshot Float?
-  insuranceSnapshot      Float?
-  senaAmountSnapshot     Float?
-  balanceAmountSnapshot  Float?
-  ownerPayoutSnapshot    Float?
-  transferGroup          String?
-  ownerTransferId        String?
-  depositPaymentIntentId String?
-  depositCapturedAmount  Float?
-  paidAt                 DateTime?
-  refundedAt             DateTime?
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
+  id                      String        @id @default(uuid())
+  listingId               String
+  vehicleId               String
+  ownerId                 String
+  renterId                String
+  listing                 Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  vehicle                 Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner                   User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  renter                  User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
+  startDate               DateTime
+  endDate                 DateTime
+  status                  BookingStatus @default(REQUESTED)
+  pricePerDaySnapshot     Float
+  totalPriceSnapshot      Float
+  currency                String        @default("ARS")
+  pickupTokenHash         String?
+  returnTokenHash         String?
+  pickupTokenPreview      String?
+  returnTokenPreview      String?
+  pickupConfirmedAt       DateTime?
+  returnConfirmedAt       DateTime?
+  cancelledAt             DateTime?
+  cancellationReason      String?
+  paymentStatus           PaymentStatus @default(NOT_REQUIRED)
+  paymentProvider         String?
+  providerPaymentId       String?
+  platformFeeSnapshot     Float?
+  depositSnapshot         Float?
+  rentalSubtotalSnapshot  Float?
+  insuranceSnapshot       Float?
+  senaAmountSnapshot      Float?
+  balanceAmountSnapshot   Float?
+  ownerPayoutSnapshot     Float?
+  transferGroup           String?
+  ownerTransferId         String?
+  depositPaymentIntentId  String?
+  depositCapturedAmount   Float?
+  /// Hasta cuándo se puede cobrar de la retención del depósito. Una retención
+  /// en tarjeta vence sola (alrededor de 7 días, más con autorización
+  /// extendida), y pasado ese momento ya no hay de dónde cobrar un daño. Se
+  /// guarda para no prometerle al dueño una garantía que ya no existe.
+  depositHoldExpiresAt    DateTime?
+  /// El PaymentIntent del cobro único (alquiler + cobertura).
+  checkoutPaymentIntentId String?
+  /// El medio de pago que dejó guardado el cobro, para autorizar el depósito
+  /// sin volver a pedirle la tarjeta a nadie. Es un identificador del
+  /// procesador (pm_…), que solo sirve con nuestra clave secreta.
+  savedPaymentMethodId    String?
+  paidAt                  DateTime?
+  refundedAt              DateTime?
+  /// Hasta cuándo el dueño puede reportar un daño después de la devolución.
+  inspectionEndsAt        DateTime?
+  /// Cuándo se liquidó: depósito liberado y pago al dueño hecho. Es lo que
+  /// hace idempotente la liquidación: una reserva liquidada no se liquida dos
+  /// veces aunque el cron y una persona lo pidan a la vez.
+  settledAt               DateTime?
+  /// Quién canceló: RENTER, OWNER o PLATFORM.
+  cancelledByRole         String?
+  /// Cómo se repartió la plata al cancelar, línea por línea. Es la constancia
+  /// de qué regla se aplicó (arrepentimiento, seña perdida, seña doblada) y
+  /// por qué, escrita en el momento en que se decidió.
+  cancellationSettlement  Json?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
 
   paymentRecords PaymentRecord[]
   contract       Contract?
   reviews        Review[]
+  damageClaim    DamageClaim?
 
   @@index([listingId])
   @@index([vehicleId])
@@ -725,6 +808,101 @@ model Booking {
   @@index([renterId])
   @@index([status])
   @@index([startDate, endDate])
+  @@index([status, inspectionEndsAt])
+}
+
+/// UN RECLAMO POR DAÑOS SOBRE UN AUTO DEVUELTO.
+///
+/// Lo abre el dueño dentro de la ventana de inspección, con fotos y un monto.
+/// El inquilino lo acepta (se cobra del depósito) o lo rechaza (decide un
+/// administrador). Uno por reserva: un segundo reclamo sobre la misma
+/// devolución sería una forma de pedir de a poco lo que no se pidió de una.
+model DamageClaim {
+  id                     String            @id @default(uuid())
+  bookingId              String            @unique
+  booking                Booking           @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  ownerId                String
+  renterId               String
+  status                 DamageClaimStatus @default(OPEN)
+  description            String
+  amountRequestedMinor   Int
+  amountApprovedMinor    Int?
+  currency               String
+  /// Las fotos del daño. Sin al menos una, el reclamo no se puede abrir.
+  evidenceUrls           String[]
+  renterResponse         String?
+  renterRespondedAt      DateTime?
+  /// Hasta cuándo puede contestar el inquilino. Sin respuesta, lo decide un
+  /// administrador: el silencio no es aceptación.
+  renterResponseDeadline DateTime
+  resolvedById           String?
+  resolvedAt             DateTime?
+  resolutionNote         String?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  @@index([status])
+  @@index([ownerId])
+  @@index([renterId])
+}
+
+/// ── EL LIBRO CONTABLE ─────────────────────────────────────────────────────
+///
+/// Toda la plata que pasa por la plataforma, en partida doble: cada movimiento
+/// es un asiento (LedgerJournal) con líneas (LedgerEntry) que SUMAN CERO. Es lo
+/// que permite decir, en cualquier momento, cuánto hay en cada "bolsillo":
+///
+///   booking:<id>:sena        la seña de ESA reserva, retenida
+///   booking:<id>:rental      el resto del alquiler de esa reserva, retenido
+///   booking:<id>:insurance   la cobertura de esa reserva, retenida
+///   owner:<id>:payable       lo que se le debe a ese dueño
+///   renter:<id>:payable      lo que se le debe a ese inquilino
+///   platform:commission      lo que ganó FreeWheel
+///   insurance:payable        lo que se le debe a la aseguradora (NO es de
+///                            FreeWheel: es prima cobrada por cuenta de otro)
+///   processor:clearing       la plata que entra y sale por el procesador
+///
+/// El procesador (Stripe hoy) tiene UN solo saldo; la separación por concepto,
+/// por reserva y por persona vive acá. Por eso sirve igual con cualquier
+/// procesador.
+///
+/// Es APPEND-ONLY. Un error no se corrige editando: se corrige con un asiento
+/// inverso, y los dos quedan a la vista.
+model LedgerJournal {
+  id             String        @id @default(uuid())
+  /// Lo que hace que un mismo hecho no se asiente dos veces (un webhook que
+  /// llega repetido, una liquidación pedida a la vez por el cron y por una
+  /// persona). La base lo garantiza con el unique.
+  idempotencyKey String        @unique
+  type           String
+  bookingId      String?
+  description    String
+  actorId        String?
+  createdAt      DateTime      @default(now())
+  entries        LedgerEntry[]
+
+  @@index([bookingId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id          String        @id @default(uuid())
+  journalId   String
+  journal     LedgerJournal @relation(fields: [journalId], references: [id], onDelete: Restrict)
+  account     String
+  /// Con signo, en centavos. Positivo: entra a la cuenta. Negativo: sale.
+  amountMinor Int
+  currency    String
+  bookingId   String?
+  /// A quién pertenece la cuenta, si es de una persona.
+  userId      String?
+  createdAt   DateTime      @default(now())
+
+  @@index([journalId])
+  @@index([account])
+  @@index([bookingId])
+  @@index([userId])
 }
 
 model PaymentRecord {
@@ -945,20 +1123,124 @@ model StripeEvent {
   @@index([type])
 }
 
+/// EL CONTRATO DE UNA RESERVA.
+///
+/// La firma por click vale (Ley 25.506), pero si una parte la desconoce,
+/// probarla le toca a quien la invoca. Todo lo de acá existe para poder
+/// probarla: qué texto exacto se aceptó (contentHash), que ese texto no cambió
+/// desde entonces (lockedAt: después de la primera aceptación el contenido no
+/// se toca), y quién, cuándo y desde dónde lo aceptó (ContractAcceptance).
 model Contract {
-  id               String         @id @default(uuid())
-  bookingId        String         @unique
-  booking          Booking        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  status           ContractStatus @default(PENDING_ACCEPTANCE)
+  id               String               @id @default(uuid())
+  bookingId        String               @unique
+  booking          Booking              @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  status           ContractStatus       @default(PENDING_ACCEPTANCE)
   terms            Json
+  /// Versión de las cláusulas (ver src/contracts/contract-clauses.ts).
+  version          String?
+  /// SHA-256 del contenido canónico (términos + cláusulas). Es lo que acepta
+  /// cada parte: la aceptación guarda este hash, no una referencia al contrato.
+  contentHash      String?
+  /// El PDF del contenido, generado UNA vez y guardado. Antes se regeneraba en
+  /// cada descarga, así que cambiar el código de renderizado cambiaba un
+  /// contrato ya firmado.
+  pdfBytes         Bytes?
+  pdfHash          String?
+  /// Desde cuándo el contenido quedó fijo (primera aceptación).
+  lockedAt         DateTime?
   pdfStorageKey    String?
   pdfUrl           String?
   renterAcceptedAt DateTime?
   ownerAcceptedAt  DateTime?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  acceptances      ContractAcceptance[]
 
   @@index([status])
+}
+
+/// UNA ACEPTACIÓN DE UN CONTRATO, CON LO QUE HACE FALTA PARA PROBARLA.
+///
+/// Append-only. La IP y el navegador van CIFRADOS: son datos personales que
+/// solo se abren si hay una disputa, y no tienen por qué estar legibles para
+/// quien lea la base.
+model ContractAcceptance {
+  id                 String   @id @default(uuid())
+  contractId         String
+  contract           Contract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  userId             String
+  /// OWNER o RENTER.
+  role               String
+  /// El hash del contenido que esta persona aceptó.
+  contentHash        String
+  ipEncrypted        String?
+  userAgentEncrypted String?
+  acceptedAt         DateTime @default(now())
+
+  @@unique([contractId, userId, contentHash])
+  @@index([contractId])
+  @@index([userId])
+}
+
+/// ¿ESTE AUTO ES DE QUIEN LO PUBLICA?
+///
+/// Existe por los fraudes que más se repiten en Argentina: publicar un auto
+/// ajeno (subalquilado o robado) y los autos "mellizos" con papeles falsos. La
+/// persona declara patente, chasis, en qué calidad lo publica y el seguro, sube
+/// la cédula, y un administrador lo corrobora.
+///
+/// Los datos que no hacen falta para buscar —chasis, DNI del titular, número
+/// de póliza— van CIFRADOS.
+model VehicleVerification {
+  id                             String                    @id @default(uuid())
+  vehicleId                      String                    @unique
+  vehicle                        Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  ownerId                        String
+  status                         VehicleVerificationStatus @default(PENDING)
+  cedulaFrontUrl                 String?
+  cedulaBackUrl                  String?
+  /// Patente declarada, normalizada (sin espacios ni guiones, mayúsculas).
+  plate                          String
+  chassisNumberEncrypted         String?
+  holderRelation                 VehicleHolderRelation
+  /// Nombre del titular registral (el de la cédula).
+  holderName                     String
+  holderDniEncrypted             String?
+  insurerName                    String?
+  insurancePolicyNumberEncrypted String?
+  insuranceExpiresAt             DateTime?
+  /// Si la persona declara que su póliza cubre el uso para alquiler. Sin eso,
+  /// lo más probable es que la aseguradora rechace cualquier siniestro
+  /// ocurrido durante un alquiler.
+  insuranceCoversRental          Boolean                   @default(false)
+  vtvExpiresAt                   DateTime?
+  reasonCodes                    String[]                  @default([])
+  notes                          String?
+  reviewedById                   String?
+  reviewedAt                     DateTime?
+  photosPurgedAt                 DateTime?
+  createdAt                      DateTime                  @default(now())
+  updatedAt                      DateTime                  @updatedAt
+
+  @@index([status])
+  @@index([ownerId])
+  @@index([plate])
+}
+
+/// UN CONTADOR DE LÍMITE DE PEDIDOS QUE SOBREVIVE A LAS INSTANCIAS.
+///
+/// El limitador en memoria de Nest cuenta por instancia: en serverless cada
+/// instancia nueva arranca en cero, así que un atacante que reparte sus
+/// intentos entre instancias no se topa nunca con el límite. Para lo que
+/// importa —login, códigos, pagos— el contador vive en la base.
+model RateLimitBucket {
+  key             String    @id
+  count           Int       @default(0)
+  windowStartedAt DateTime
+  blockedUntil    DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  @@index([updatedAt])
 }
 
 /// Reseña de una reserva terminada.

@@ -26,8 +26,9 @@ describe("PricingService", () => {
     expect(pricing.insurance).toBe(30);
     expect(pricing.commission).toBe(30);
     expect(pricing.total).toBe(330);
-    expect(pricing.sena).toBe(99);
-    expect(pricing.balance).toBe(231);
+    // La seña es el 30% del ALQUILER (300), no del total con la cobertura.
+    expect(pricing.sena).toBe(90);
+    expect(pricing.balance).toBe(240);
     expect(pricing.ownerPayout).toBe(270);
     expect(pricing.deposit).toBe(200);
   });
@@ -42,8 +43,8 @@ describe("PricingService", () => {
     expect(pricing.insuranceMinor).toBe(3000);
     expect(pricing.commissionMinor).toBe(3000);
     expect(pricing.totalMinor).toBe(33000);
-    expect(pricing.senaMinor).toBe(9900);
-    expect(pricing.balanceMinor).toBe(23100);
+    expect(pricing.senaMinor).toBe(9000);
+    expect(pricing.balanceMinor).toBe(24000);
     expect(pricing.ownerPayoutMinor).toBe(27000);
     expect(pricing.depositMinor).toBe(20000);
     // sena + balance must reconstruct the total exactly, with no float drift.
@@ -89,8 +90,8 @@ describe("PricingService", () => {
     expect(pricing.commission).toBe(60); // 15%
     expect(pricing.insurance).toBe(20); // 5%
     expect(pricing.total).toBe(420);
-    expect(pricing.sena).toBe(210); // 50%
-    expect(pricing.balance).toBe(210);
+    expect(pricing.sena).toBe(200); // 50% del alquiler (400)
+    expect(pricing.balance).toBe(220);
     expect(pricing.ownerPayout).toBe(340); // 400 - 60
   });
 
@@ -104,7 +105,7 @@ describe("PricingService", () => {
     expect(pricing.currency).toBe("usd");
     expect(pricing.commission).toBe(10);
     expect(pricing.insurance).toBe(10);
-    expect(pricing.sena).toBe(33);
+    expect(pricing.sena).toBe(30); // 30% del alquiler (100)
     expect(pricing.deposit).toBe(200);
   });
 

@@ -14,7 +14,14 @@ export async function cleanDatabase(prisma: PrismaService): Promise<void> {
   await prisma.auditLog.deleteMany();
   await prisma.mediaAsset.deleteMany();
   await prisma.stripeEvent.deleteMany();
+  await prisma.rateLimitBucket.deleteMany();
+  // La aceptación apunta al contrato y el reclamo a la reserva: los dos van
+  // antes que aquello que describen.
+  await prisma.contractAcceptance.deleteMany();
   await prisma.contract.deleteMany();
+  await prisma.damageClaim.deleteMany();
+  await prisma.ledgerEntry.deleteMany();
+  await prisma.ledgerJournal.deleteMany();
   // PaymentEvent antes que PaymentRecord: el registro append-only apunta al
   // cobro, y la FK es Restrict a propósito (una línea de auditoría no se
   // borra sola porque alguien borró el cobro que describe).
@@ -25,6 +32,7 @@ export async function cleanDatabase(prisma: PrismaService): Promise<void> {
   await prisma.listing.deleteMany();
   await prisma.verificationCode.deleteMany();
   await prisma.documentVerification.deleteMany();
+  await prisma.vehicleVerification.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.user.deleteMany();
   await prisma.pendingRegistration.deleteMany();

@@ -5,6 +5,7 @@ import { ContractsModule } from "../contracts/contracts.module";
 import { EmailModule } from "../email/email.module";
 import { PaymentsModule } from "../payments/payments.module";
 import { PrismaModule } from "../prisma/prisma.module";
+import { VehicleVerificationModule } from "../vehicle-verification/vehicle-verification.module";
 import { BookingsController } from "./bookings.controller";
 import { BookingsService } from "./bookings.service";
 
@@ -16,6 +17,7 @@ import { BookingsService } from "./bookings.service";
     PaymentsModule,
     ContractsModule,
     EmailModule,
+    VehicleVerificationModule,
   ],
   controllers: [BookingsController],
   providers: [BookingsService],

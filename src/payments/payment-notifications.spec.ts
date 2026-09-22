@@ -46,6 +46,8 @@ describe("PaymentsService: avisos de un pago", () => {
       { create: jest.fn() } as unknown as AuditLogService,
       { get: () => undefined } as unknown as ConfigService,
       email as unknown as EmailService,
+      {} as never, // LedgerService: el aviso no lo usa
+      {} as never, // ContractsService: el aviso no lo usa
     );
     // El aviso es interno a propósito: se dispara desde onIntentSucceeded y no es
     // parte de la API del servicio. Se lo llama directo para probarlo aislado.

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -9,6 +10,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   Booking,
   BookingStatus,
+  DamageClaimStatus,
   PaymentRecord,
   PaymentRecordKind,
   PaymentRecordStatus,
@@ -23,6 +25,15 @@ import { EmailService } from "../email/email.service";
 import { assertFound } from "../common/utils/entity.util";
 import { assertParticipant } from "../common/utils/authorization.util";
 import { PrismaService } from "../prisma/prisma.service";
+import { ContractsService } from "../contracts/contracts.service";
+import { LedgerService } from "../ledger/ledger.service";
+import { Accounts } from "../ledger/accounts";
+import { buildTicket, Ticket } from "./money/ticket";
+import {
+  CancellationOutcome,
+  CancelledBy,
+  computeCancellation,
+} from "./money/cancellation-policy";
 import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
 import type {
   PaymentIntentResult,
@@ -72,52 +83,34 @@ export class PaymentsService {
     private readonly auditLog: AuditLogService,
     private readonly config: ConfigService,
     private readonly email: EmailService,
+    private readonly ledger: LedgerService,
+    private readonly contracts: ContractsService,
   ) {}
 
-  // ── Creación de intents (la pide quien alquila) ────────────────────────
+  // ── El cobro único (lo pide quien alquila) ─────────────────────────────
 
-  createSenaIntent(renterId: string, bookingId: string, ctx: PaymentContext) {
-    return this.createChargeIntent(renterId, bookingId, "SENA", ctx);
-  }
-
-  async createBalanceIntent(
+  /**
+   * EL PAGO DE UNA RESERVA: alquiler + cobertura, de una sola vez.
+   *
+   * Reemplaza al par seña + saldo. La seña no desapareció: es la porción del
+   * alquiler que queda sujeta a la regla penitencial si alguien se arrepiente
+   * (ver money/cancellation-policy.ts), y el ticket la muestra. Lo que
+   * desapareció es el segundo cobro, que obligaba a la persona a volver a
+   * pagar días después y dejaba reservas a medio pagar el día del retiro.
+   *
+   * Dos condiciones antes de cobrar, y las dos son legales antes que técnicas:
+   *   · quien alquila ACEPTÓ el contrato vigente. Nadie paga bajo condiciones
+   *     que no aceptó, y el cobro es el momento en que las condiciones pasan a
+   *     obligar.
+   *   · el importe sale de los precios congelados de la reserva, nunca del
+   *     cliente.
+   *
+   * La tarjeta queda guardada (setup_future_usage) para autorizar el depósito
+   * en garantía cerca del retiro sin volver a pedírsela a nadie.
+   */
+  async createCheckout(
     renterId: string,
     bookingId: string,
-    ctx: PaymentContext,
-  ) {
-    // El saldo exige que la seña ya esté COBRADA, y se controla contra los
-    // registros y no contra `booking.paymentStatus`.
-    //
-    // La diferencia importa: `paymentStatus` es un resumen que también se
-    // escribe desde otros lados (una devolución lo deja en REFUNDED, un fallo
-    // en FAILED), así que mirarlo ahí dejaba pasar el saldo de una reserva
-    // cuya seña había fallado. Los registros dicen si esa plata entró.
-    const senaPagada = await this.prisma.paymentRecord.findFirst({
-      where: {
-        bookingId,
-        kind: PaymentRecordKind.SENA,
-        status: { in: PAID_RECORD_STATUSES },
-      },
-      select: { id: true },
-    });
-    if (!senaPagada) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "SENA_NOT_PAID",
-        message: "Hay que pagar la seña antes que el saldo",
-      });
-    }
-    return this.createChargeIntent(renterId, bookingId, "BALANCE", ctx);
-  }
-
-  createDepositHold(renterId: string, bookingId: string, ctx: PaymentContext) {
-    return this.createChargeIntent(renterId, bookingId, "DEPOSIT_HOLD", ctx);
-  }
-
-  private async createChargeIntent(
-    renterId: string,
-    bookingId: string,
-    kind: PaymentRecordKindLike,
     ctx: PaymentContext,
   ) {
     const booking = await this.findBookingWithUsers(bookingId);
@@ -129,18 +122,221 @@ export class PaymentsService {
         "Payments can only be made on accepted bookings",
       );
     }
+    if (!(await this.contracts.hasAccepted(bookingId, "RENTER"))) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "CONTRACT_NOT_ACCEPTED",
+        message:
+          "Antes de pagar tenés que aceptar el contrato de la reserva " +
+          "(POST /contracts/bookings/:bookingId/accept).",
+      });
+    }
 
-    const amountMinor = this.amountForKind(booking, kind);
+    const totalMinor = this.amountForKind(booking, "CHECKOUT");
+    // Una reserva vieja que llegó a pagar la seña con el flujo anterior paga
+    // acá solo lo que le falta. Las nuevas pagan el total.
+    const yaCobrado = await this.capturedMinor(bookingId);
+    const amountMinor = totalMinor - yaCobrado;
+    if (amountMinor <= 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "ALREADY_PAID",
+        message: "Esta reserva ya está paga.",
+      });
+    }
+
+    return this.createOrReuseIntent(booking, "CHECKOUT", amountMinor, ctx, {
+      setupFutureUsage: "off_session",
+    });
+  }
+
+  /**
+   * DEPRECADO: la seña ya no se cobra aparte. Se mantiene como alias del cobro
+   * único para que el front publicado no se rompa: la primera llamada que
+   * hacía ahora cobra todo.
+   */
+  createSenaIntent(renterId: string, bookingId: string, ctx: PaymentContext) {
+    return this.createCheckout(renterId, bookingId, ctx);
+  }
+
+  /**
+   * DEPRECADO: ya no hay saldo aparte. Solo sigue existiendo para una reserva
+   * vieja que pagó la seña con el flujo anterior: esa sí tiene un saldo
+   * pendiente, y se cobra por el camino nuevo.
+   */
+  async createBalanceIntent(
+    renterId: string,
+    bookingId: string,
+    ctx: PaymentContext,
+  ) {
+    const senaVieja = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.SENA,
+        status: { in: PAID_RECORD_STATUSES },
+      },
+      select: { id: true },
+    });
+    if (!senaVieja) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "PAYMENT_IS_SINGLE",
+        message:
+          "El pago de una reserva es uno solo: usá POST " +
+          "/payments/bookings/:bookingId/checkout.",
+      });
+    }
+    return this.createCheckout(renterId, bookingId, ctx);
+  }
+
+  /**
+   * AUTORIZAR EL DEPÓSITO, con quien alquila presente.
+   *
+   * El camino normal es otro: cuando el dueño marca el auto listo para
+   * retirar, el servidor autoriza el depósito solo, con la tarjeta que dejó
+   * guardada el cobro (authorizeDepositForPickup). Esto es el plan B, para
+   * cuando el banco pide que la persona se autentique (3-D Secure) y el
+   * servidor no puede hacerlo por ella: devuelve el client secret y el front
+   * lo confirma con la persona delante.
+   */
+  async createDepositHold(
+    renterId: string,
+    bookingId: string,
+    ctx: PaymentContext,
+  ) {
+    const booking = await this.findBookingWithUsers(bookingId);
+    if (booking.renterId !== renterId) {
+      throw new ForbiddenException("Only the renter can pay for this booking");
+    }
+    if (booking.status !== BookingStatus.ACCEPTED) {
+      throw new BadRequestException(
+        "The deposit can only be authorized on an accepted booking",
+      );
+    }
+    if (booking.paymentStatus !== PaymentStatus.FULLY_PAID) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "CHECKOUT_NOT_PAID",
+        message:
+          "Primero hay que pagar la reserva; después se autoriza el depósito.",
+      });
+    }
+    const amountMinor = this.amountForKind(booking, "DEPOSIT_HOLD");
+    return this.createOrReuseIntent(booking, "DEPOSIT_HOLD", amountMinor, ctx);
+  }
+
+  /**
+   * AUTORIZAR EL DEPÓSITO SOLO, CERCA DEL RETIRO.
+   *
+   * Por qué acá y no al pagar: una retención en tarjeta vence sola (unos 7
+   * días, más con autorización extendida). Autorizarla al pagar una reserva
+   * de dentro de un mes era autorizar algo que se iba a soltar antes de que
+   * nadie retirara el auto. Autorizarla cuando el dueño avisa que el auto
+   * está listo la hace durar el alquiler y la ventana de inspección.
+   *
+   * No lanza por el rechazo del banco: si la tarjeta pide autenticación o no
+   * alcanza el límite, devuelve `requiresRenterAction` y quien alquila la
+   * autoriza desde el front (createDepositHold).
+   */
+  async authorizeDepositForPickup(bookingId: string, actorId: string) {
+    const booking = await this.findBookingWithUsers(bookingId);
+    const vigente = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (vigente) return { authorized: true, requiresRenterAction: false };
+
+    const amountMinor = this.amountForKind(booking, "DEPOSIT_HOLD");
+    if (!booking.savedPaymentMethodId) {
+      return { authorized: false, requiresRenterAction: true };
+    }
+
+    try {
+      const customerId = await this.ensureRenterCustomer(booking.renter);
+      const intent = await this.provider.createDepositHold({
+        bookingId,
+        kind: "DEPOSIT_HOLD",
+        amountMinor,
+        currency: booking.currency,
+        customerId,
+        transferGroup: booking.transferGroup,
+        metadata: { renterId: booking.renterId, ownerId: booking.ownerId },
+        idempotencyKey: `booking_${bookingId}_deposit_offsession_${amountMinor}`,
+        paymentMethodId: booking.savedPaymentMethodId,
+        offSession: true,
+      });
+
+      const record = await this.prisma.paymentRecord.create({
+        data: {
+          bookingId,
+          userId: booking.renterId,
+          kind: PaymentRecordKind.DEPOSIT_HOLD,
+          status: PaymentRecordStatus.REQUIRES_ACTION,
+          provider: this.provider.name,
+          providerId: intent.id,
+          stripePaymentIntentId: intent.id,
+          amount: amountMinor / 100,
+          amountMinor,
+          currency: booking.currency,
+          metadata: {
+            renterId: booking.renterId,
+            ownerId: booking.ownerId,
+            offSession: true,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      await this.prisma.booking.update({
+        where: { id: bookingId },
+        data: { depositPaymentIntentId: intent.id },
+      });
+      await this.recordEvent({
+        record,
+        bookingId,
+        actorId,
+        source: "system",
+        type: "deposit_hold.offsession.requested",
+        status: PaymentRecordStatus.REQUIRES_ACTION,
+        amountMinor,
+        currency: booking.currency,
+      });
+
+      if (intent.status === "requires_capture") {
+        await this.onHoldAuthorized(intent.id, undefined, intent);
+        return { authorized: true, requiresRenterAction: false };
+      }
+      return { authorized: false, requiresRenterAction: true };
+    } catch (error) {
+      // Una tarjeta que pide autenticación o que no tiene cupo es el caso
+      // esperado de este camino, no un error del sistema: se le pasa la
+      // posta a quien alquila.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `no se pudo autorizar el depósito de ${bookingId} sin el cliente: ${message}`,
+      );
+      return { authorized: false, requiresRenterAction: true };
+    }
+  }
+
+  /**
+   * Crea el intent de un tramo, o reutiliza uno vivo del mismo tramo SI Y
+   * SOLO SI es por el mismo importe y la misma moneda.
+   *
+   * Esa condición es la que impide cobrar un precio viejo: si el importe
+   * cambió entre que se creó el intent y que se paga, se crea uno nuevo.
+   */
+  private async createOrReuseIntent(
+    booking: BookingWithUsers,
+    kind: PaymentRecordKindLike,
+    amountMinor: number,
+    ctx: PaymentContext,
+    extra: { setupFutureUsage?: "off_session" } = {},
+  ) {
+    const bookingId = booking.id;
     const currency = booking.currency;
 
-    // Idempotente: se reutiliza un intent vivo del mismo tramo SI Y SOLO SI es
-    // por el mismo importe y la misma moneda.
-    //
-    // Esa condición no estaba y era un agujero silencioso: si el precio de la
-    // reserva cambiaba entre que se creaba el intent y que se pagaba, el front
-    // recibía el intent viejo y se cobraba el importe anterior. El control de
-    // precio del servidor no servía de nada porque el cobro ya no pasaba por
-    // él.
     const existing = await this.prisma.paymentRecord.findFirst({
       where: {
         bookingId,
@@ -154,14 +350,8 @@ export class PaymentsService {
       existing.amountMinor === amountMinor &&
       existing.currency === currency
     ) {
-      // El client secret NO se guarda en la base y se vuelve a pedir acá.
-      //
-      // Es una credencial: con ella se confirma el pago de ese intent. Tenerla
-      // escrita en una columna significaba que cualquier volcado de la base
-      // —un backup, un log de consulta, una captura de pantalla del panel—
-      // repartía la capacidad de operar sobre cobros ajenos. Pedirla de nuevo
-      // cuesta una llamada y la deja existiendo solo mientras dura la
-      // respuesta.
+      // El client secret NO se guarda en la base y se vuelve a pedir acá: es
+      // una credencial que permite confirmar el pago de ese intent.
       const vigente = await this.safeRetrieve(existing.stripePaymentIntentId);
       return {
         bookingId,
@@ -172,6 +362,7 @@ export class PaymentsService {
         currency,
         status: existing.status,
         reused: true,
+        ticket: this.ticketOf(booking),
       };
     }
 
@@ -184,10 +375,10 @@ export class PaymentsService {
       customerId,
       transferGroup: booking.transferGroup,
       metadata: { renterId: booking.renterId, ownerId: booking.ownerId },
-      // La clave de idempotencia lleva el importe adentro: sin él, un intent
-      // creado por $100 y otro por $120 compartían clave y Stripe devolvía el
-      // primero, cobrando el precio viejo.
+      // El importe va en la clave: sin él, un intent por $100 y otro por $120
+      // compartían clave y Stripe devolvía el primero.
       idempotencyKey: `booking_${bookingId}_${kind.toLowerCase()}_${amountMinor}`,
+      ...extra,
     };
 
     const intent =
@@ -209,9 +400,6 @@ export class PaymentsService {
         currency,
         initiatedIp: ctx.ip ?? null,
         initiatedUserAgent: ctx.userAgent?.slice(0, 500) ?? null,
-        // `metadata` ya no lleva el client secret (ver arriba). Lleva las dos
-        // partes de la reserva, que es lo que hace falta para reconstruir un
-        // cobro sin tener que ir a buscar la reserva.
         metadata: {
           renterId: booking.renterId,
           ownerId: booking.ownerId,
@@ -219,17 +407,18 @@ export class PaymentsService {
       },
     });
 
-    if (kind === "DEPOSIT_HOLD") {
-      await this.prisma.booking.update({
-        where: { id: bookingId },
-        data: { depositPaymentIntentId: intent.id },
-      });
-    }
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data:
+        kind === "DEPOSIT_HOLD"
+          ? { depositPaymentIntentId: intent.id }
+          : { checkoutPaymentIntentId: intent.id },
+    });
 
     await this.recordEvent({
       record,
       bookingId,
-      actorId: renterId,
+      actorId: booking.renterId,
       source: "api",
       type: `${kind.toLowerCase()}.intent.created`,
       status: PaymentRecordStatus.REQUIRES_ACTION,
@@ -240,7 +429,7 @@ export class PaymentsService {
     });
 
     await this.auditLog.create({
-      actorId: renterId,
+      actorId: booking.renterId,
       targetUserId: booking.ownerId,
       action: `payment.${kind.toLowerCase()}.intent_created`,
       entityType: "Booking",
@@ -257,11 +446,18 @@ export class PaymentsService {
       currency,
       status: record.status,
       reused: false,
+      ticket: this.ticketOf(booking),
     };
   }
 
   private amountForKind(booking: Booking, kind: PaymentRecordKindLike): number {
+    const total =
+      booking.rentalSubtotalSnapshot != null &&
+      booking.insuranceSnapshot != null
+        ? booking.rentalSubtotalSnapshot + booking.insuranceSnapshot
+        : null;
     const map: Record<PaymentRecordKindLike, number | null> = {
+      CHECKOUT: total,
       SENA: booking.senaAmountSnapshot,
       BALANCE: booking.balanceAmountSnapshot,
       DEPOSIT_HOLD: booking.depositSnapshot,
@@ -283,6 +479,57 @@ export class PaymentsService {
     return minor;
   }
 
+  /** Lo cobrado de verdad en una reserva (alquiler y cobertura), neto de devoluciones. */
+  private async capturedMinor(
+    bookingId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<number> {
+    const cobros = await db.paymentRecord.findMany({
+      where: {
+        bookingId,
+        kind: {
+          in: [
+            PaymentRecordKind.CHECKOUT,
+            PaymentRecordKind.SENA,
+            PaymentRecordKind.BALANCE,
+          ],
+        },
+        status: {
+          in: [
+            ...PAID_RECORD_STATUSES,
+            PaymentRecordStatus.PARTIALLY_REFUNDED,
+            PaymentRecordStatus.DISPUTED,
+          ],
+        },
+      },
+      select: { amountMinor: true, refundedAmountMinor: true },
+    });
+    return cobros.reduce(
+      (total, r) => total + (r.amountMinor ?? 0) - (r.refundedAmountMinor ?? 0),
+      0,
+    );
+  }
+
+  /** El ticket de una reserva, desde sus precios congelados. */
+  ticketOf(booking: Booking): Ticket {
+    const days = Math.max(
+      1,
+      Math.round(
+        (booking.endDate.getTime() - booking.startDate.getTime()) / 86_400_000,
+      ),
+    );
+    return buildTicket({
+      currency: booking.currency,
+      days,
+      pricePerDay: booking.pricePerDaySnapshot,
+      rentalSubtotal: booking.rentalSubtotalSnapshot,
+      insurance: booking.insuranceSnapshot,
+      commission: booking.platformFeeSnapshot,
+      sena: booking.senaAmountSnapshot,
+      deposit: booking.depositSnapshot,
+    });
+  }
+
   // ── Simulación offline (solo con el provider mock, que es el de los tests) ──
 
   /**
@@ -300,21 +547,21 @@ export class PaymentsService {
     ctx: PaymentContext,
   ) {
     this.assertMockProvider();
+    // Sin tramo: el cobro único y, después, el depósito. Es lo que el front
+    // hace de verdad con Stripe, en el mismo orden.
     const kinds: PaymentRecordKindLike[] = kind
       ? [kind]
-      : ["SENA", "BALANCE", "DEPOSIT_HOLD"];
+      : ["CHECKOUT", "DEPOSIT_HOLD"];
 
     for (const current of kinds) {
-      // El intent de saldo exige que la seña ya esté paga, así que el orden del
-      // array importa: cada vuelta ve el estado que dejó la anterior.
-      const intent =
-        current === "BALANCE"
-          ? await this.createBalanceIntent(renterId, bookingId, ctx)
-          : await this.createChargeIntent(renterId, bookingId, current, ctx);
-
       if (current === "DEPOSIT_HOLD") {
+        const intent = await this.createDepositHold(renterId, bookingId, ctx);
         await this.onHoldAuthorized(intent.paymentIntentId);
       } else {
+        const intent =
+          current === "BALANCE"
+            ? await this.createBalanceIntent(renterId, bookingId, ctx)
+            : await this.createCheckout(renterId, bookingId, ctx);
         await this.onIntentSucceeded(intent.paymentIntentId);
       }
     }
@@ -326,7 +573,7 @@ export class PaymentsService {
   async simulatePaymentFailure(
     renterId: string,
     bookingId: string,
-    kind: PaymentRecordKindLike = "SENA",
+    kind: PaymentRecordKindLike = "CHECKOUT",
   ) {
     this.assertMockProvider();
     const booking = await this.findBooking(bookingId);
@@ -369,12 +616,19 @@ export class PaymentsService {
 
   // ── Estado ─────────────────────────────────────────────────────────────
 
-  async getStatus(userId: string, bookingId: string) {
-    const booking = await this.findBookingForParticipant(userId, bookingId);
+  async getStatus(
+    userId: string,
+    bookingId: string,
+    opts: { asAdmin?: boolean } = {},
+  ) {
+    const booking = opts.asAdmin
+      ? await this.findBooking(bookingId)
+      : await this.findBookingForParticipant(userId, bookingId);
     const records = await this.prisma.paymentRecord.findMany({
       where: { bookingId },
       orderBy: { createdAt: "asc" },
     });
+    const pockets = await this.pockets(bookingId);
     return {
       bookingId,
       paymentStatus: booking.paymentStatus,
@@ -388,10 +642,23 @@ export class PaymentsService {
       ownerPayout: booking.ownerPayoutSnapshot,
       ownerTransferId: booking.ownerTransferId,
       depositCapturedAmount: booking.depositCapturedAmount,
+      depositHoldExpiresAt: booking.depositHoldExpiresAt,
       paidAt: booking.paidAt,
       refundedAt: booking.refundedAt,
+      settledAt: booking.settledAt,
+      inspectionEndsAt: booking.inspectionEndsAt,
+      cancellation: booking.cancellationSettlement,
+      ticket: this.ticketOf(booking),
+      /** Lo que sigue retenido a nombre de esta reserva, por concepto. */
+      heldMinor: pockets,
       records: records.map((record) => publicRecord(record)),
     };
+  }
+
+  /** El ticket de una reserva, para mostrarlo antes de pagar. */
+  async getTicket(userId: string, bookingId: string) {
+    const booking = await this.findBookingForParticipant(userId, bookingId);
+    return this.ticketOf(booking);
   }
 
   // ── Webhook ────────────────────────────────────────────────────────────
@@ -543,7 +810,21 @@ export class PaymentsService {
         },
       });
 
-      if (record.kind === PaymentRecordKind.SENA) {
+      if (record.kind === PaymentRecordKind.CHECKOUT) {
+        await tx.booking.update({
+          where: { id: bookingId },
+          data: {
+            paymentStatus: PaymentStatus.FULLY_PAID,
+            paidAt: new Date(),
+            checkoutPaymentIntentId: piId,
+            // La tarjeta queda guardada para autorizar el depósito cerca del
+            // retiro sin volver a pedírsela a nadie.
+            ...(detalle?.paymentMethodId
+              ? { savedPaymentMethodId: detalle.paymentMethodId }
+              : {}),
+          },
+        });
+      } else if (record.kind === PaymentRecordKind.SENA) {
         const booking = await tx.booking.findUnique({
           where: { id: bookingId },
           select: { paymentStatus: true },
@@ -583,6 +864,14 @@ export class PaymentsService {
       return actualizado;
     });
 
+    // La plata que entró queda asentada en los bolsillos de la reserva.
+    if (
+      record.kind === PaymentRecordKind.CHECKOUT ||
+      record.kind === PaymentRecordKind.BALANCE
+    ) {
+      await this.ensureFundsJournal(bookingId);
+    }
+
     await this.recordEvent({
       record: updated,
       bookingId,
@@ -609,6 +898,7 @@ export class PaymentsService {
 
   /** Cómo se llama cada cobro para una persona, no para el código. */
   private static readonly CONCEPTO: Record<string, string> = {
+    CHECKOUT: "Pago de la reserva",
     SENA: "Seña",
     BALANCE: "Saldo",
     DEPOSIT_HOLD: "Depósito en garantía",
@@ -706,13 +996,22 @@ export class PaymentsService {
     }
   }
 
-  /** La retención del depósito quedó autorizada: la plata está bloqueada. */
-  private async onHoldAuthorized(piId: string, eventId?: string) {
+  /**
+   * La retención del depósito quedó autorizada: la plata está bloqueada.
+   *
+   * Se anota hasta cuándo vale (captureBefore): pasado ese momento el emisor
+   * la suelta solo, y un daño reclamado después ya no se puede cobrar de ahí.
+   */
+  private async onHoldAuthorized(
+    piId: string,
+    eventId?: string,
+    known?: PaymentIntentResult,
+  ) {
     const record = await this.prisma.paymentRecord.findUnique({
       where: { stripePaymentIntentId: piId },
     });
     if (!record) return;
-    const detalle = await this.safeRetrieve(piId);
+    const detalle = known ?? (await this.safeRetrieve(piId));
 
     const updated = await this.prisma.paymentRecord.update({
       where: { id: record.id },
@@ -723,10 +1022,21 @@ export class PaymentsService {
       },
     });
 
+    if (record.bookingId) {
+      const vence =
+        detalle?.captureBefore ??
+        // Sin el dato del procesador se asume lo que dura una retención común.
+        new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await this.prisma.booking.update({
+        where: { id: record.bookingId },
+        data: { depositHoldExpiresAt: vence },
+      });
+    }
+
     await this.recordEvent({
       record: updated,
       bookingId: record.bookingId,
-      source: "webhook",
+      source: eventId ? "webhook" : "system",
       type: "hold.authorized",
       status: PaymentRecordStatus.AUTHORIZED,
       amountMinor: detalle?.amountCapturableMinor ?? record.amountMinor,
@@ -1020,9 +1330,11 @@ export class PaymentsService {
   async assertReadyForPickup(bookingId: string): Promise<void> {
     const booking = await this.findBooking(bookingId);
     if (booking.paymentStatus !== PaymentStatus.FULLY_PAID) {
-      throw new BadRequestException(
-        "Full payment (seña + balance) is required before pickup",
-      );
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "CHECKOUT_NOT_PAID",
+        message: "La reserva tiene que estar paga antes del retiro.",
+      });
     }
     const hold = await this.prisma.paymentRecord.findFirst({
       where: {
@@ -1032,41 +1344,355 @@ export class PaymentsService {
       },
     });
     if (!hold) {
-      throw new BadRequestException(
-        "The security deposit hold must be authorized before pickup",
-      );
+      throw new ConflictException({
+        statusCode: 409,
+        code: "DEPOSIT_AUTHORIZATION_REQUIRED",
+        message:
+          "El depósito en garantía no está autorizado. Quien alquila tiene " +
+          "que autorizarlo desde la reserva (POST /payments/bookings/:id/deposit-hold).",
+      });
     }
   }
 
-  // ── Liquidación en la devolución (soltar depósito + pagar al dueño) ────
+  // ── El libro: la plata de una reserva, en sus bolsillos ───────────────
 
-  async settleOnReturn(actorId: string, bookingId: string) {
+  /**
+   * Asienta que la plata de una reserva ENTRÓ y la reparte en sus bolsillos:
+   * seña, resto del alquiler y cobertura, todo retenido a nombre de la reserva.
+   *
+   * Es idempotente y se puede llamar en cualquier momento: el webhook del cobro
+   * lo llama al confirmarse el pago, y la liquidación o la cancelación lo
+   * vuelven a llamar por las dudas —para las reservas pagadas con el flujo
+   * viejo, que nunca pasaron por acá—. Se reparte lo efectivamente cobrado, en
+   * este orden: primero la seña, después el resto del alquiler, al final la
+   * cobertura.
+   */
+  async ensureFundsJournal(
+    bookingId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ): Promise<void> {
+    const clave = `funds:${bookingId}`;
+    if (await this.ledger.exists(clave, db)) return;
+
+    const booking = await db.booking.findUnique({ where: { id: bookingId } });
+    if (!booking) return;
+    const cobrado = await this.capturedMinor(bookingId, db);
+    if (cobrado <= 0) return;
+
+    const ticket = this.ticketOf(booking);
+    const sena = Math.min(ticket.sena.amountMinor, cobrado);
+    const alquiler = Math.min(
+      ticket.lines.find((l) => l.code === "RENTAL_REST")?.amountMinor ?? 0,
+      cobrado - sena,
+    );
+    const cobertura = cobrado - sena - alquiler;
+
+    await this.ledger.post(
+      {
+        idempotencyKey: clave,
+        type: "funds.captured",
+        description: "Pago de la reserva, retenido en sus bolsillos",
+        currency: booking.currency,
+        bookingId,
+        lines: [
+          { account: Accounts.processorClearing(), amountMinor: -cobrado },
+          { account: Accounts.bookingSena(bookingId), amountMinor: sena },
+          { account: Accounts.bookingRental(bookingId), amountMinor: alquiler },
+          {
+            account: Accounts.bookingInsurance(bookingId),
+            amountMinor: cobertura,
+          },
+        ],
+      },
+      db,
+    );
+  }
+
+  /** Lo que queda retenido en cada bolsillo de una reserva. */
+  private async pockets(bookingId: string) {
+    const [sena, rental, insurance] = await Promise.all([
+      this.ledger.balance(Accounts.bookingSena(bookingId)),
+      this.ledger.balance(Accounts.bookingRental(bookingId)),
+      this.ledger.balance(Accounts.bookingInsurance(bookingId)),
+    ]);
+    return { sena, rental, insurance };
+  }
+
+  /** La comisión como fracción del alquiler, desde los precios congelados. */
+  private commissionPct(booking: Booking): number {
+    const alquiler = booking.rentalSubtotalSnapshot ?? 0;
+    const comision = booking.platformFeeSnapshot ?? 0;
+    return alquiler > 0 ? comision / alquiler : 0;
+  }
+
+  // ── Liquidación: cierre de la ventana de inspección ───────────────────
+
+  /**
+   * LIQUIDA UNA RESERVA: suelta (o cobra) el depósito, reparte la plata
+   * retenida y le paga al dueño.
+   *
+   * Solo se puede cuando la ventana de inspección se cerró sin reclamo, o el
+   * reclamo quedó resuelto. Es IDEMPOTENTE: la puede pedir el cron, una de las
+   * partes o un admin, y aunque la pidan a la vez se liquida una sola vez
+   * (`settledAt` y la idempotencia del libro lo garantizan).
+   *
+   * El pago al dueño NO es condición para cerrar la reserva. Si la
+   * transferencia falla —la cuenta del dueño todavía no puede recibir, el
+   * procesador está caído— la plata queda en su bolsillo (owner:payable) y se
+   * reintenta en la próxima corrida. Antes una transferencia fallida hacía
+   * fallar la devolución entera, y la reserva quedaba trabada con el auto ya
+   * devuelto.
+   */
+  async settleBooking(
+    bookingId: string,
+    actorId: string | null,
+    opts: { now?: Date } = {},
+  ): Promise<{ settled: boolean; reason?: string }> {
+    const now = opts.now ?? new Date();
     const booking = await this.findBookingWithUsers(bookingId);
+    if (booking.settledAt) return { settled: true, reason: "ALREADY_SETTLED" };
 
-    // NO SE LIQUIDA UNA RESERVA CON UNA DISPUTA ABIERTA.
+    // UNA CONTRACARA BANCARIA FRENA TODO.
     //
-    // Transferirle al dueño plata que el banco del inquilino puede reclamar de
-    // vuelta convierte una disputa en una pérdida: la plataforma devuelve el
-    // cobro y ya le pagó al dueño. Frenar la liquidación es lo único que deja
-    // la plata donde se la puede defender.
-    const disputado = await this.prisma.paymentRecord.findFirst({
-      where: { bookingId, status: PaymentRecordStatus.DISPUTED },
-      select: { id: true },
-    });
-    if (disputado) {
-      this.logger.error(
-        `la reserva ${bookingId} tiene un cobro disputado: no se liquida`,
-      );
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "PAYMENT_DISPUTED",
-        message:
-          "Hay un pago de esta reserva desconocido por el titular de la " +
-          "tarjeta. La liquidación queda frenada hasta que se resuelva.",
-      });
+    // Si el banco de quien alquiló desconoció el cobro, esa plata puede
+    // volverse atrás: transferírsela al dueño ahora la convierte en una
+    // pérdida nuestra, porque al dueño ya no se la sacamos. Queda esperando a
+    // que alguien mire el caso.
+    //
+    // Ojo con los dos "DISPUTED" que hay acá: PaymentStatus.DISPUTED es el
+    // desconocimiento del cobro en el banco; BookingStatus.DISPUTED, más
+    // abajo, es un reclamo por daños entre las partes. No tienen nada que ver
+    // entre sí y se tratan distinto.
+    if (booking.paymentStatus === PaymentStatus.DISPUTED) {
+      return { settled: false, reason: "PAYMENT_DISPUTED" };
     }
 
-    // Soltar la retención del depósito (devolución sin daños).
+    const claim = await this.prisma.damageClaim.findUnique({
+      where: { bookingId },
+    });
+    const claimOpen =
+      claim &&
+      (claim.status === DamageClaimStatus.OPEN ||
+        claim.status === DamageClaimStatus.CONTESTED);
+
+    if (booking.status === BookingStatus.INSPECTION) {
+      if (!booking.inspectionEndsAt || booking.inspectionEndsAt > now) {
+        return { settled: false, reason: "INSPECTION_WINDOW_OPEN" };
+      }
+      if (claimOpen) return { settled: false, reason: "CLAIM_OPEN" };
+    } else if (booking.status === BookingStatus.DISPUTED) {
+      if (claimOpen || !claim) return { settled: false, reason: "CLAIM_OPEN" };
+    } else {
+      return { settled: false, reason: "NOT_RETURNED" };
+    }
+
+    await this.ensureFundsJournal(bookingId);
+
+    // 1. El depósito: se cobra lo aprobado por un daño, o se suelta entero.
+    const aprobado =
+      claim &&
+      (claim.status === DamageClaimStatus.ACCEPTED ||
+        claim.status === DamageClaimStatus.RESOLVED)
+        ? (claim.amountApprovedMinor ?? 0)
+        : 0;
+    if (aprobado > 0 && claim) {
+      await this.captureDamage(
+        bookingId,
+        aprobado,
+        `claim:${claim.id}`,
+        actorId,
+      );
+    } else {
+      await this.releaseDepositHold(bookingId, actorId);
+    }
+
+    // 2. La plata retenida de la reserva pasa a quien le corresponde.
+    const { sena, rental, insurance } = await this.pockets(bookingId);
+    const bruto = sena + rental;
+    const comision = Math.round(bruto * this.commissionPct(booking));
+    await this.ledger.post({
+      idempotencyKey: `settle:${bookingId}`,
+      type: "booking.settled",
+      description: "Liquidación de la reserva al cerrar la inspección",
+      currency: booking.currency,
+      bookingId,
+      actorId,
+      lines: [
+        { account: Accounts.bookingSena(bookingId), amountMinor: -sena },
+        { account: Accounts.bookingRental(bookingId), amountMinor: -rental },
+        {
+          account: Accounts.ownerPayable(booking.ownerId),
+          amountMinor: bruto - comision,
+        },
+        { account: Accounts.platformCommission(), amountMinor: comision },
+        {
+          account: Accounts.bookingInsurance(bookingId),
+          amountMinor: -insurance,
+        },
+        // La cobertura es de la aseguradora: pasa a una deuda con ella, no a
+        // una cuenta de FreeWheel.
+        { account: Accounts.insurancePayable(), amountMinor: insurance },
+      ],
+    });
+
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: { status: BookingStatus.COMPLETED, settledAt: now },
+    });
+
+    await this.auditLog.create({
+      actorId: actorId ?? undefined,
+      targetUserId: booking.ownerId,
+      action: "booking.settled",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: {
+        ownerGrossMinor: bruto,
+        commissionMinor: comision,
+        damagesMinor: aprobado,
+      },
+    });
+
+    // 3. Pagarle al dueño lo que se le debe. Si falla, queda debido.
+    await this.payOwner(booking.owner, `settle:${bookingId}`, actorId);
+
+    return { settled: true };
+  }
+
+  /**
+   * Le transfiere al dueño TODO lo que se le debe (su bolsillo owner:payable),
+   * que puede incluir liquidaciones anteriores que no se pudieron pagar y
+   * descontar una deuda suya (una seña doblada por haber cancelado).
+   */
+  async payOwner(
+    owner: User,
+    reference: string,
+    actorId: string | null,
+  ): Promise<{ paidMinor: number; pending: boolean }> {
+    const debido = await this.ledger.balance(Accounts.ownerPayable(owner.id));
+    if (debido <= 0) return { paidMinor: 0, pending: false };
+
+    try {
+      const accountId = await this.ensureOwnerAccount(owner);
+      const currency =
+        (
+          await this.prisma.ledgerEntry.findFirst({
+            where: { account: Accounts.ownerPayable(owner.id) },
+            orderBy: { createdAt: "desc" },
+            select: { currency: true },
+          })
+        )?.currency ?? "usd";
+      const transfer = await this.provider.transferToOwner({
+        amountMinor: debido,
+        currency,
+        destination: accountId,
+        metadata: { ownerId: owner.id, reference },
+        idempotencyKey: `payout_${owner.id}_${reference}_${debido}`,
+      });
+
+      await this.prisma.$transaction(async (tx) => {
+        await this.ledger.post(
+          {
+            idempotencyKey: `payout:${transfer.id}`,
+            type: "owner.payout",
+            description: "Transferencia al dueño",
+            currency,
+            actorId,
+            lines: [
+              {
+                account: Accounts.ownerPayable(owner.id),
+                amountMinor: -debido,
+              },
+              { account: Accounts.processorClearing(), amountMinor: debido },
+            ],
+          },
+          tx,
+        );
+        const bookingId = reference.startsWith("settle:")
+          ? reference.slice("settle:".length)
+          : null;
+        const payout = await tx.paymentRecord.create({
+          data: {
+            bookingId,
+            userId: owner.id,
+            kind: PaymentRecordKind.OWNER_TRANSFER,
+            status: PaymentRecordStatus.PAID,
+            provider: this.provider.name,
+            providerId: transfer.id,
+            stripeTransferId: transfer.id,
+            amount: debido / 100,
+            amountMinor: debido,
+            currency,
+            paidAt: new Date(),
+          },
+        });
+        if (bookingId) {
+          await tx.booking.update({
+            where: { id: bookingId },
+            data: { ownerTransferId: transfer.id },
+          });
+        }
+        await tx.paymentEvent.create({
+          data: {
+            paymentRecordId: payout.id,
+            bookingId,
+            actorId,
+            source: "system",
+            type: "transfer.created",
+            status: PaymentRecordStatus.PAID,
+            amountMinor: debido,
+            currency,
+          },
+        });
+      });
+      return { paidMinor: debido, pending: false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `no se pudo pagar al dueño ${owner.id} (${debido}): ${message}. ` +
+          "Queda debido en su bolsillo y se reintenta en la próxima corrida.",
+      );
+      await this.prisma.paymentEvent.create({
+        data: {
+          actorId,
+          source: "system",
+          type: "transfer.failed",
+          amountMinor: debido,
+          payload: {
+            ownerId: owner.id,
+            reference,
+            error: message.slice(0, 300),
+          },
+        },
+      });
+      return { paidMinor: 0, pending: true };
+    }
+  }
+
+  /** Reintenta el pago a los dueños que tienen plata debida. Lo corre el cron. */
+  async retryPendingPayouts(): Promise<number> {
+    const saldos = await this.ledger.balances({ prefix: "owner:" });
+    let pagados = 0;
+    for (const saldo of saldos) {
+      if (saldo.balanceMinor <= 0) continue;
+      const ownerId = /^owner:([^:]+):payable$/.exec(saldo.account)?.[1];
+      if (!ownerId) continue;
+      const owner = await this.prisma.user.findUnique({
+        where: { id: ownerId },
+      });
+      if (!owner) continue;
+      const r = await this.payOwner(
+        owner,
+        `retry:${ownerId}:${saldo.balanceMinor}`,
+        null,
+      );
+      if (r.paidMinor > 0) pagados += 1;
+    }
+    return pagados;
+  }
+
+  /** Suelta la retención del depósito, si la había. */
+  private async releaseDepositHold(bookingId: string, actorId: string | null) {
     const hold = await this.prisma.paymentRecord.findFirst({
       where: {
         bookingId,
@@ -1074,111 +1700,52 @@ export class PaymentsService {
         status: PaymentRecordStatus.AUTHORIZED,
       },
     });
-    if (hold?.stripePaymentIntentId) {
+    if (!hold?.stripePaymentIntentId) return;
+    try {
       await this.provider.releaseHold({
         paymentIntentId: hold.stripePaymentIntentId,
         idempotencyKey: `booking_${bookingId}_deposit_release`,
       });
-      const updated = await this.prisma.paymentRecord.update({
-        where: { id: hold.id },
-        data: {
-          status: PaymentRecordStatus.RELEASED,
-          releasedAt: new Date(),
-        },
-      });
-      await this.recordEvent({
-        record: updated,
-        bookingId,
-        actorId,
-        source: "api",
-        type: "hold.released",
-        status: PaymentRecordStatus.RELEASED,
-        amountMinor: hold.amountMinor,
-        currency: hold.currency,
-      });
+    } catch (error) {
+      // Una retención que ya venció no se puede cancelar: el emisor la soltó
+      // solo. Para quien alquiló el resultado es el mismo.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `no se pudo soltar el depósito de ${bookingId}: ${message}`,
+      );
     }
-
-    // Transferir al dueño lo que le corresponde.
-    const accountId = await this.ensureOwnerAccount(booking.owner);
-    const amountMinor = Math.round((booking.ownerPayoutSnapshot ?? 0) * 100);
-    if (amountMinor > 0) {
-      const transfer = await this.provider.transferToOwner({
-        amountMinor,
-        currency: booking.currency,
-        destination: accountId,
-        transferGroup: booking.transferGroup,
-        metadata: { bookingId },
-        idempotencyKey: `booking_${bookingId}_owner_transfer`,
-      });
-
-      const [payout] = await this.prisma.$transaction([
-        this.prisma.paymentRecord.create({
-          data: {
-            bookingId,
-            userId: booking.ownerId,
-            kind: PaymentRecordKind.OWNER_TRANSFER,
-            status: PaymentRecordStatus.PAID,
-            provider: this.provider.name,
-            providerId: transfer.id,
-            stripeTransferId: transfer.id,
-            amount: amountMinor / 100,
-            amountMinor,
-            currency: booking.currency,
-            paidAt: new Date(),
-          },
-        }),
-        this.prisma.booking.update({
-          where: { id: bookingId },
-          data: { ownerTransferId: transfer.id },
-        }),
-      ]);
-
-      await this.recordEvent({
-        record: payout,
-        bookingId,
-        actorId,
-        source: "api",
-        type: "transfer.created",
-        status: PaymentRecordStatus.PAID,
-        amountMinor,
-        currency: booking.currency,
-      });
-    }
-
-    await this.auditLog.create({
+    const updated = await this.prisma.paymentRecord.update({
+      where: { id: hold.id },
+      data: { status: PaymentRecordStatus.RELEASED, releasedAt: new Date() },
+    });
+    await this.recordEvent({
+      record: updated,
+      bookingId,
       actorId,
-      targetUserId: booking.ownerId,
-      action: "payment.settled",
-      entityType: "Booking",
-      entityId: bookingId,
-      metadata: { ownerPayoutMinor: amountMinor },
+      source: "api",
+      type: "hold.released",
+      status: PaymentRecordStatus.RELEASED,
+      amountMinor: hold.amountMinor,
+      currency: hold.currency,
     });
   }
 
   /**
-   * COBRAR PARTE DEL DEPÓSITO EN GARANTÍA POR UN DAÑO.
+   * COBRAR UN DAÑO DEL DEPÓSITO.
    *
-   * Es la otra mitad del depósito, y hasta ahora no existía: la retención solo
-   * se podía soltar, así que un auto devuelto con un golpe no tenía forma de
-   * cobrarse y el depósito era decorativo.
-   *
-   * ── Por qué lo ejecuta un administrador y no el dueño ────────────────────
-   * Es plata de otra persona y la decisión tiene dos partes interesadas con
-   * intereses opuestos. Dejar que el dueño capture solo convertiría el
-   * depósito en un botón para quedarse con $200 de quien alquiló, sin que
-   * nadie mire. El dueño reclama, la plataforma resuelve — que es lo que la
-   * plataforma está para hacer.
-   *
-   * El importe se acota al retenido: no se puede capturar más de lo que se
-   * bloqueó, y Stripe además lo rechazaría.
+   * Nunca más de lo retenido, y solo mientras la retención siga viva. Lo
+   * cobrado es del dueño (no lleva comisión: es una indemnización, no un
+   * alquiler). Devuelve lo que efectivamente se cobró, que puede ser menos de
+   * lo aprobado; la diferencia es un reclamo que se sigue por fuera de la
+   * plataforma.
    */
-  async captureDeposit(
-    actorId: string,
+  async captureDamage(
     bookingId: string,
-    amountMinor: number,
-    reason: string,
+    approvedMinor: number,
+    reference: string,
+    actorId: string | null,
     ctx: PaymentContext = {},
-  ) {
+  ): Promise<{ capturedMinor: number; reason?: string }> {
     const booking = await this.findBooking(bookingId);
     const hold = await this.prisma.paymentRecord.findFirst({
       where: {
@@ -1188,35 +1755,26 @@ export class PaymentsService {
       },
     });
     if (!hold?.stripePaymentIntentId) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "DEPOSIT_HOLD_NOT_AVAILABLE",
-        message:
-          "Esta reserva no tiene un depósito retenido para cobrar. Puede que " +
-          "ya se haya soltado o que nunca se haya autorizado.",
-      });
+      return { capturedMinor: 0, reason: "DEPOSIT_HOLD_NOT_AVAILABLE" };
+    }
+    if (
+      booking.depositHoldExpiresAt &&
+      booking.depositHoldExpiresAt < new Date()
+    ) {
+      return { capturedMinor: 0, reason: "DEPOSIT_HOLD_EXPIRED" };
     }
 
     const retenido = hold.amountMinor ?? 0;
-    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "INVALID_AMOUNT",
-        message: "El importe a cobrar tiene que ser un número positivo.",
-      });
-    }
-    if (amountMinor > retenido) {
-      throw new BadRequestException({
-        statusCode: 400,
-        code: "AMOUNT_EXCEEDS_HOLD",
-        message: `No se puede cobrar más de lo retenido (${retenido / 100} ${hold.currency.toUpperCase()}).`,
-      });
+    const monto = Math.min(Math.max(0, Math.trunc(approvedMinor)), retenido);
+    if (monto <= 0) {
+      await this.releaseDepositHold(bookingId, actorId);
+      return { capturedMinor: 0 };
     }
 
     const captured = await this.provider.captureHold({
       paymentIntentId: hold.stripePaymentIntentId,
-      amountMinor,
-      idempotencyKey: `booking_${bookingId}_deposit_capture_${amountMinor}`,
+      amountMinor: monto,
+      idempotencyKey: `booking_${bookingId}_deposit_capture_${monto}`,
     });
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1224,22 +1782,40 @@ export class PaymentsService {
         where: { id: hold.id },
         data: {
           status: PaymentRecordStatus.CAPTURED,
-          amount: amountMinor / 100,
-          amountMinor,
+          amount: monto / 100,
+          amountMinor: monto,
           capturedAt: new Date(),
           paidAt: new Date(),
           stripeChargeId: captured.chargeId ?? undefined,
           metadata: {
             ...((hold.metadata as Record<string, unknown> | null) ?? {}),
             depositHeldMinor: retenido,
-            captureReason: reason,
+            captureReference: reference,
           } as Prisma.InputJsonValue,
         },
       });
       await tx.booking.update({
         where: { id: bookingId },
-        data: { depositCapturedAmount: amountMinor / 100 },
+        data: { depositCapturedAmount: monto / 100 },
       });
+      await this.ledger.post(
+        {
+          idempotencyKey: `damage:${bookingId}`,
+          type: "deposit.captured",
+          description: "Cobro de un daño del depósito en garantía",
+          currency: hold.currency,
+          bookingId,
+          actorId,
+          lines: [
+            { account: Accounts.processorClearing(), amountMinor: -monto },
+            {
+              account: Accounts.ownerPayable(booking.ownerId),
+              amountMinor: monto,
+            },
+          ],
+        },
+        tx,
+      );
       return actualizado;
     });
 
@@ -1250,60 +1826,348 @@ export class PaymentsService {
       source: "api",
       type: "hold.captured",
       status: PaymentRecordStatus.CAPTURED,
-      amountMinor,
+      amountMinor: monto,
       currency: hold.currency,
       ip: ctx.ip,
       userAgent: ctx.userAgent,
-      payload: { reason, heldMinor: retenido },
+      payload: { reference, heldMinor: retenido },
     });
+    return { capturedMinor: monto };
+  }
 
+  /**
+   * COBRAR UN DAÑO SIN RECLAMO (solo admin): la vía directa que existía antes
+   * de los reclamos. Se mantiene para casos que un admin ya resolvió por fuera.
+   */
+  async captureDeposit(
+    actorId: string,
+    bookingId: string,
+    amountMinor: number,
+    reason: string,
+    ctx: PaymentContext = {},
+  ) {
+    const booking = await this.findBooking(bookingId);
+    if (actorId === booking.ownerId || actorId === booking.renterId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: "SELF_REVIEW_FORBIDDEN",
+        message:
+          "Un administrador no puede resolver plata de una reserva propia.",
+      });
+    }
+    const hold = await this.prisma.paymentRecord.findFirst({
+      where: {
+        bookingId,
+        kind: PaymentRecordKind.DEPOSIT_HOLD,
+        status: PaymentRecordStatus.AUTHORIZED,
+      },
+    });
+    if (!hold) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DEPOSIT_HOLD_NOT_AVAILABLE",
+        message:
+          "Esta reserva no tiene un depósito retenido para cobrar. Puede que " +
+          "ya se haya soltado o que nunca se haya autorizado.",
+      });
+    }
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "INVALID_AMOUNT",
+        message: "El importe a cobrar tiene que ser un número positivo.",
+      });
+    }
+    if (amountMinor > (hold.amountMinor ?? 0)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "AMOUNT_EXCEEDS_HOLD",
+        message: `No se puede cobrar más de lo retenido (${(hold.amountMinor ?? 0) / 100} ${hold.currency.toUpperCase()}).`,
+      });
+    }
+    const r = await this.captureDamage(
+      bookingId,
+      amountMinor,
+      `manual:${reason}`,
+      actorId,
+      ctx,
+    );
     await this.auditLog.create({
       actorId,
       targetUserId: booking.renterId,
       action: "payment.deposit.captured",
       entityType: "Booking",
       entityId: bookingId,
-      metadata: { amountMinor, heldMinor: retenido, reason },
+      metadata: { amountMinor: r.capturedMinor, reason },
     });
-
-    return this.getStatus(actorId, bookingId).catch(() => ({
-      bookingId,
-      capturedMinor: amountMinor,
-    }));
+    return this.getStatus(actorId, bookingId, { asAdmin: true });
   }
 
-  // ── Devolución al cancelar ─────────────────────────────────────────────
+  // ── Cancelación ────────────────────────────────────────────────────────
 
-  async refundOnCancel(actorId: string, bookingId: string) {
-    const booking = await this.findBooking(bookingId);
-    const charged = await this.prisma.paymentRecord.findMany({
-      where: {
+  /** Lo que pasaría si esta persona cancelara ahora, sin cancelar nada. */
+  async previewCancellation(userId: string, bookingId: string) {
+    const booking = await this.findBookingForParticipant(userId, bookingId);
+    const cancelledBy: CancelledBy =
+      userId === booking.ownerId ? "OWNER" : "RENTER";
+    return this.cancellationOutcome(booking, cancelledBy, new Date());
+  }
+
+  private async cancellationOutcome(
+    booking: Booking,
+    cancelledBy: CancelledBy,
+    now: Date,
+  ): Promise<CancellationOutcome> {
+    const ticket = this.ticketOf(booking);
+    return computeCancellation({
+      cancelledBy,
+      paidMinor: await this.capturedMinor(booking.id),
+      rentalMinor: ticket.lines
+        .filter((l) => l.code !== "INSURANCE")
+        .reduce((t, l) => t + l.amountMinor, 0),
+      insuranceMinor:
+        ticket.lines.find((l) => l.code === "INSURANCE")?.amountMinor ?? 0,
+      senaMinor: ticket.sena.amountMinor,
+      commissionPct: this.commissionPct(booking),
+      paidAt: booking.paidAt,
+      pickupConfirmed: Boolean(booking.pickupConfirmedAt),
+      now,
+      withdrawalDays: this.withdrawalDays(),
+    });
+  }
+
+  private withdrawalDays(): number {
+    const dias = Number.parseFloat(
+      this.config.get<string>("CONSUMER_WITHDRAWAL_DAYS") ?? "",
+    );
+    return Number.isFinite(dias) && dias >= 0 ? dias : 10;
+  }
+
+  /**
+   * CANCELA UNA RESERVA PAGA Y REPARTE LA PLATA según la política
+   * (money/cancellation-policy.ts). Devuelve el resultado, que queda guardado
+   * en la reserva como constancia de qué regla se aplicó.
+   */
+  async cancelAndSettle(
+    bookingId: string,
+    cancelledBy: CancelledBy,
+    actorId: string,
+  ): Promise<CancellationOutcome> {
+    const booking = await this.findBookingWithUsers(bookingId);
+    const outcome = await this.cancellationOutcome(
+      booking,
+      cancelledBy,
+      new Date(),
+    );
+
+    if (outcome.rule !== "UNPAID") {
+      await this.ensureFundsJournal(bookingId);
+      if (outcome.refundToRenterMinor > 0) {
+        await this.refundRenter(
+          bookingId,
+          outcome.refundToRenterMinor,
+          actorId,
+        );
+      }
+
+      const { sena, rental, insurance } = await this.pockets(bookingId);
+      const aDevolver = outcome.refundToRenterMinor;
+      const lines =
+        outcome.rule === "RENTER_FORFEITS_SENA"
+          ? [
+              // La seña va al dueño (menos la comisión); el resto se devolvió.
+              { account: Accounts.bookingSena(bookingId), amountMinor: -sena },
+              {
+                account: Accounts.ownerPayable(booking.ownerId),
+                amountMinor: outcome.ownerReceivesMinor,
+              },
+              {
+                account: Accounts.platformCommission(),
+                amountMinor: outcome.platformReceivesMinor,
+              },
+              {
+                account: Accounts.bookingRental(bookingId),
+                amountMinor: -rental,
+              },
+              {
+                account: Accounts.bookingInsurance(bookingId),
+                amountMinor: -insurance,
+              },
+              { account: Accounts.processorClearing(), amountMinor: aDevolver },
+              // Si la seña retenida no coincide al centavo con la que se
+              // calculó (una reserva vieja), la diferencia cierra acá.
+              {
+                account: Accounts.processorClearing(),
+                amountMinor:
+                  sena +
+                  rental +
+                  insurance -
+                  outcome.ownerReceivesMinor -
+                  outcome.platformReceivesMinor -
+                  aDevolver,
+              },
+            ]
+          : [
+              { account: Accounts.bookingSena(bookingId), amountMinor: -sena },
+              {
+                account: Accounts.bookingRental(bookingId),
+                amountMinor: -rental,
+              },
+              {
+                account: Accounts.bookingInsurance(bookingId),
+                amountMinor: -insurance,
+              },
+              {
+                account: Accounts.processorClearing(),
+                amountMinor: sena + rental + insurance,
+              },
+            ];
+      await this.ledger.post({
+        idempotencyKey: `cancel:${bookingId}`,
+        type: `booking.cancelled.${outcome.rule.toLowerCase()}`,
+        description: outcome.explanation,
+        currency: booking.currency,
         bookingId,
-        kind: { in: [PaymentRecordKind.SENA, PaymentRecordKind.BALANCE] },
-        status: { in: PAID_RECORD_STATUSES },
+        actorId,
+        lines,
+      });
+
+      if (outcome.ownerPenaltyMinor > 0) {
+        // La seña doblada: el dueño queda debiendo y quien alquiló queda con
+        // un crédito. No pasa por la tarjeta porque un reembolso no puede
+        // superar el cobro original.
+        await this.ledger.post({
+          idempotencyKey: `penalty:${bookingId}`,
+          type: "owner.cancellation.penalty",
+          description:
+            "Seña devuelta doblada por cancelación del dueño (CCyC art. 1059)",
+          currency: booking.currency,
+          bookingId,
+          actorId,
+          lines: [
+            {
+              account: Accounts.ownerPayable(booking.ownerId),
+              amountMinor: -outcome.ownerPenaltyMinor,
+            },
+            {
+              account: Accounts.renterPayable(booking.renterId),
+              amountMinor: outcome.ownerPenaltyMinor,
+            },
+          ],
+        });
+      }
+    }
+
+    await this.releaseDepositHold(bookingId, actorId);
+
+    const pagado =
+      outcome.refundToRenterMinor +
+      outcome.ownerReceivesMinor +
+      outcome.platformReceivesMinor;
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: {
+        cancelledByRole: cancelledBy,
+        cancellationSettlement: JSON.parse(
+          JSON.stringify(outcome),
+        ) as Prisma.InputJsonValue,
+        ...(outcome.refundToRenterMinor > 0
+          ? {
+              paymentStatus:
+                outcome.refundToRenterMinor >= pagado
+                  ? PaymentStatus.REFUNDED
+                  : PaymentStatus.PARTIALLY_REFUNDED,
+              refundedAt: new Date(),
+            }
+          : {}),
+        settledAt: new Date(),
       },
     });
 
-    for (const record of charged) {
+    await this.auditLog.create({
+      actorId,
+      targetUserId:
+        cancelledBy === "OWNER" ? booking.renterId : booking.ownerId,
+      action: "payment.cancellation.settled",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: {
+        rule: outcome.rule,
+        refundMinor: outcome.refundToRenterMinor,
+        ownerMinor: outcome.ownerReceivesMinor,
+        penaltyMinor: outcome.ownerPenaltyMinor,
+      },
+    });
+
+    if (outcome.ownerReceivesMinor > 0) {
+      await this.payOwner(booking.owner, `cancel:${bookingId}`, actorId);
+    }
+    return outcome;
+  }
+
+  /** Mantiene el nombre viejo: cancelar con reembolso total. */
+  async refundOnCancel(actorId: string, bookingId: string) {
+    const booking = await this.findBooking(bookingId);
+    const cancelledBy: CancelledBy =
+      actorId === booking.ownerId
+        ? "OWNER"
+        : actorId === booking.renterId
+          ? "RENTER"
+          : "PLATFORM";
+    return this.cancelAndSettle(bookingId, cancelledBy, actorId);
+  }
+
+  /**
+   * Devuelve a la tarjeta de quien alquiló, repartiendo entre los cobros de la
+   * reserva (el único nuevo, o la seña y el saldo de una reserva vieja). Nunca
+   * más de lo que queda sin devolver en cada uno.
+   */
+  private async refundRenter(
+    bookingId: string,
+    amountMinor: number,
+    actorId: string,
+  ) {
+    let pendiente = amountMinor;
+    const cobros = await this.prisma.paymentRecord.findMany({
+      where: {
+        bookingId,
+        kind: {
+          in: [
+            PaymentRecordKind.CHECKOUT,
+            PaymentRecordKind.BALANCE,
+            PaymentRecordKind.SENA,
+          ],
+        },
+        status: {
+          in: [...PAID_RECORD_STATUSES, PaymentRecordStatus.PARTIALLY_REFUNDED],
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    for (const record of cobros) {
+      if (pendiente <= 0) break;
       if (!record.stripePaymentIntentId) continue;
-      // Lo que queda por devolver, no el importe original: un cobro que ya
-      // tuvo una devolución parcial no se devuelve entero otra vez.
-      const pendienteMinor =
+      const disponible =
         (record.amountMinor ?? 0) - (record.refundedAmountMinor ?? 0);
-      if (pendienteMinor <= 0) continue;
+      const monto = Math.min(disponible, pendiente);
+      if (monto <= 0) continue;
 
       const refund = await this.provider.refund({
         paymentIntentId: record.stripePaymentIntentId,
-        amountMinor: pendienteMinor,
-        idempotencyKey: `booking_${bookingId}_${record.kind}_refund_${pendienteMinor}`,
+        amountMinor: monto,
+        idempotencyKey: `booking_${bookingId}_${record.id}_refund_${monto}`,
       });
-      const [updated, comprobante] = await this.prisma.$transaction([
+      const devuelto = (record.refundedAmountMinor ?? 0) + monto;
+      await this.prisma.$transaction([
         this.prisma.paymentRecord.update({
           where: { id: record.id },
           data: {
-            status: PaymentRecordStatus.REFUNDED,
-            refundedAmountMinor:
-              (record.refundedAmountMinor ?? 0) + pendienteMinor,
+            status:
+              devuelto >= (record.amountMinor ?? 0)
+                ? PaymentRecordStatus.REFUNDED
+                : PaymentRecordStatus.PARTIALLY_REFUNDED,
+            refundedAmountMinor: devuelto,
             refundedAt: new Date(),
           },
         }),
@@ -1316,77 +2180,126 @@ export class PaymentsService {
             provider: this.provider.name,
             providerId: refund.id,
             stripeRefundId: refund.id,
-            amount: pendienteMinor / 100,
-            amountMinor: pendienteMinor,
+            amount: monto / 100,
+            amountMinor: monto,
             currency: record.currency,
             refundedAt: new Date(),
           },
         }),
       ]);
-      void updated;
-
       await this.recordEvent({
-        record: comprobante,
+        record,
         bookingId,
         actorId,
         source: "api",
         type: "refund.created",
         status: PaymentRecordStatus.REFUNDED,
-        amountMinor: pendienteMinor,
+        amountMinor: monto,
         currency: record.currency,
       });
+      pendiente -= monto;
     }
 
-    // Soltar la retención del depósito, si estaba autorizada.
-    const hold = await this.prisma.paymentRecord.findFirst({
-      where: {
-        bookingId,
-        kind: PaymentRecordKind.DEPOSIT_HOLD,
-        status: PaymentRecordStatus.AUTHORIZED,
-      },
+    if (pendiente > 0) {
+      this.logger.error(
+        `no alcanzó lo cobrado para devolver ${amountMinor} en ${bookingId}: faltaron ${pendiente}`,
+      );
+    }
+  }
+
+  // ── Operaciones de administración sobre el libro ──────────────────────
+
+  /** Los saldos de todos los bolsillos, o de los que empiezan con un prefijo. */
+  ledgerBalances(prefix?: string) {
+    return this.ledger.balances({ prefix });
+  }
+
+  ledgerForBooking(bookingId: string) {
+    return this.ledger.journalsForBooking(bookingId);
+  }
+
+  /**
+   * Registra que se le pagó a la aseguradora lo cobrado por su cuenta. Es la
+   * forma legal de "vaciar" la cobertura: pagándole a quien corresponde, no
+   * pasándola a una cuenta de FreeWheel.
+   */
+  async recordInsuranceRemittance(
+    actorId: string,
+    amountMinor: number,
+    currency: string,
+    reference: string,
+  ) {
+    const debido = await this.ledger.balance(Accounts.insurancePayable());
+    if (amountMinor <= 0 || amountMinor > debido) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "INVALID_AMOUNT",
+        message: `El monto tiene que estar entre 1 y lo debido a la aseguradora (${debido}).`,
+      });
+    }
+    await this.ledger.post({
+      idempotencyKey: `insurance-remittance:${reference}`,
+      type: "insurance.remitted",
+      description: `Pago a la aseguradora (${reference})`,
+      currency,
+      actorId,
+      lines: [
+        { account: Accounts.insurancePayable(), amountMinor: -amountMinor },
+        { account: Accounts.processorClearing(), amountMinor },
+      ],
     });
-    if (hold?.stripePaymentIntentId) {
-      await this.provider.releaseHold({
-        paymentIntentId: hold.stripePaymentIntentId,
-        idempotencyKey: `booking_${bookingId}_deposit_release`,
-      });
-      const updated = await this.prisma.paymentRecord.update({
-        where: { id: hold.id },
-        data: {
-          status: PaymentRecordStatus.RELEASED,
-          releasedAt: new Date(),
-        },
-      });
-      await this.recordEvent({
-        record: updated,
-        bookingId,
-        actorId,
-        source: "api",
-        type: "hold.released",
-        status: PaymentRecordStatus.RELEASED,
-        amountMinor: hold.amountMinor,
-        currency: hold.currency,
-      });
-    }
-
-    if (charged.length > 0) {
-      await this.prisma.booking.update({
-        where: { id: bookingId },
-        data: {
-          paymentStatus: PaymentStatus.REFUNDED,
-          refundedAt: new Date(),
-        },
-      });
-    }
-
     await this.auditLog.create({
       actorId,
-      targetUserId: booking.ownerId,
-      action: "payment.refunded",
-      entityType: "Booking",
-      entityId: bookingId,
-      metadata: { refunded: charged.length },
+      action: "ledger.insurance.remitted",
+      entityType: "Ledger",
+      entityId: reference,
+      metadata: { amountMinor, currency },
     });
+    return { remainingMinor: debido - amountMinor };
+  }
+
+  /**
+   * Registra que se le pagó a quien alquiló un crédito que no podía ir a su
+   * tarjeta (la seña doblada de una cancelación del dueño).
+   */
+  async recordRenterCompensationPaid(
+    actorId: string,
+    renterId: string,
+    amountMinor: number,
+    currency: string,
+    reference: string,
+  ) {
+    const debido = await this.ledger.balance(Accounts.renterPayable(renterId));
+    if (amountMinor <= 0 || amountMinor > debido) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "INVALID_AMOUNT",
+        message: `El monto tiene que estar entre 1 y lo que se le debe (${debido}).`,
+      });
+    }
+    await this.ledger.post({
+      idempotencyKey: `renter-compensation:${reference}`,
+      type: "renter.compensation.paid",
+      description: `Pago a quien alquiló (${reference})`,
+      currency,
+      actorId,
+      lines: [
+        {
+          account: Accounts.renterPayable(renterId),
+          amountMinor: -amountMinor,
+        },
+        { account: Accounts.processorClearing(), amountMinor },
+      ],
+    });
+    await this.auditLog.create({
+      actorId,
+      targetUserId: renterId,
+      action: "ledger.renter.compensation_paid",
+      entityType: "Ledger",
+      entityId: reference,
+      metadata: { amountMinor, currency },
+    });
+    return { remainingMinor: debido - amountMinor };
   }
 
   // ── Alta del dueño en Connect ──────────────────────────────────────────
@@ -1640,6 +2553,10 @@ export class PaymentsService {
     return booking;
   }
 }
+
+type BookingWithUsers = Prisma.BookingGetPayload<{
+  include: { owner: true; renter: true };
+}>;
 
 /** Las columnas de tarjeta y riesgo, solo cuando hay algo que escribir. */
 function cardColumns(detalle: PaymentIntentResult | null) {

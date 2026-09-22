@@ -1,7 +1,14 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
-import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
+import { ThrottlerModule } from "@nestjs/throttler";
+import { ClientIpThrottlerGuard } from "./common/rate-limit/client-ip-throttler.guard";
+import { RateLimitModule } from "./common/rate-limit/rate-limit.module";
+import { CommonModule } from "./common/common.module";
+import { VehicleVerificationModule } from "./vehicle-verification/vehicle-verification.module";
+import { RetentionModule } from "./retention/retention.module";
+import { ClaimsModule } from "./claims/claims.module";
+import { JobsModule } from "./jobs/jobs.module";
 import { PhotoVisibilityInterceptor } from "./common/interceptors/photo-visibility.interceptor";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
@@ -27,7 +34,9 @@ import { ReportsModule } from "./reports/reports.module";
   controllers: [AppController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // El limitador general cuenta por la IP REAL del cliente (ver
+    // ClientIpThrottlerGuard): detrás de Vercel, req.ip es la del proxy.
+    { provide: APP_GUARD, useClass: ClientIpThrottlerGuard },
     // El ajuste "quién ve mi foto" se hace valer acá, sobre TODAS las respuestas,
     // en vez de en cada consulta que devuelve una persona. Ver el comentario del
     // interceptor: un control de privacidad repartido en seis lugares se olvida
@@ -38,6 +47,8 @@ import { ReportsModule } from "./reports/reports.module";
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
+    CommonModule,
+    RateLimitModule,
     HealthModule,
     AuthModule,
     UsersModule,
@@ -54,6 +65,10 @@ import { ReportsModule } from "./reports/reports.module";
     AiModule,
     ReviewsModule,
     ReportsModule,
+    VehicleVerificationModule,
+    RetentionModule,
+    ClaimsModule,
+    JobsModule,
   ],
 })
 export class AppModule {}

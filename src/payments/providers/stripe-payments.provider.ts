@@ -111,6 +111,9 @@ export class StripePaymentsProvider implements PaymentProvider {
         transfer_group: input.transferGroup ?? undefined,
         metadata: this.metadata(input),
         automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+        ...(input.setupFutureUsage
+          ? { setup_future_usage: input.setupFutureUsage }
+          : {}),
       },
       this.opts(input.idempotencyKey),
     );
@@ -120,6 +123,7 @@ export class StripePaymentsProvider implements PaymentProvider {
   async createDepositHold(
     input: CreateIntentInput,
   ): Promise<PaymentIntentResult> {
+    const offSession = Boolean(input.offSession && input.paymentMethodId);
     const intent = await this.stripe.paymentIntents.create(
       {
         amount: input.amountMinor,
@@ -133,10 +137,36 @@ export class StripePaymentsProvider implements PaymentProvider {
         capture_method: "manual",
         transfer_group: input.transferGroup ?? undefined,
         metadata: this.metadata(input),
-        automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+        // Una retención común dura unos 7 días. El alquiler de autos es uno de
+        // los rubros donde las redes permiten una autorización extendida
+        // (hasta ~30 días): se pide si está disponible. Si no lo está, la
+        // retención dura lo normal y `captureBefore` lo dice.
+        payment_method_options: {
+          card: { request_extended_authorization: "if_available" },
+        },
+        ...(offSession
+          ? {
+              // Con la tarjeta que dejó guardada el cobro, sin el cliente
+              // presente. Si el banco pide autenticarse, esto falla y el
+              // inquilino la autoriza él mismo (ver createDepositHold en el
+              // servicio).
+              payment_method: input.paymentMethodId as string,
+              off_session: true,
+              confirm: true,
+            }
+          : {
+              automatic_payment_methods: {
+                enabled: true,
+                allow_redirects: "never" as const,
+              },
+            }),
       },
       this.opts(input.idempotencyKey),
     );
+    // Para saber hasta cuándo vale la retención hay que mirar el cargo.
+    if (offSession && intent.status === "requires_capture") {
+      return this.retrieveIntent(intent.id);
+    }
     return this.toIntentResult(intent);
   }
 
@@ -299,6 +329,11 @@ export class StripePaymentsProvider implements PaymentProvider {
       card: charge ? cardOf(charge) : null,
       risk: charge ? riskOf(charge) : null,
       failure: failureOf(intent, charge),
+      paymentMethodId:
+        typeof intent.payment_method === "string"
+          ? intent.payment_method
+          : (intent.payment_method?.id ?? null),
+      captureBefore: captureBeforeOf(charge),
     };
   }
 }
@@ -355,4 +390,10 @@ function failureOf(
     };
   }
   return null;
+}
+
+/** Hasta cuándo se puede capturar la retención, según el cargo. */
+function captureBeforeOf(charge: Stripe.Charge | null): Date | null {
+  const segundos = charge?.payment_method_details?.card?.capture_before;
+  return typeof segundos === "number" ? new Date(segundos * 1000) : null;
 }

@@ -12,6 +12,7 @@ import {
   Vehicle,
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import {
   blockingBookingStatuses,
   overlappingRangeWhere,
@@ -71,7 +72,28 @@ function assertLocationIsWhole(data: UpdateListingDto): void {
 
 @Injectable()
 export class ListingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly vehicleVerification: VehicleVerificationService,
+  ) {}
+
+  /**
+   * PUBLICAR ES OFRECER EL AUTO AL PÚBLICO, y para eso el auto tiene que estar
+   * verificado: cédula a nombre de quien publica (o autorización) y seguro
+   * vigente. Se controla al pasar a ACTIVE y no al crear el borrador, para que
+   * se pueda armar el aviso tranquilo mientras la verificación se revisa.
+   *
+   * El control está acá y también en `bookings.create`. Parece repetido y no lo
+   * es: entre que se publica y que alguien reserva pueden pasar meses, y el
+   * seguro se vence solo, sin que nadie toque nada.
+   */
+  private async assertPublishable(
+    vehicleId: string,
+    status: ListingStatus | undefined,
+  ): Promise<void> {
+    if (status !== ListingStatus.ACTIVE) return;
+    await this.vehicleVerification.assertVehicleVerified(vehicleId);
+  }
 
   async create(ownerId: string, data: CreateListingDto) {
     const vehicle = await this.prisma.vehicle.findUnique({
@@ -83,6 +105,8 @@ export class ListingsService {
       ownerId,
       "You cannot create listings for this vehicle",
     );
+
+    await this.assertPublishable(data.vehicleId, data.status);
 
     return this.prisma.listing.create({
       data: { ...data, ownerId },
@@ -201,6 +225,11 @@ export class ListingsService {
         "You cannot assign this listing to that vehicle",
       );
     }
+
+    await this.assertPublishable(
+      data.vehicleId ?? listing.vehicleId,
+      data.status,
+    );
 
     return this.prisma.listing.update({
       where: { id },

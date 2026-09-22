@@ -739,6 +739,49 @@ export class EmailService {
   }
 
   /**
+   * AVISO DE SEGURIDAD SOBRE LA PROPIA CUENTA.
+   *
+   * Hoy lo dispara el bloqueo por intentos fallidos de login. Va SIEMPRE,
+   * aunque la persona haya apagado los avisos: no es una notificación de la
+   * plataforma, es la única forma de que se entere de que alguien está
+   * probando entrar a su cuenta. Quien lo recibe sin haber intentado entrar
+   * sabe, por ese mail, que tiene que cambiar la contraseña.
+   *
+   * No dice cuántos intentos hubo ni desde dónde: sería darle a quien controle
+   * la casilla información sobre el ataque, y no cambia lo que la persona
+   * tiene que hacer.
+   */
+  async sendSecurityAlert(
+    email: string,
+    params: {
+      recipientName?: string;
+      kind: "LOGIN_LOCKED";
+      lockedUntil?: Date | null;
+    },
+  ) {
+    const hasta = params.lockedUntil
+      ? this.formatDate(params.lockedUntil)
+      : null;
+    const html = this.layout(
+      "Actividad inusual en tu cuenta",
+      this.p(
+        `${this.saludo(params.recipientName)} detectamos varios intentos ` +
+          "fallidos de iniciar sesión en tu cuenta, así que la bloqueamos por " +
+          "un rato para protegerla.",
+      ) +
+        (hasta
+          ? this.cuadro([{ etiqueta: "Se desbloquea", valor: hasta }])
+          : "") +
+        this.p(
+          "Si fuiste vos y te olvidaste la contraseña, esperá ese rato o " +
+            "recuperala desde la app. <strong>Si no fuiste vos, cambiá tu " +
+            "contraseña apenas puedas</strong>: alguien está intentando entrar.",
+        ),
+    );
+    await this.send(email, "Actividad inusual en tu cuenta - Freewheel", html);
+  }
+
+  /**
    * "Tenés mensajes sin leer."
    *
    * QUÉ NO LLEVA, y por qué: no lleva el texto del mensaje ni el nombre de quien

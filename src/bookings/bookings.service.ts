@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   Booking,
   BookingStatus,
@@ -15,7 +17,10 @@ import {
 import * as bcrypt from "bcryptjs";
 import { AvailabilityService } from "../availability/availability.service";
 import { AuditLogService } from "../common/services/audit-log.service";
+import { EncryptionService } from "../common/crypto/encryption.service";
 import { ContractsService } from "../contracts/contracts.service";
+import type { AcceptanceContext } from "../contracts/contracts.service";
+import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import { EmailService } from "../email/email.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PricingService } from "../payments/pricing.service";
@@ -42,6 +47,9 @@ export class BookingsService {
     private readonly pricing: PricingService,
     private readonly contracts: ContractsService,
     private readonly email: EmailService,
+    private readonly encryption: EncryptionService,
+    private readonly config: ConfigService,
+    private readonly vehicleVerification: VehicleVerificationService,
   ) {}
 
   async create(renterId: string, data: CreateBookingDto) {
@@ -59,6 +67,10 @@ export class BookingsService {
     if (listing.ownerId === renterId) {
       throw new ForbiddenException("You cannot book your own listing");
     }
+
+    // Que el auto sea de quien lo publica y tenga el seguro vigente (con
+    // REQUIRE_VEHICLE_VERIFICATION=true; ver VehicleVerificationService).
+    await this.vehicleVerification.assertVehicleVerified(listing.vehicleId);
 
     await this.availability.assertListingIsBookable(
       listing.id,
@@ -125,7 +137,7 @@ export class BookingsService {
       });
     });
 
-    return created;
+    return publicBooking(created);
   }
 
   async findMine(userId: string) {
@@ -137,7 +149,7 @@ export class BookingsService {
       orderBy: { createdAt: "desc" },
     });
 
-    return this.withVehiclePhotos(bookings);
+    return (await this.withVehiclePhotos(bookings)).map(publicBooking);
   }
 
   async findOneForParticipant(userId: string, id: string) {
@@ -145,7 +157,7 @@ export class BookingsService {
     this.assertBookingParticipant(booking, userId);
 
     const [withPhotos] = await this.withVehiclePhotos([booking]);
-    return withPhotos;
+    return publicBooking(withPhotos);
   }
 
   /**
@@ -188,7 +200,7 @@ export class BookingsService {
     });
   }
 
-  async accept(ownerId: string, id: string) {
+  async accept(ownerId: string, id: string, ctx: AcceptanceContext = {}) {
     const booking = await this.findById(id);
     this.assertBookingOwner(booking, ownerId);
 
@@ -221,15 +233,21 @@ export class BookingsService {
         paymentStatus: PaymentStatus.PENDING,
         pickupTokenHash: await bcrypt.hash(pickupToken, 10),
         returnTokenHash: await bcrypt.hash(returnToken, 10),
-        pickupTokenPreview: pickupToken,
-        returnTokenPreview: returnToken,
+        // Los códigos se guardan CIFRADOS. Hace falta poder volver a
+        // mostrarlos (el QR se pierde si la persona cierra la app), así que no
+        // alcanza con el hash; pero en claro, cualquiera con acceso a la base
+        // podía confirmar una entrega o una devolución que no pasó.
+        pickupTokenPreview: this.encryption.encrypt(pickupToken),
+        returnTokenPreview: this.encryption.encrypt(returnToken),
         currency: pricing.currency,
         totalPriceSnapshot: pricing.total,
         rentalSubtotalSnapshot: pricing.rentalSubtotal,
         insuranceSnapshot: pricing.insurance,
         platformFeeSnapshot: pricing.commission,
         senaAmountSnapshot: pricing.sena,
-        balanceAmountSnapshot: pricing.balance,
+        // Ya no hay saldo aparte: el pago es uno solo. Queda en null para las
+        // reservas nuevas (el ticket muestra el detalle).
+        balanceAmountSnapshot: null,
         depositSnapshot: pricing.deposit,
         ownerPayoutSnapshot: pricing.ownerPayout,
         transferGroup: `booking_${id}`,
@@ -237,8 +255,11 @@ export class BookingsService {
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
-    // Lock the digital contract (PDF rendered on demand from these snapshots).
-    await this.contracts.createForBooking(id);
+    // El contrato se genera con los precios recién congelados, y ACEPTAR LA
+    // RESERVA ES ACEPTAR EL CONTRATO para el dueño: queda registrado con su
+    // IP y su navegador, igual que la aceptación de quien alquila.
+    await this.contracts.ensureForBooking(id);
+    await this.contracts.accept(ownerId, id, ctx);
 
     await this.auditLog.create({
       actorId: ownerId,
@@ -261,9 +282,11 @@ export class BookingsService {
       });
     });
 
+    // Al dueño se le devuelve SOLO el código de devolución, que es el que él
+    // tiene que mostrar al final. El de entrega es de quien alquila: si el
+    // dueño lo tuviera, podría confirmar solo una entrega que no hizo.
     return {
-      ...updated,
-      pickupQrToken: pickupToken,
+      ...publicBooking(updated),
       returnQrToken: returnToken,
     };
   }
@@ -303,7 +326,7 @@ export class BookingsService {
       });
     });
 
-    return updated;
+    return publicBooking(updated);
   }
 
   async cancel(userId: string, id: string, data: CancelBookingDto) {
@@ -324,10 +347,26 @@ export class BookingsService {
       );
     }
 
-    const status =
-      userId === booking.renterId
-        ? BookingStatus.CANCELLED_BY_RENTER
-        : BookingStatus.CANCELLED_BY_OWNER;
+    const esInquilino = userId === booking.renterId;
+    const status = esInquilino
+      ? BookingStatus.CANCELLED_BY_RENTER
+      : BookingStatus.CANCELLED_BY_OWNER;
+
+    // La plata primero, el estado después: si el reparto falla a la mitad, la
+    // reserva no queda "cancelada" con la plata sin devolver, y reintentar
+    // cancelar la termina (cada paso del reparto es idempotente).
+    const refundable: PaymentStatus[] = [
+      PaymentStatus.DEPOSIT_PAID,
+      PaymentStatus.FULLY_PAID,
+      PaymentStatus.PARTIALLY_REFUNDED,
+    ];
+    const settlement = refundable.includes(booking.paymentStatus)
+      ? await this.payments.cancelAndSettle(
+          id,
+          esInquilino ? "RENTER" : "OWNER",
+          userId,
+        )
+      : null;
 
     const updated = await this.prisma.booking.update({
       where: { id },
@@ -335,18 +374,10 @@ export class BookingsService {
         status,
         cancelledAt: new Date(),
         cancellationReason: data.reason,
+        cancelledByRole: esInquilino ? "RENTER" : "OWNER",
       },
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
-
-    const refundable: PaymentStatus[] = [
-      PaymentStatus.DEPOSIT_PAID,
-      PaymentStatus.FULLY_PAID,
-      PaymentStatus.PARTIALLY_REFUNDED,
-    ];
-    if (refundable.includes(booking.paymentStatus)) {
-      await this.payments.refundOnCancel(userId, id);
-    }
 
     await this.auditLog.create({
       actorId: userId,
@@ -355,7 +386,7 @@ export class BookingsService {
       action: "booking.cancelled",
       entityType: "Booking",
       entityId: id,
-      metadata: { status },
+      metadata: { status, rule: settlement?.rule ?? "UNPAID" },
     });
 
     this.logger.log(`Booking ${id} cancelled by ${userId} (${status})`);
@@ -364,7 +395,7 @@ export class BookingsService {
     // cambia el plan. Antes una cancelación no generaba ningún mail, así que la
     // otra persona se enteraba solo si entraba a la app.
     const canceloElInquilino = status === BookingStatus.CANCELLED_BY_RENTER;
-    const seDevuelvePlata = refundable.includes(booking.paymentStatus);
+    const seDevuelvePlata = (settlement?.refundToRenterMinor ?? 0) > 0;
 
     await this.safeNotify(() => {
       if (!updated.renter?.email) return;
@@ -394,7 +425,14 @@ export class BookingsService {
       });
     });
 
-    return updated;
+    return { ...publicBooking(updated), cancellation: settlement };
+  }
+
+  /** Lo que pasaría si esta persona cancelara ahora. No cancela nada. */
+  async cancellationPreview(userId: string, id: string) {
+    const booking = await this.findById(id);
+    this.assertBookingParticipant(booking, userId);
+    return this.payments.previewCancellation(userId, id);
   }
 
   async readyForPickup(ownerId: string, id: string) {
@@ -407,7 +445,29 @@ export class BookingsService {
       );
     }
 
-    // Requires seña + balance fully paid and the deposit hold authorized.
+    if (booking.paymentStatus !== PaymentStatus.FULLY_PAID) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "CHECKOUT_NOT_PAID",
+        message: "La reserva todavía no está paga.",
+      });
+    }
+
+    // El depósito se autoriza ACÁ, cerca del retiro, y no al pagar: una
+    // retención en tarjeta vence sola en unos días, y autorizarla semanas
+    // antes era autorizar algo que se iba a soltar antes de que nadie
+    // retirara el auto.
+    const deposito = await this.payments.authorizeDepositForPickup(id, ownerId);
+    if (!deposito.authorized) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "DEPOSIT_AUTHORIZATION_REQUIRED",
+        message:
+          "El banco de quien alquila pidió que autorice el depósito en " +
+          "garantía personalmente. Ya puede hacerlo desde la reserva; cuando " +
+          "lo haga, marcá el auto listo otra vez.",
+      });
+    }
     await this.payments.assertReadyForPickup(id);
 
     const updated = await this.prisma.booking.update({
@@ -429,7 +489,18 @@ export class BookingsService {
       `Booking ${id} marked ready for pickup by owner ${ownerId}`,
     );
 
-    return updated;
+    // ¿La retención llega viva al final de la ventana de inspección? Si no,
+    // un daño reclamado tarde ya no se puede cobrar del depósito, y el dueño
+    // tiene que saberlo antes de entregar el auto.
+    const finDeInspeccion = new Date(
+      updated.endDate.getTime() + this.inspectionHours() * 60 * 60 * 1000,
+    );
+    return {
+      ...publicBooking(updated),
+      depositCoversInspection:
+        !updated.depositHoldExpiresAt ||
+        updated.depositHoldExpiresAt >= finDeInspeccion,
+    };
   }
 
   async getTokens(userId: string, id: string) {
@@ -444,7 +515,8 @@ export class BookingsService {
         ([BookingStatus.READY_FOR_PICKUP] as BookingStatus[]).includes(
           booking.status,
         )
-          ? booking.pickupTokenPreview
+          ? (this.encryption.tryDecrypt(booking.pickupTokenPreview) ??
+            undefined)
           : undefined,
       returnQrToken:
         userId === booking.ownerId &&
@@ -454,7 +526,8 @@ export class BookingsService {
             BookingStatus.RETURN_PENDING,
           ] as BookingStatus[]
         ).includes(booking.status)
-          ? booking.returnTokenPreview
+          ? (this.encryption.tryDecrypt(booking.returnTokenPreview) ??
+            undefined)
           : undefined,
     };
   }
@@ -523,7 +596,7 @@ export class BookingsService {
       });
     }
 
-    return updated;
+    return publicBooking(updated);
   }
 
   async confirmReturn(renterId: string, id: string, token: string) {
@@ -554,19 +627,26 @@ export class BookingsService {
       throw new ForbiddenException("Invalid return token");
     }
 
+    // DEVUELTO NO ES CERRADO. Se abre la ventana de inspección: el dueño
+    // tiene DAMAGE_REPORT_WINDOW_HOURS (48 por omisión) para reportar un daño
+    // con fotos. Recién cuando se cierra sin reclamo —o el reclamo se
+    // resuelve— se libera el depósito y se le paga. Antes la devolución
+    // liquidaba todo en el acto, y el dueño que encontraba un golpe al revisar
+    // el auto una hora después ya no tenía de dónde cobrarlo.
+    const ahora = new Date();
     const updated = await this.prisma.booking.update({
       where: { id },
       data: {
-        status: BookingStatus.COMPLETED,
-        returnConfirmedAt: new Date(),
+        status: BookingStatus.INSPECTION,
+        returnConfirmedAt: ahora,
+        inspectionEndsAt: new Date(
+          ahora.getTime() + this.inspectionHours() * 60 * 60 * 1000,
+        ),
         returnTokenHash: null,
         returnTokenPreview: null,
       },
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
-
-    // Release the deposit hold (clean return) and transfer the owner payout.
-    await this.payments.settleOnReturn(renterId, id);
 
     await this.auditLog.create({
       actorId: renterId,
@@ -574,7 +654,10 @@ export class BookingsService {
       action: "booking.return_confirmed",
       entityType: "Booking",
       entityId: id,
-      metadata: { status: BookingStatus.COMPLETED },
+      metadata: {
+        status: BookingStatus.INSPECTION,
+        inspectionEndsAt: updated.inspectionEndsAt,
+      },
     });
 
     this.logger.log(`Booking ${id} return confirmed by renter ${renterId}`);
@@ -598,7 +681,41 @@ export class BookingsService {
       });
     }
 
-    return updated;
+    return publicBooking(updated);
+  }
+
+  /**
+   * Liquida la reserva si la ventana de inspección ya se cerró. Lo corre el
+   * cron todos los días; esto deja que cualquiera de las dos partes no tenga
+   * que esperarlo.
+   */
+  async settle(userId: string, id: string) {
+    const booking = await this.findById(id);
+    this.assertBookingParticipant(booking, userId);
+    const result = await this.payments.settleBooking(id, userId);
+    if (!result.settled) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: result.reason ?? "NOT_SETTLEABLE",
+        message:
+          result.reason === "INSPECTION_WINDOW_OPEN"
+            ? "La ventana para reportar daños todavía está abierta."
+            : result.reason === "CLAIM_OPEN"
+              ? "Hay un reclamo por daños sin resolver."
+              : result.reason === "PAYMENT_DISPUTED"
+                ? "El pago fue desconocido ante el banco: hasta que se " +
+                  "resuelva, no se liquida nada."
+                : "Esta reserva no se puede liquidar todavía.",
+      });
+    }
+    return this.findOneForParticipant(userId, id);
+  }
+
+  private inspectionHours(): number {
+    const horas = Number.parseFloat(
+      this.config.get<string>("DAMAGE_REPORT_WINDOW_HOURS") ?? "",
+    );
+    return Number.isFinite(horas) && horas > 0 ? horas : 48;
   }
 
   private async findById(id: string) {
@@ -665,4 +782,48 @@ export class BookingsService {
       [v.brand, v.model, v.year].filter(Boolean).join(" ") || "el vehiculo"
     );
   }
+}
+
+/**
+ * UNA RESERVA, COMO LA VE QUIEN PARTICIPA DE ELLA.
+ *
+ * La fila completa NO se devuelve nunca, y no es prolijidad: traía los hashes
+ * y los códigos de entrega y devolución. Con el código de devolución a la
+ * vista, quien alquila podía confirmar sola que devolvió el auto —lo que
+ * libera el depósito y le paga al dueño— sin haberlo devuelto. Los códigos
+ * salen únicamente por GET /bookings/:id/tokens, a quien le corresponde cada
+ * uno y en el momento en que corresponde.
+ *
+ * Tampoco salen los identificadores internos del procesador (intents, medio
+ * de pago guardado, grupo de transferencia): no le sirven a nadie afuera y
+ * son justamente lo que alguien necesitaría para operar sobre el cobro.
+ */
+export function publicBooking<T extends object>(
+  booking: T,
+): Omit<
+  T,
+  | "pickupTokenHash"
+  | "returnTokenHash"
+  | "pickupTokenPreview"
+  | "returnTokenPreview"
+  | "savedPaymentMethodId"
+  | "checkoutPaymentIntentId"
+  | "depositPaymentIntentId"
+  | "transferGroup"
+  | "providerPaymentId"
+> {
+  const {
+    pickupTokenHash: _a,
+    returnTokenHash: _b,
+    pickupTokenPreview: _c,
+    returnTokenPreview: _d,
+    savedPaymentMethodId: _e,
+    checkoutPaymentIntentId: _f,
+    depositPaymentIntentId: _g,
+    transferGroup: _h,
+    providerPaymentId: _i,
+    ...visible
+  } = booking as Record<string, unknown>;
+  void [_a, _b, _c, _d, _e, _f, _g, _h, _i];
+  return visible as never;
 }

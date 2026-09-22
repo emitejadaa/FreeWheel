@@ -46,6 +46,37 @@ const REQUIRED_SCHEMA: {
     table: "PaymentRecord",
     column: "cardFingerprint",
   },
+  {
+    feature: "cobro único",
+    table: "Booking",
+    column: "checkoutPaymentIntentId",
+  },
+  {
+    feature: "ventana de 48 h para reportar daños",
+    table: "Booking",
+    column: "inspectionEndsAt",
+  },
+  { feature: "reclamos por daños", table: "DamageClaim" },
+  { feature: "libro mayor de la plata", table: "LedgerJournal" },
+  { feature: "partidas del libro mayor", table: "LedgerEntry" },
+  { feature: "firma de los contratos", table: "ContractAcceptance" },
+  {
+    feature: "contrato congelado al firmarse",
+    table: "Contract",
+    column: "contentHash",
+  },
+  { feature: "verificación de autos", table: "VehicleVerification" },
+  { feature: "tope de intentos persistente", table: "RateLimitBucket" },
+  {
+    feature: "candado de cuenta por contraseñas falladas",
+    table: "User",
+    column: "loginLockedUntil",
+  },
+  {
+    feature: "borrado de fotos por antigüedad",
+    table: "DocumentVerification",
+    column: "photosPurgedAt",
+  },
 ];
 
 export interface DatabaseHealth {

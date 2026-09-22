@@ -40,12 +40,24 @@ export class MediaService {
     // depende de cómo otro producto normaliza sus nombres es una reserva que
     // se puede caer sin que nos enteremos. Reservada es reservada en cualquier
     // grafía.
-    if (/^identity(\/|$)/i.test(folder.trim())) {
+    //
+    // vehicle-docs/ es la cédula de los autos: lleva el nombre y el DNI del
+    // titular, igual que un documento de identidad, y tiene su propia firma
+    // que la sube como authenticated. Las barras del principio se ignoran para
+    // la comparación por la misma razón que las mayúsculas: "/identity" no
+    // puede ser una forma de esquivar la reserva según cómo normalice
+    // Cloudinary la ruta.
+    const reserved = /^(identity|vehicle-docs)(\/|$)/i.exec(
+      folder.trim().replace(/^\/+/, ""),
+    );
+    if (reserved) {
+      const isVehicleDocs = reserved[1].toLowerCase() === "vehicle-docs";
       throw new BadRequestException({
         statusCode: 400,
         code: "RESERVED_MEDIA_FOLDER",
-        message:
-          "La carpeta identity/ está reservada: usá POST /verification/identity/upload-signature",
+        message: isVehicleDocs
+          ? "La carpeta vehicle-docs/ está reservada: usá POST /vehicles/:vehicleId/verification/upload-signature"
+          : "La carpeta identity/ está reservada: usá POST /verification/identity/upload-signature",
       });
     }
 

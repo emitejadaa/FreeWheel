@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -730,6 +731,20 @@ export class DocumentVerificationService {
       where: { id: verificationId },
     });
     assertFound(row, "Verification not found");
+
+    // NADIE SE VERIFICA A SÍ MISMO, ni siquiera un admin. Todo el control
+    // existe para que lo que una persona declara lo confirme OTRA mirando las
+    // fotos; si el admin puede aprobarse su propia cuenta, una cuenta de
+    // administrador comprometida se convierte en una identidad verificada, que
+    // es la llave para reservar autos ajenos.
+    if (row.userId === actorId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: "SELF_REVIEW_FORBIDDEN",
+        message:
+          "No podés revisar tu propia verificación: tiene que hacerlo otro administrador.",
+      });
+    }
 
     // Un rechazo se puede aplicar en cualquier momento: es también la vía
     // para REVOCAR un documento ya aprobado si después se detecta un

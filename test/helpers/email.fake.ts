@@ -26,6 +26,20 @@ export class FakeEmailService {
     return email.trim().toLowerCase();
   }
 
+  /** Avisos de seguridad (bloqueo de la cuenta). Se guardan para poder mirarlos. */
+  readonly securityAlerts: { email: string; kind: string }[] = [];
+
+  sendSecurityAlert(
+    email: string,
+    params: { kind: string },
+  ): Promise<void> {
+    this.securityAlerts.push({
+      email: FakeEmailService.casilla(email),
+      kind: params.kind,
+    });
+    return Promise.resolve();
+  }
+
   sendVerificationCode(email: string, code: string): Promise<void> {
     this.codes.set(FakeEmailService.casilla(email), code);
     return Promise.resolve();

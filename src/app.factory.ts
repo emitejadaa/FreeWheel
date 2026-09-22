@@ -77,6 +77,11 @@ export function createServer(): Express {
   if (!cachedServer) {
     cachedServer = express();
 
+    // Nadie necesita saber con qué está hecho el servidor. No es una
+    // protección en sí —quien busque va a deducirlo igual—, pero es lo
+    // primero que mira un escaneo automático para elegir qué exploits probar.
+    cachedServer.disable("x-powered-by");
+
     // Cabeceras de seguridad. CSP off y CORP cross-origin porque el front
     // vive en otro dominio y consume esta API por CORS.
     cachedServer.use(

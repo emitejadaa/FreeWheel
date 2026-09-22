@@ -5,13 +5,17 @@ import {
   Param,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from "@nestjs/common";
+import type { Request } from "express";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
 import { RequireVerifiedAccount } from "../common/decorators/require-verified-account.decorator";
 import { RequireDrivingEligibility } from "../common/decorators/require-driving-eligibility.decorator";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
+import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
+import { clientIp, clientUserAgent } from "../common/utils/client-ip.util";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { BookingsService } from "./bookings.service";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
@@ -58,16 +62,42 @@ export class BookingsController {
     return this.bookingsService.findOneForParticipant(user.id, id);
   }
 
+  /**
+   * Aceptar es firmar. Se guarda desde qué IP y con qué navegador se aceptó,
+   * porque el día que alguien diga "yo nunca acepté eso" esa es la única
+   * prueba que tenemos (ley 25.506: la carga de probar la firma es de quien
+   * la invoca, y quien la invoca vamos a ser nosotros).
+   */
   @Patch(":id/accept")
   @RequireVerifiedAccount()
-  accept(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
-    return this.bookingsService.accept(user.id, id);
+  accept(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Req() req: Request,
+  ) {
+    return this.bookingsService.accept(user.id, id, {
+      ip: clientIp(req),
+      userAgent: clientUserAgent(req),
+    });
   }
 
   @Patch(":id/reject")
   @RequireVerifiedAccount()
   reject(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.bookingsService.reject(user.id, id);
+  }
+
+  /**
+   * Cuánto se devuelve si cancelo ahora, sin cancelar. Se consulta antes de
+   * apretar el botón: nadie debería enterarse de que perdió la seña después
+   * de perderla.
+   */
+  @Get(":id/cancellation-preview")
+  cancellationPreview(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.bookingsService.cancellationPreview(user.id, id);
   }
 
   @Patch(":id/cancel")
@@ -106,6 +136,24 @@ export class BookingsController {
       id,
       confirmTokenDto.token,
     );
+  }
+
+  /**
+   * Cerrar la reserva a mano cuando ya pasaron las 48 horas y nadie reclamó:
+   * suelta el depósito y le paga al dueño. Lo puede pedir cualquiera de las
+   * dos partes y es idempotente, porque el trabajo programado hace lo mismo
+   * una vez por día y los dos pueden llegar juntos.
+   */
+  @Post(":id/settle")
+  @RequireVerifiedAccount()
+  @SensitiveRateLimit({
+    name: "bookings.settle",
+    limit: 20,
+    windowSec: 600,
+    by: "ip+user",
+  })
+  settle(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
+    return this.bookingsService.settle(user.id, id);
   }
 
   @Post(":id/confirm-return")
