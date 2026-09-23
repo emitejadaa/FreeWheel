@@ -14,6 +14,7 @@ import {
   RefundInput,
   RefundResult,
   ReleaseHoldInput,
+  SavedCard,
   TransferInput,
   TransferResult,
   WebhookEvent,
@@ -161,6 +162,18 @@ export class MockPaymentsProvider implements PaymentProvider {
     return Promise.resolve(
       `cus_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`,
     );
+  }
+
+  /**
+   * La simulación no guarda tarjetas, y contesta que no tiene ninguna.
+   *
+   * Podría inventar una —"Visa ···· 4242"— y sería peor: el front ofrecería
+   * pagar con una tarjeta que no existe, el cobro se confirmaría igual porque
+   * acá todo sale bien, y el camino de "escribir la tarjeta" —que es el que
+   * corre de verdad— no se probaría nunca.
+   */
+  listSavedCards(_customerId: string): Promise<SavedCard[]> {
+    return Promise.resolve([]);
   }
 
   createConnectedAccount(

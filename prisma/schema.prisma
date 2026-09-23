@@ -194,6 +194,29 @@ enum ReportAiVerdict {
   UNCLEAR // no alcanza para decidir
 }
 
+/// En qué anda un reclamo por daño del dueño sobre el depósito en garantía.
+/// En qué anda un reclamo por daños sobre un auto devuelto.
+enum DamageClaimStatus {
+  /// El dueño lo abrió; espera la respuesta del inquilino.
+  OPEN
+  /// El inquilino aceptó el monto: se cobra del depósito sin intervención.
+  ACCEPTED
+  /// El inquilino lo rechazó: decide un administrador.
+  CONTESTED
+  /// Un administrador resolvió (el monto aprobado puede ser cero).
+  RESOLVED
+  /// El dueño lo retiró.
+  WITHDRAWN
+  /// SIN USO. Lo creó la primera versión de esta tabla, que no tenía respuesta
+  /// del inquilino: ahí un reclamo que no correspondía se marcaba REJECTED y
+  /// hoy eso es RESOLVED con monto cero.
+  ///
+  /// Se deja declarado porque el tipo ya existe en la base con este valor, y
+  /// sacarlo de acá convierte el próximo `db push` en un cambio destructivo:
+  /// el deploy se frena pidiendo --accept-data-loss por un valor que nadie usa.
+  REJECTED
+}
+
 enum BookingStatus {
   REQUESTED
   ACCEPTED
@@ -282,20 +305,6 @@ enum StripeAccountStatus {
   PENDING
   ENABLED
   RESTRICTED
-}
-
-/// En qué anda un reclamo por daños sobre un auto devuelto.
-enum DamageClaimStatus {
-  /// El dueño lo abrió; espera la respuesta del inquilino.
-  OPEN
-  /// El inquilino aceptó el monto: se cobra del depósito sin intervención.
-  ACCEPTED
-  /// El inquilino lo rechazó: decide un administrador.
-  CONTESTED
-  /// Un administrador resolvió (el monto aprobado puede ser cero).
-  RESOLVED
-  /// El dueño lo retiró.
-  WITHDRAWN
 }
 
 /// Verificación de que un auto es de quien lo publica.
@@ -784,6 +793,12 @@ model Booking {
   refundedAt              DateTime?
   /// Hasta cuándo el dueño puede reportar un daño después de la devolución.
   inspectionEndsAt        DateTime?
+  /// Cuándo el dueño revisó el auto devuelto y dijo que estaba todo bien.
+  ///
+  /// Cierra la ventana antes de tiempo. Es un dato distinto de que la ventana
+  /// se haya vencido sola: dice que una persona miró el auto. La pantalla del
+  /// dueño lo usa para dejar de ofrecer el botón de revisar.
+  ownerInspectedAt        DateTime?
   /// Cuándo se liquidó: depósito liberado y pago al dueño hecho. Es lo que
   /// hace idempotente la liquidación: una reserva liquidada no se liquida dos
   /// veces aunque el cron y una persona lo pidan a la vez.

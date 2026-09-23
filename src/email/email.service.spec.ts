@@ -196,14 +196,179 @@ describe("EmailService", () => {
       await service.sendBookingCancelled("a@b.com", {
         ...base,
         refunded: true,
+        tier: "libre" as const,
       });
-      expect(ultimo().html).toContain("se devuelve al mismo medio de pago");
+      expect(ultimo().html).toContain("Se devuelve todo lo pagado");
 
       await service.sendBookingCancelled("a@b.com", {
         ...base,
         refunded: false,
       });
       expect(ultimo().html).toContain("No hay cobros pendientes");
+    });
+
+    it("CUANDO SE RETIENE LA SEÑA, EL MAIL DICE CUÁNTO Y POR QUÉ", async () => {
+      /*
+        Una política de cancelación que no se cuenta en el momento en que se
+        aplica no es clara: quien cancela la noche anterior tiene que leer acá
+        por qué no le vuelve la seña, y no descubrirlo tres días después
+        mirando el resumen de la tarjeta.
+      */
+      await service.sendBookingCancelled("a@b.com", {
+        otherPartyName: "Beto",
+        vehicleLabel: "Toyota Corolla 2021",
+        startDate: DESDE,
+        endDate: HASTA,
+        cancelaste: true,
+        refunded: true,
+        tier: "tardia" as const,
+        senaRetenida: 87780,
+        currency: "USD",
+      });
+
+      const { html } = ultimo();
+      expect(html).toContain("se retiene la seña");
+      expect(html).toContain("87.780");
+      expect(html).toContain("48 horas");
+      // Y que el depósito se libera igual, que es la duda inmediata.
+      expect(html).toContain("depósito en garantía se libera");
+    });
+
+    it("si canceló el dueño, vuelve todo y el mail lo dice", async () => {
+      // El que incumple no se queda además con la plata de la otra persona.
+      await service.sendBookingCancelled("a@b.com", {
+        otherPartyName: "Beto",
+        vehicleLabel: "Toyota Corolla 2021",
+        startDate: DESDE,
+        endDate: HASTA,
+        cancelaste: false,
+        refunded: true,
+        tier: "delDueno" as const,
+      });
+
+      const { html } = ultimo();
+      expect(html).toContain("Se devuelve todo lo pagado");
+      expect(html).toContain("la hizo el dueño");
+    });
+  });
+
+  describe("el depósito en garantía", () => {
+    it("EXPLICA QUE NUNCA SE COBRÓ, que es lo que nadie entiende", async () => {
+      /*
+        El depósito es la única plata del alquiler que se ve salir y no se ve
+        volver: liberar una retención no genera ningún movimiento en el resumen
+        de la tarjeta. Sin decir esto, la gente espera un reembolso que no va a
+        llegar nunca, porque no hay nada que reembolsar.
+      */
+      await service.sendDepositReleased("a@b.com", {
+        renterName: "Ana",
+        amount: 200,
+        currency: "USD",
+        vehicleLabel: "Toyota Corolla 2021",
+        cardBrand: "visa",
+        cardLast4: "4242",
+      });
+
+      const { subject, html } = ultimo();
+      expect(subject).toContain("depósito");
+      expect(html).toContain("nunca se te cobró");
+      expect(html).toContain("200");
+      // La marca del procesador viene en minúscula y en un mail se lee como un
+      // error de tipeo.
+      expect(html).toContain("Visa ···· 4242");
+      expect(html).toContain("días hábiles");
+    });
+
+    it("sin tarjeta guardada no inventa una fila", async () => {
+      await service.sendDepositReleased("a@b.com", {
+        amount: 200,
+        currency: "USD",
+        vehicleLabel: "Toyota Corolla 2021",
+      });
+      expect(ultimo().html).not.toContain("Tarjeta");
+    });
+
+    it("EL COBRO POR DAÑO DICE CUÁNTO, POR QUÉ Y CÓMO RECLAMAR", async () => {
+      /*
+        Es el peor mail de la aplicación: le avisa a alguien que le cobraron
+        plata que esperaba que le volviera. Un depósito de 200 con un daño de
+        60 no es "te cobramos el depósito": son 60 cobrados y 140 que vuelven, y
+        decirlo entero es la diferencia entre una explicación y un susto.
+      */
+      await service.sendDepositCaptured("a@b.com", {
+        recipientName: "Ana",
+        esDueño: false,
+        otherPartyName: "Beto",
+        capturado: 60,
+        liberado: 140,
+        currency: "USD",
+        vehicleLabel: "Toyota Corolla 2021",
+        motivo:
+          "Rayón profundo en la puerta trasera izquierda, con foto del retiro y de la devolución.",
+      });
+
+      const { html } = ultimo();
+      expect(html).toContain("60");
+      expect(html).toContain("140");
+      // El motivo entero, sin recortar: es lo que la persona va a leer para
+      // decidir si está de acuerdo, y "daño" no es una respuesta.
+      expect(html).toContain("Rayón profundo en la puerta trasera izquierda");
+      expect(html).toContain("Si no estás de acuerdo");
+    });
+
+    it("al dueño le llega la otra mitad", async () => {
+      await service.sendDepositCaptured("d@b.com", {
+        esDueño: true,
+        otherPartyName: "Ana",
+        capturado: 60,
+        liberado: 140,
+        currency: "USD",
+        vehicleLabel: "Toyota Corolla 2021",
+        motivo: "Rayón profundo en la puerta trasera izquierda.",
+      });
+
+      const { subject, html } = ultimo();
+      expect(subject).toContain("Se cobró el depósito por el daño");
+      // Al dueño no se le ofrece reclamar contra sí mismo.
+      expect(html).not.toContain("Si no estás de acuerdo");
+      expect(html).toContain("se transfiere junto con el resto");
+    });
+
+    it("al dueño se le dice que su reclamo no prospero, y por que", async () => {
+      /*
+        Sin este mail, rechazar era una decision que solo veia quien la tomaba:
+        el dueño mandaba fotos, esperaba, y del otro lado no pasaba nada
+        visible. La liberacion del deposito le llega al INQUILINO, no a el.
+      */
+      await service.sendDamageClaimRejected("d@b.com", {
+        ownerName: "Ana",
+        vehicleLabel: "Toyota Corolla 2021",
+        reclamado: 60,
+        currency: "USD",
+        nota: "El rayon ya aparece en las fotos del retiro: no lo hizo quien alquilo.",
+      });
+
+      const { subject, html } = ultimo();
+      expect(subject).toContain("no prosper");
+      expect(html).toContain("60");
+      expect(html).toContain("El rayon ya aparece en las fotos del retiro");
+      // Y que el deposito vuelve entero, que es la consecuencia.
+      expect(html).toContain("se libera entero");
+    });
+
+    it("si se cobra todo, no promete que vuelve algo", async () => {
+      await service.sendDepositCaptured("a@b.com", {
+        esDueño: false,
+        otherPartyName: "Beto",
+        capturado: 200,
+        liberado: 0,
+        currency: "USD",
+        vehicleLabel: "Toyota Corolla 2021",
+        motivo: "Paragolpes delantero roto.",
+      });
+      const { html } = ultimo();
+      expect(html).toContain("No queda nada retenido");
+      expect(html).not.toContain("Se libera");
     });
   });
 

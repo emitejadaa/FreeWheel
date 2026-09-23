@@ -525,6 +525,11 @@ export class EmailService {
       reason?: string | null;
       cancelaste: boolean;
       refunded?: boolean;
+      /** Qué tramo de la política se aplicó (bookings/cancellation-policy.ts). */
+      tier?: "libre" | "tardia" | "delDueno" | "cerrada";
+      /** Lo que NO se devuelve, cuando se canceló sobre la fecha. */
+      senaRetenida?: number | null;
+      currency?: string;
     },
   ) {
     const titulo = params.cancelaste
@@ -542,12 +547,52 @@ export class EmailService {
       filas.push({ etiqueta: "Motivo", valor: params.reason.trim() });
     }
 
-    const sobreElDinero = params.refunded
-      ? this.p(
-          "Lo que estaba pagado se devuelve al mismo medio de pago. Puede tardar " +
+    /*
+      EL MAIL DICE QUÉ POLÍTICA SE APLICÓ, Y CUÁNDO NO VUELVE TODO DICE POR QUÉ.
+
+      Una política de cancelación que no se cuenta en el momento en que se
+      aplica no es una política clara: quien cancela la noche anterior tiene
+      que leer acá por qué no le vuelve la seña, y no descubrirlo tres días
+      después mirando el resumen de la tarjeta. Es la diferencia entre una
+      regla y un descuento sorpresa.
+    */
+    const plata = (monto: number) =>
+      this.formatMoney(monto, params.currency ?? "usd");
+
+    let sobreElDinero: string;
+    if (!params.refunded) {
+      sobreElDinero = this.p("No hay cobros pendientes por esta reserva.");
+    } else if (params.tier === "tardia") {
+      sobreElDinero =
+        this.p(
+          "<strong>Se devuelve el saldo del alquiler y se retiene la seña" +
+            (params.senaRetenida != null
+              ? ` (${plata(params.senaRetenida)})`
+              : "") +
+            ".</strong> La cancelación entró dentro de las 48 horas previas al " +
+            "inicio, y en ese plazo ya no hay tiempo real de volver a alquilar " +
+            "esos días: la seña es lo que compensa al dueño por las fechas que " +
+            "quedaron bloqueadas.",
+        ) +
+        this.p(
+          "El depósito en garantía se libera entero: nunca fue un cobro. " +
+            "Lo que se devuelve vuelve al mismo medio de pago y puede tardar " +
             "unos días hábiles en aparecer en el resumen.",
-        )
-      : this.p("No hay cobros pendientes por esta reserva.");
+        );
+    } else {
+      sobreElDinero =
+        this.p(
+          params.tier === "delDueno"
+            ? "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
+                "cancelación la hizo el dueño del auto."
+            : "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
+                "cancelación entró con más de 48 horas de anticipación.",
+        ) +
+        this.p(
+          "Vuelve al mismo medio de pago y puede tardar unos días hábiles en " +
+            "aparecer en el resumen. El depósito en garantía se libera entero.",
+        );
+    }
 
     const html = this.layout(
       titulo,
@@ -712,6 +757,8 @@ export class EmailService {
       vehicleLabel: string;
       confirmedAt: Date;
       esDueño: boolean;
+      /** Las horas que el dueño tiene para revisar el auto y reclamar. */
+      horasDeRevision?: number;
     },
   ) {
     const html = this.layout(
@@ -729,6 +776,26 @@ export class EmailService {
             valor: params.otherPartyName,
           },
         ]) +
+        /*
+          AL DUEÑO SE LE PIDE QUE REVISE EL AUTO, Y ES LO PRIMERO.
+
+          El depósito en garantía queda retenido hasta que lo revise o hasta
+          que venza el plazo, así que este mail es el único momento en que se
+          le puede decir. Sin esto, el dueño no se entera de que tiene una
+          ventana para reclamar y la descubre cuando ya se cerró, que es
+          exactamente el caso para el que el depósito existe.
+
+          Y al inquilino no se le dice nada de esto: su garantía se libera sola
+          y ya recibe su propio mail cuando pasa.
+        */
+        (params.esDueño && params.horasDeRevision
+          ? this.p(
+              `<strong>Revisá el auto antes de ${params.horasDeRevision} horas.</strong> ` +
+                "Hasta entonces el depósito en garantía queda retenido: si " +
+                "encontrás un daño, podés reclamarlo desde la reserva, con fotos. " +
+                "Si está todo bien, confirmalo y la garantía se libera en el acto.",
+            )
+          : "") +
         this.p(
           `Ahora podés dejarle una reseña a ${params.otherPartyName}. Las reseñas son ` +
             "lo que le permite a la siguiente persona saber con quién está tratando.",
@@ -779,6 +846,214 @@ export class EmailService {
         ),
     );
     await this.send(email, "Actividad inusual en tu cuenta - Freewheel", html);
+  }
+
+  /**
+   * EL DEPÓSITO EN GARANTÍA SE LIBERÓ.
+   *
+   * ── Por qué este mail existe ──────────────────────────────────────────────
+   * Porque el depósito es la única plata de todo el alquiler que quien alquiló
+   * ve salir y no ve volver. No es un cobro: es una retención, o sea que el
+   * banco le bloquea el importe en el límite de la tarjeta sin debitarlo nunca.
+   * Liberarla no genera ningún movimiento en el resumen —no hay una devolución
+   * que aparezca— así que sin un mail la única señal de que la plata volvió es
+   * que el saldo disponible deja de estar recortado, y eso nadie lo mira.
+   *
+   * El resultado era gente esperando un reembolso que no iba a llegar nunca,
+   * porque no había nada que reembolsar.
+   *
+   * ── Por qué dice lo de los días ───────────────────────────────────────────
+   * Porque es verdad y es lo que más se pregunta. La orden de soltar la sale en
+   * el momento, pero cuánto tarda el banco en devolver el límite depende del
+   * banco, no de nosotros: pueden ser horas o pueden ser varios días hábiles.
+   * Decirlo de antemano evita el reclamo de mañana.
+   */
+  async sendDepositReleased(
+    email: string,
+    params: {
+      renterName?: string;
+      amount: number;
+      currency: string;
+      vehicleLabel: string;
+      cardBrand?: string | null;
+      cardLast4?: string | null;
+    },
+  ) {
+    const filas = [
+      {
+        etiqueta: "Importe liberado",
+        valor: this.formatMoney(params.amount, params.currency),
+        destacar: true,
+      },
+      { etiqueta: "Auto", valor: params.vehicleLabel },
+    ];
+    if (params.cardLast4) {
+      filas.push({
+        etiqueta: "Tarjeta",
+        valor: `${params.cardBrand ? this.capitalizar(params.cardBrand) : "Tarjeta"} ···· ${params.cardLast4}`,
+      });
+    }
+
+    const html = this.layout(
+      "Se liberó tu depósito en garantía",
+      this.p(
+        `${this.saludo(params.renterName)} devolviste <strong>${params.vehicleLabel}</strong> sin novedades y el depósito en garantía quedó liberado.`,
+      ) +
+        this.cuadro(filas) +
+        this.p(
+          "<strong>Este importe nunca se te cobró.</strong> El depósito es una " +
+            "retención: el banco te lo bloquea en el límite de la tarjeta y no " +
+            "lo debita. Por eso no vas a ver una devolución en el resumen, sino " +
+            "que el importe bloqueado deja de estarlo.",
+        ) +
+        this.nota(
+          "Según el banco, puede tardar hasta unos días hábiles en dejar de " +
+            "figurar como saldo retenido. La orden de liberarlo ya salió.",
+        ) +
+        this.boton(this.misReservas, "Ver la reserva"),
+    );
+    await this.send(
+      email,
+      "Se liberó tu depósito en garantía - Freewheel",
+      html,
+    );
+  }
+
+  /**
+   * SE COBRÓ PARTE DEL DEPÓSITO EN GARANTÍA POR UN DAÑO.
+   *
+   * ── Lo que este mail tiene que hacer bien ─────────────────────────────────
+   * Es el peor mail de la aplicación: le avisa a alguien que le cobraron plata
+   * que esperaba que le volviera. Por eso lleva TRES cosas sí o sí:
+   *
+   *  1. Cuánto se cobró y cuánto se libera. Un depósito de 200 con un daño de
+   *     60 no es "te cobramos el depósito": son 60 cobrados y 140 que vuelven,
+   *     y decirlo entero es la diferencia entre una explicación y un susto.
+   *  2. EL MOTIVO COMPLETO, escrito por quien lo resolvió y sin recortar. Es lo
+   *     que la persona va a leer para decidir si está de acuerdo, y "daño" no
+   *     es una respuesta. El servidor exige diez caracteres justamente por esto.
+   *  3. Cómo reclamar. Un cobro que no se puede discutir no es un cobro, es una
+   *     multa, y este mail es el único lugar donde alguien se entera a tiempo.
+   *
+   * Al dueño le llega la otra mitad: qué se cobró y que le va a llegar.
+   */
+  async sendDepositCaptured(
+    email: string,
+    params: {
+      recipientName?: string;
+      esDueño: boolean;
+      otherPartyName: string;
+      capturado: number;
+      liberado: number;
+      currency: string;
+      vehicleLabel: string;
+      motivo: string;
+    },
+  ) {
+    const filas = [
+      {
+        etiqueta: "Se cobró del depósito",
+        valor: this.formatMoney(params.capturado, params.currency),
+        destacar: true,
+      },
+      { etiqueta: "Auto", valor: params.vehicleLabel },
+    ];
+    if (params.liberado > 0) {
+      filas.push({
+        etiqueta: "Se libera",
+        valor: this.formatMoney(params.liberado, params.currency),
+      });
+    }
+
+    const cuerpo = params.esDueño
+      ? this.p(
+          `${this.saludo(params.recipientName)} resolvimos el reclamo por el daño en <strong>${params.vehicleLabel}</strong> y se cobró parte del depósito en garantía de ${params.otherPartyName}.`,
+        ) +
+        this.cuadro(filas) +
+        this.p(`<strong>Motivo registrado:</strong> ${params.motivo}`) +
+        this.nota(
+          "El importe se transfiere junto con el resto de lo que te corresponde " +
+            "por esta reserva.",
+        )
+      : this.p(
+          `${this.saludo(params.recipientName)} se cobró parte del depósito en garantía de <strong>${params.vehicleLabel}</strong> por un daño reclamado por ${params.otherPartyName}.`,
+        ) +
+        this.cuadro(filas) +
+        this.p(`<strong>Motivo:</strong> ${params.motivo}`) +
+        this.p(
+          params.liberado > 0
+            ? "El resto del depósito se libera y vuelve a tu límite disponible " +
+                "en unos días hábiles."
+            : "No queda nada retenido de esta reserva.",
+        ) +
+        this.nota(
+          "Si no estás de acuerdo, respondé este mail contando qué pasó. Se " +
+            "revisa con las fotos del retiro y de la devolución antes de " +
+            "cualquier cosa.",
+        );
+
+    const html = this.layout(
+      params.esDueño
+        ? "Se cobró el depósito por el daño"
+        : "Se cobró parte de tu depósito en garantía",
+      cuerpo + this.boton(this.misReservas, "Ver la reserva"),
+    );
+    await this.send(
+      email,
+      params.esDueño
+        ? "Se cobró el depósito por el daño - Freewheel"
+        : "Se cobró parte de tu depósito en garantía - Freewheel",
+      html,
+    );
+  }
+
+  /**
+   * AL DUEÑO: SU RECLAMO POR DAÑO NO PROSPERÓ.
+   *
+   * ── Por qué este mail tiene que existir ───────────────────────────────────
+   * Porque sin él, rechazar un reclamo era una decisión que solo veía el que la
+   * tomaba. El dueño mandaba fotos, esperaba, y del otro lado no pasaba nada
+   * visible: la garantía se liberaba —lo que le avisa al inquilino, no a él— y
+   * su reclamo desaparecía sin respuesta. Eso es peor que decirle que no.
+   *
+   * Lleva la explicación entera, por lo mismo que la lleva el mail del cobro:
+   * una resolución sin motivo sobre un reclamo propio no es una resolución, es
+   * un silencio con forma de trámite.
+   */
+  async sendDamageClaimRejected(
+    email: string,
+    params: {
+      ownerName?: string;
+      vehicleLabel: string;
+      reclamado: number;
+      currency: string;
+      nota: string;
+    },
+  ) {
+    const html = this.layout(
+      "Tu reclamo por daño no prosperó",
+      this.p(
+        `${this.saludo(params.ownerName)} revisamos el reclamo que hiciste por <strong>${params.vehicleLabel}</strong> y no corresponde cobrarlo del depósito en garantía.`,
+      ) +
+        this.cuadro([
+          {
+            etiqueta: "Reclamabas",
+            valor: this.formatMoney(params.reclamado, params.currency),
+          },
+          { etiqueta: "Auto", valor: params.vehicleLabel },
+        ]) +
+        this.p(`<strong>Motivo:</strong> ${params.nota}`) +
+        this.p(
+          "El depósito en garantía se libera entero y vuelve al límite de la " +
+            "tarjeta de quien alquiló.",
+        ) +
+        this.nota(
+          "Si tenés algo más para aportar —otra foto, el presupuesto del " +
+            "taller— respondé este mail y se vuelve a mirar.",
+        ) +
+        this.boton(this.misReservas, "Ver la reserva"),
+    );
+    await this.send(email, "Tu reclamo por daño no prosperó - Freewheel", html);
   }
 
   /**
@@ -834,5 +1109,13 @@ export class EmailService {
 
   private formatMoney(amount: number, currency = "ARS"): string {
     return `$${Number(amount || 0).toLocaleString("es-AR")} ${currency}`;
+  }
+
+  /**
+   * "visa" -> "Visa". El procesador devuelve las marcas en minúscula y en un
+   * mail se leen como un error de tipeo.
+   */
+  private capitalizar(texto: string): string {
+    return texto.charAt(0).toUpperCase() + texto.slice(1);
   }
 }

@@ -1,0 +1,88 @@
+# Cómo se corre esta API en un servidor. Ver DEPLOY.md para el paso a paso.
+#
+#   cp .env.docker.example .env   # y adentro, poner el token
+#   docker compose up -d --build
+#
+# Este archivo, solo, deja la API escuchando en 127.0.0.1:8000 del servidor —
+# NO en internet. Para publicarla con HTTPS y certificado automático está el
+# override de al lado:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+
+name: docverify
+
+services:
+  api:
+    build:
+      context: .
+    # Se etiqueta la imagen para poder moverla con `docker save`/`docker load`
+    # a un servidor que no construya (ver DEPLOY.md, "sin build en el server").
+    image: docverify-api:1.0.0
+    container_name: docverify-api
+    # "unless-stopped" y no "always": vuelve sola después de un reinicio del
+    # servidor o de un OOM kill, pero si alguien la frenó a mano para operar,
+    # se queda frenada.
+    restart: unless-stopped
+
+    # El token y los ajustes salen de un archivo que NO está en el repositorio.
+    # Si falta, `docker compose up` corta acá con "env file .env not found", que
+    # es mejor que levantar sin token.
+    env_file:
+      - .env
+
+    environment:
+      # El puerto adentro del contenedor. La imagen trae 7860 por default
+      # (Hugging Face Spaces); acá se usa 8000, que es lo que espera el
+      # reverse proxy del override de HTTPS.
+      PORT: "8000"
+
+      # "Este servicio está publicado en internet."
+      #
+      # No es decorativo: con esto puesto, la API SE NIEGA A ARRANCAR si
+      # DOCVERIFY_TOKEN está vacío, y CORS queda cerrado por default. La API se
+      # da cuenta sola en Hugging Face, Render, Cloud Run y Fly —cada una pone
+      # su propia variable—, pero en un servidor con Docker a secas no hay
+      # ninguna señal que mirar, y sin esta línea arrancaría ABIERTA: cualquiera
+      # que sepa la URL podría mandarle lo que quiera. Por acá pasan fotos de
+      # documentos de identidad de personas reales.
+      DOCVERIFY_EXPUESTO: "1"
+
+    ports:
+      # A PROPÓSITO atado a 127.0.0.1 y no a 0.0.0.0: así este puerto no se
+      # asoma a internet. Lo que se publica es el HTTPS del override; el tráfico
+      # llega ahí y de ahí pasa a este puerto por la red interna de Docker.
+      #
+      # Si el proveedor ya tiene su propio reverse proxy (nginx, Traefik) en el
+      # mismo servidor, apunta a 127.0.0.1:8000 y no hace falta el override.
+      - "127.0.0.1:8000:8000"
+
+    # Un análisis de dos caras llegó a medirse en ~510 MB, y el pico está en la
+    # búsqueda de códigos de barras, que trabaja sobre copias ampliadas de la
+    # imagen. 3 GB deja margen para el pico más el motor de OCR cargado, y le
+    # pone un techo al contenedor para que un pedido raro no se lleve puesto al
+    # resto del servidor. En una máquina con menos RAM que esto, el límite
+    # simplemente no llega a aplicarse.
+    mem_limit: 3g
+
+    # Sin esto, el log crece sin techo hasta llenar el disco del servidor. Son
+    # 30 MB como mucho.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Que un análisis en curso pueda terminar antes de que lo maten en un
+    # redeploy. El default de Docker son 10 segundos y un documento puede tardar
+    # más que eso.
+    stop_grace_period: 60s
+
+    healthcheck:
+      # El mismo chequeo que trae la imagen, repetido acá porque el compose
+      # tiene que saber qué puerto quedó configurado arriba. `docker compose ps`
+      # muestra "healthy" cuando /health contesta.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3

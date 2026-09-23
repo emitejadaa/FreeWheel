@@ -43,6 +43,36 @@ export interface CreateIntentInput {
   paymentMethodId?: string | null;
   /** Operar sin el cliente presente (confirmar en el servidor). */
   offSession?: boolean;
+  /**
+   * Dejar la tarjeta guardada en el cliente cuando el cobro salga bien, para
+   * que la próxima vez esté en la lista y no haya que escribirla de nuevo.
+   *
+   * No guarda ningún número acá: el procesador guarda la tarjeta contra el
+   * cliente y devuelve un identificador. Es `listSavedCards` quien después la
+   * encuentra.
+   *
+   * Es distinto de `setupFutureUsage`, que declara ante el banco PARA QUÉ se
+   * va a reusar. Uno es comodidad; el otro es el permiso.
+   */
+  saveCard?: boolean;
+}
+
+/**
+ * UNA TARJETA QUE EL PROCESADOR YA TIENE GUARDADA, para no volver a pedirla.
+ *
+ * Lo único que viaja de la tarjeta son las señas que sirven para reconocerla
+ * —marca, últimos cuatro, vencimiento—. El número no existe de este lado.
+ *
+ * `id` es el identificador que le dio el procesador. Con él se confirma un
+ * cobro sin pedir la tarjeta de nuevo, y solo sirve para cobros del MISMO
+ * cliente: el procesador rechaza usarlo con otro.
+ */
+export interface SavedCard {
+  id: string;
+  brand: string | null;
+  last4: string | null;
+  expMonth: number | null;
+  expYear: number | null;
 }
 
 /**
@@ -226,6 +256,12 @@ export interface PaymentProvider {
   transferToOwner(input: TransferInput): Promise<TransferResult>;
 
   ensureCustomer(input: EnsureCustomerInput): Promise<string>;
+
+  /**
+   * Las tarjetas que este cliente ya dejó guardadas, de la más nueva a la más
+   * vieja. Lista vacía si no hay ninguna, que es el caso del primer cobro.
+   */
+  listSavedCards(customerId: string): Promise<SavedCard[]>;
 
   createConnectedAccount(
     input: CreateConnectedAccountInput,

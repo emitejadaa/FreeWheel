@@ -7,7 +7,6 @@ import { RateLimitModule } from "./common/rate-limit/rate-limit.module";
 import { CommonModule } from "./common/common.module";
 import { VehicleVerificationModule } from "./vehicle-verification/vehicle-verification.module";
 import { RetentionModule } from "./retention/retention.module";
-import { ClaimsModule } from "./claims/claims.module";
 import { JobsModule } from "./jobs/jobs.module";
 import { PhotoVisibilityInterceptor } from "./common/interceptors/photo-visibility.interceptor";
 import { AppController } from "./app.controller";
@@ -22,6 +21,7 @@ import { FavoritesModule } from "./favorites/favorites.module";
 import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
 import { BookingsModule } from "./bookings/bookings.module";
+import { ClaimsModule } from "./claims/claims.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { ContractsModule } from "./contracts/contracts.module";
 import { MediaModule } from "./media/media.module";
@@ -58,6 +58,7 @@ import { ReportsModule } from "./reports/reports.module";
     VerificationModule,
     AdminModule,
     BookingsModule,
+    ClaimsModule,
     PaymentsModule,
     ContractsModule,
     MediaModule,
@@ -67,7 +68,6 @@ import { ReportsModule } from "./reports/reports.module";
     ReportsModule,
     VehicleVerificationModule,
     RetentionModule,
-    ClaimsModule,
     JobsModule,
   ],
 })

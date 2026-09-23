@@ -6,6 +6,7 @@ import {
   Post,
   Query,
   Req,
+  UseFilters,
   UseGuards,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
@@ -22,6 +23,7 @@ import { CaptureDepositDto } from "./dto/capture-deposit.dto";
 import { LedgerRemittanceDto } from "./dto/ledger-remittance.dto";
 import { clientIp, clientUserAgent } from "../common/utils/client-ip.util";
 import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
+import { StripeErrorFilter } from "./filters/stripe-error.filter";
 import { SimulatePaymentDto } from "./dto/simulate-payment.dto";
 import { PaymentsService } from "./payments.service";
 import type { PaymentContext } from "./payments.service";
@@ -41,6 +43,13 @@ function contextOf(req: Request, actorId?: string): PaymentContext {
 
 // Toda acción de pago exige una cuenta verificada, con el DNI vigente. El
 // webhook de Stripe queda público: se autentica por firma.
+//
+// EL FILTRO HACE QUE UN ERROR DE STRIPE DIGA QUÉ PASÓ. Sin él, cualquier
+// rechazo del procesador —una tarjeta sin fondos, una moneda que esa cuenta no
+// cobra— llega al filtro global, que lo trata como un error inesperado y
+// contesta "Internal server error". El detalle quedaba solo en los logs del
+// deploy, que administra otra persona. Ver filters/stripe-error.filter.ts.
+@UseFilters(StripeErrorFilter)
 @Controller("payments")
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
@@ -193,6 +202,23 @@ export class PaymentsController {
     );
   }
 
+  /**
+   * LAS TARJETAS GUARDADAS DE QUIEN PREGUNTA. Solo las propias: no recibe
+   * ningún identificador, sale del token.
+   *
+   * Existe para que los tres tramos de un alquiler no obliguen a escribir la
+   * misma tarjeta tres veces seguidas (ver PaymentsService.listSavedCards).
+   * No devuelve ningún número de tarjeta —este servidor no los tiene—: marca,
+   * últimos cuatro, vencimiento, y el identificador con el que el procesador
+   * la reconoce, que solo sirve para cobros de esta misma persona.
+   */
+  @Get("methods")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  listSavedCards(@CurrentUser() user: CurrentUserPayload) {
+    return this.paymentsService.listSavedCards(user.id);
+  }
+
   @Get("bookings/:bookingId/status")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
@@ -324,6 +350,28 @@ export class PaymentsController {
       dto.currency,
       dto.reference,
     );
+  }
+
+  /**
+   * VOLVER A LIQUIDAR UNA RESERVA DEVUELTA Y SIN LIQUIDAR.
+   *
+   * Solo un administrador, por lo mismo que la captura del depósito: mueve
+   * plata entre dos personas.
+   *
+   * Existe porque la devolución del auto no se cae cuando la liquidación
+   * falla: el auto volvió igual, y lo que falta es plata. Sin esto, una
+   * reserva que quedó devuelta con el depósito todavía retenido y el dueño sin
+   * cobrar no tenía forma de arreglarse, porque confirmar la devolución otra
+   * vez ya no se puede.
+   */
+  @Post("bookings/:bookingId/settle")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  settle(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.resettle(user.id, bookingId);
   }
 
   /**

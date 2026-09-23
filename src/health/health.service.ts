@@ -56,7 +56,15 @@ const REQUIRED_SCHEMA: {
     table: "Booking",
     column: "inspectionEndsAt",
   },
-  { feature: "reclamos por daños", table: "DamageClaim" },
+  {
+    /*
+      Sin esta tabla, el dueño abre "Revisar el auto" y recibe un 500 sin
+      explicación: es exactamente la falla silenciosa que esta lista existe
+      para hacer visible.
+    */
+    feature: "reclamo de daños sobre el depósito",
+    table: "DamageClaim",
+  },
   { feature: "libro mayor de la plata", table: "LedgerJournal" },
   { feature: "partidas del libro mayor", table: "LedgerEntry" },
   { feature: "firma de los contratos", table: "ContractAcceptance" },

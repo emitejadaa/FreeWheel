@@ -61,6 +61,10 @@ ENDPOINTS.md
 # la carpeta de uno solo. (Sin esta línea, el `*.md` de arriba lo dejaba afuera y
 # el archivo no entraba en ningún commit.)
 !VARIABLES-VERCEL.md
+# La guía de deploy de la API de documentos, por la misma razón: es lo que se le
+# entrega a quien va a correr el contenedor en su servidor, y tiene que viajar
+# con el repositorio. (El `*.md` de arriba, si no, lo dejaba afuera.)
+!docverify-api/DEPLOY.md
 
 # External skill repos (local only, not committed)
 .tools/

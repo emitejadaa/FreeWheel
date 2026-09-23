@@ -366,6 +366,45 @@ para un análisis que igual no termina.
 
 ---
 
+### En un servidor propio, con Docker
+
+Es la forma de entregársela a alguien que la va a operar sin leer el código.
+**El paso a paso completo está en [DEPLOY.md](DEPLOY.md)**; el resumen:
+
+```bash
+cd docverify-api
+cp .env.docker.example .env          # y adentro: DOCVERIFY_TOKEN
+docker compose up -d --build
+```
+
+Eso deja la API en `127.0.0.1:8000` del servidor, para poner detrás de un
+reverse proxy que ya exista. Para que se publique sola con HTTPS y certificado
+automático —hace falta un dominio apuntando al servidor y los puertos 80 y 443
+abiertos—, se suma el override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+```
+
+Las piezas:
+
+| Archivo | Qué es |
+|---|---|
+| `Dockerfile` | La imagen. Un solo worker, usuario sin privilegios, healthcheck propio. |
+| `docker-compose.yml` | Cómo se corre: puerto, límite de memoria, reinicio automático, techo del log. |
+| `docker-compose.https.yml` | El reverse proxy (Caddy) que termina TLS y renueva el certificado solo. |
+| `Caddyfile` | La configuración de ese proxy. |
+| `.env.docker.example` | Las variables. Se copia a `.env`, que no se versiona. |
+| `DEPLOY.md` | La guía para quien administra el servidor. |
+
+El compose pone `DOCVERIFY_EXPUESTO=1`, y no es decorativo: en un Docker a
+secas no existe ninguna de las variables que delatan a una plataforma
+—`SPACE_ID`, `RENDER_SERVICE_ID`, `K_SERVICE`, `FLY_APP_NAME`—, así que sin esa
+línea el servicio arrancaría **abierto**, creyéndose en una máquina de
+desarrollo. Con ella puesta, no arranca sin token.
+
+---
+
 ### En tu máquina, junto con el backend
 
 Es lo que está andando hoy, y no es un modo degradado: el análisis tarda **~10

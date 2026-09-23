@@ -16,6 +16,7 @@ import {
   RefundResult,
   ReleaseHoldInput,
   RiskDetails,
+  SavedCard,
   TransferInput,
   TransferResult,
   WebhookEvent,
@@ -111,13 +112,59 @@ export class StripePaymentsProvider implements PaymentProvider {
         transfer_group: input.transferGroup ?? undefined,
         metadata: this.metadata(input),
         automatic_payment_methods: { enabled: true, allow_redirects: "never" },
-        ...(input.setupFutureUsage
-          ? { setup_future_usage: input.setupFutureUsage }
-          : {}),
+        /*
+          QUÉ SE LE DECLARA AL BANCO SOBRE ESTA TARJETA.
+
+          `setup_future_usage` le dice a Stripe para qué se va a volver a usar,
+          y la diferencia no es un detalle:
+
+           · "on_session" es "la vamos a volver a cobrar con la persona
+             adelante, apretando un botón".
+           · "off_session" es "la vamos a cobrar cuando NO esté". Pide un
+             permiso más fuerte del banco y, en Europa, dispara la
+             autenticación de más cobros.
+
+          Declarar de menos también se paga: una tarjeta guardada como
+          "on_session" y después cobrada sin la persona presente la rechaza el
+          emisor por falta de mandato.
+
+          Acá el cobro de la reserva pide "off_session" a propósito, porque con
+          esa misma tarjeta se autoriza después el depósito en garantía, solo,
+          al marcar el auto listo para entregar. `saveCard` sin más es el caso
+          suave: guardarla para ofrecerla la próxima vez.
+        */
+        setup_future_usage:
+          input.setupFutureUsage ?? (input.saveCard ? "on_session" : undefined),
       },
       this.opts(input.idempotencyKey),
     );
     return this.toIntentResult(intent);
+  }
+
+  /**
+   * Las tarjetas guardadas de un cliente, de la más nueva a la más vieja.
+   *
+   * Stripe ya las devuelve en ese orden y no hay que ordenarlas: la más nueva
+   * es la que la persona acaba de usar, que es la que hay que ofrecerle.
+   *
+   * El tope de 5 es a propósito. Esto existe para no volver a escribir la
+   * tarjeta con la que se pagó hace un minuto, no para ser un administrador de
+   * medios de pago: una lista de veinte tarjetas viejas en una pantalla de
+   * cobro es otra decisión que tomar, no una comodidad.
+   */
+  async listSavedCards(customerId: string): Promise<SavedCard[]> {
+    const { data } = await this.stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 5,
+    });
+    return data.map((pm) => ({
+      id: pm.id,
+      brand: pm.card?.brand ?? null,
+      last4: pm.card?.last4 ?? null,
+      expMonth: pm.card?.exp_month ?? null,
+      expYear: pm.card?.exp_year ?? null,
+    }));
   }
 
   async createDepositHold(
@@ -135,6 +182,11 @@ export class StripePaymentsProvider implements PaymentProvider {
         // devolución, que es más rápido para quien alquiló y no le cuesta la
         // comisión de un reembolso.
         capture_method: "manual",
+        // ACÁ NO SE GUARDA LA TARJETA, aunque el intent la reciba. Una
+        // retención puede terminar soltada sin cobrar un peso, y una tarjeta
+        // solo queda guardada cuando el cobro se concreta: pedirlo en el
+        // depósito daría una tarjeta guardada a veces sí y a veces no. La
+        // guarda la seña, que es el primer tramo y siempre se cobra.
         transfer_group: input.transferGroup ?? undefined,
         metadata: this.metadata(input),
         // Una retención común dura unos 7 días. El alquiler de autos es uno de

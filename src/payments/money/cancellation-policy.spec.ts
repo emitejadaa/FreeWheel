@@ -22,6 +22,10 @@ const base: CancellationInput = {
   pickupConfirmed: false,
   now: new Date(PAGO.getTime() + 3 * DIA),
   withdrawalDays: 10,
+  // Sobre la fecha, que es el caso en el que la plata se reparte distinto. El
+  // tramo lo decide bookings/cancellation-policy.ts mirando las horas que
+  // faltan; acá entra ya decidido.
+  tier: "tardia",
 };
 
 describe("computeCancellation", () => {
@@ -45,6 +49,27 @@ describe("computeCancellation", () => {
       now: new Date(PAGO.getTime() + 10 * DIA),
     });
     expect(r.rule).toBe("CONSUMER_WITHDRAWAL");
+  });
+
+  it("con más de 48 horas de anticipación vuelve todo, aunque el plazo de arrepentimiento haya pasado", () => {
+    // Es la política comercial, no la ley: el dueño todavía tiene tiempo real
+    // de volver a alquilar esas fechas. Es la que el front muestra.
+    const r = computeCancellation({
+      ...base,
+      tier: "libre",
+      now: new Date(PAGO.getTime() + 11 * DIA),
+    });
+    expect(r.rule).toBe("FREE_CANCELLATION");
+    expect(r.refundToRenterMinor).toBe(330000);
+    expect(r.ownerReceivesMinor).toBe(0);
+  });
+
+  it("el arrepentimiento gana sobre el tramo tardío", () => {
+    // Una política comercial no puede sacar un derecho de orden público: si
+    // pagó hace tres días, recupera todo aunque cancele sobre la fecha.
+    const r = computeCancellation({ ...base, tier: "tardia" });
+    expect(r.rule).toBe("CONSUMER_WITHDRAWAL");
+    expect(r.refundToRenterMinor).toBe(330000);
   });
 
   it("fuera del plazo, pierde la seña y recupera el resto y la cobertura", () => {

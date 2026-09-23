@@ -8,6 +8,19 @@
 # glibc (manylinux), y en Alpine (musl) habría que compilarlas.
 FROM python:3.13-slim
 
+LABEL org.opencontainers.image.title="docverify-api" \
+      org.opencontainers.image.description="API de verificación documental (DNI y licencia de conducir argentinos)" \
+      org.opencontainers.image.source="https://github.com/emitejadaa/FreeWheel"
+
+# PYTHONUNBUFFERED: sin esto Python bufferea stdout cuando no hay una terminal
+# del otro lado, que es exactamente el caso dentro de un contenedor. El
+# resultado es que `docker logs` no muestra nada hasta que se llena el buffer —
+# y quien está diagnosticando un arranque fallido concluye que el proceso está
+# colgado cuando en realidad ya escribió el error.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 # libgl/libglib: opencv-python-headless igual enlaza contra un par de
 # bibliotecas gráficas del sistema para decodificar imágenes.
 RUN apt-get update \
@@ -54,14 +67,36 @@ RUN useradd --create-home --uid 1000 docverify
 USER docverify
 
 # 7860 porque es lo que espera Hugging Face Spaces (su `app_port`). Sale por
-# ${PORT}, así que una plataforma que inyecte otro puerto —Render, Cloud Run—
-# también funciona sin tocar nada.
+# ${PORT}, así que una plataforma que inyecte otro puerto —Render, Cloud Run,
+# el docker-compose.yml de al lado— también funciona sin tocar nada.
 ENV PORT=7860
 EXPOSE 7860
+
+# El mismo /health que mira un balanceador, pero desde adentro, para que
+# `docker ps` diga "healthy" o "unhealthy" en vez de solo "Up". Importa porque
+# el modo de falla típico de este servicio no es morirse: es quedarse sin
+# memoria durante un análisis, y ahí el proceso desaparece mientras el
+# contenedor sigue figurando levantado.
+#
+# start-period de 90s: el arranque abre tres sesiones de ONNX en segundo plano
+# y en una instancia con poca CPU eso son varios segundos. Sin ese margen, el
+# contenedor se marcaría unhealthy durante un arranque perfectamente normal.
+#
+# Se usa urllib y no curl porque la imagen no trae curl y agregarlo por apt
+# sería sumar superficie para un chequeo que Python ya sabe hacer.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','7860')+'/health', timeout=4).read()" || exit 1
 
 # Un solo worker: cada uno carga su propia copia de los modelos en memoria.
 # Para escalar, más réplicas del contenedor antes que más workers adentro.
 #
 # --proxy-headers: detrás del proxy de la plataforma, sin esto uvicorn loguea
 # la IP del proxy en todos los pedidos y no la de quien llamó de verdad.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers"]
+#
+# --forwarded-allow-ips='*': es lo que hace que lo anterior sirva de algo. Por
+# defecto uvicorn solo le cree el X-Forwarded-For a 127.0.0.1, y el proxy nunca
+# es 127.0.0.1 desde adentro del contenedor —es la IP de la red de Docker, o la
+# del balanceador de la plataforma, y ninguna de las dos se conoce de antemano—.
+# El contenedor no se publica desnudo a internet (va detrás del proxy, ver
+# DEPLOY.md), así que el único que puede mandar ese header es el proxy.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]

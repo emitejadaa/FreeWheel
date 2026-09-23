@@ -28,6 +28,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ContractsService } from "../contracts/contracts.service";
 import { LedgerService } from "../ledger/ledger.service";
 import { Accounts } from "../ledger/accounts";
+import { decidirCancelacion } from "../bookings/cancellation-policy";
 import { buildTicket, Ticket } from "./money/ticket";
 import {
   CancellationOutcome,
@@ -39,6 +40,7 @@ import type {
   PaymentIntentResult,
   PaymentProvider,
   PaymentRecordKindLike,
+  SavedCard,
 } from "./providers/payment-provider.interface";
 
 /** Estados en los que la plata efectivamente entró. */
@@ -146,7 +148,12 @@ export class PaymentsService {
     }
 
     return this.createOrReuseIntent(booking, "CHECKOUT", amountMinor, ctx, {
+      // "off_session" porque con esta misma tarjeta se autoriza después el
+      // depósito en garantía, solo, al marcar el auto listo para entregar.
       setupFutureUsage: "off_session",
+      // Y que además quede en la lista de tarjetas guardadas, para que la
+      // próxima reserva no obligue a escribirla de nuevo.
+      saveCard: true,
     });
   }
 
@@ -332,7 +339,7 @@ export class PaymentsService {
     kind: PaymentRecordKindLike,
     amountMinor: number,
     ctx: PaymentContext,
-    extra: { setupFutureUsage?: "off_session" } = {},
+    extra: { setupFutureUsage?: "off_session"; saveCard?: boolean } = {},
   ) {
     const bookingId = booking.id;
     const currency = booking.currency;
@@ -386,11 +393,59 @@ export class PaymentsService {
         ? await this.provider.createDepositHold(input)
         : await this.provider.createPaymentIntent(input);
 
-    const record = await this.prisma.paymentRecord.create({
-      data: {
-        bookingId,
-        userId: booking.renterId,
-        kind: kind as PaymentRecordKind,
+    /*
+      UPSERT Y NO CREATE, Y ACÁ HAY UN ERROR QUE COSTÓ CARO.
+
+      ── Qué pasaba ─────────────────────────────────────────────────────────
+      Una tarjeta rechazada dejaba el registro en FAILED, que este código trata
+      como inservible: no lo reutiliza y sale a pedir otro intent. Pero la clave
+      de idempotencia es la misma —la reserva, el tramo y el importe no
+      cambiaron—, así que Stripe hacía lo correcto y devolvía EL MISMO intent de
+      antes. Y ahí esto intentaba INSERTAR un segundo registro con el mismo
+      `stripePaymentIntentId`, que es una columna única.
+
+      Resultado: violación de unicidad, un error de Prisma que nadie atrapaba, y
+      un 500 mudo "Internal server error" en la pantalla de pago. O sea que
+      después de UN rechazo de tarjeta, esa reserva no se podía pagar nunca más:
+      cada intento moría con un error que no hablaba de la tarjeta ni del cobro.
+
+      ── Por qué upsert es la respuesta y no una clave distinta ─────────────
+      Porque reintentar el MISMO intent es lo que Stripe espera: un intent que
+      falló vuelve a `requires_payment_method` y se puede confirmar de nuevo con
+      otra tarjeta. Inventarle una clave nueva a cada reintento crearía un
+      intent nuevo por cada tarjeta rechazada, que es basura en la cuenta y no
+      arregla nada.
+
+      Así que si Stripe devuelve el intent de antes, se reusa su fila y se la
+      vuelve a poner a la espera. El historial no se pierde: lo que pasó con ese
+      cobro —incluido el rechazo— vive en PaymentEvent, que es append-only y
+      para eso está.
+    */
+    const datos = {
+      bookingId,
+      userId: booking.renterId,
+      kind: kind as PaymentRecordKind,
+      status: PaymentRecordStatus.REQUIRES_ACTION,
+      provider: this.provider.name,
+      providerId: intent.id,
+      stripePaymentIntentId: intent.id,
+      amount: amountMinor / 100,
+      amountMinor,
+      currency,
+      initiatedIp: ctx.ip ?? null,
+      initiatedUserAgent: ctx.userAgent?.slice(0, 500) ?? null,
+      // `metadata` ya no lleva el client secret (ver arriba). Lleva las dos
+      // partes de la reserva, que es lo que hace falta para reconstruir un
+      // cobro sin tener que ir a buscar la reserva.
+      metadata: {
+        renterId: booking.renterId,
+        ownerId: booking.ownerId,
+      } as Prisma.InputJsonValue,
+    };
+    const record = await this.prisma.paymentRecord.upsert({
+      where: { stripePaymentIntentId: intent.id },
+      create: datos,
+      update: {
         status: PaymentRecordStatus.REQUIRES_ACTION,
         provider: this.provider.name,
         providerId: intent.id,
@@ -653,6 +708,50 @@ export class PaymentsService {
       heldMinor: pockets,
       records: records.map((record) => publicRecord(record)),
     };
+  }
+
+  /**
+   * LAS TARJETAS QUE EL PROCESADOR YA TIENE GUARDADAS DE ESTA PERSONA.
+   *
+   * No devuelve ningún número: marca, últimos cuatro, vencimiento y el
+   * identificador con el que el procesador la reconoce, que solo sirve para
+   * cobros de este mismo cliente.
+   */
+  async listSavedCards(userId: string): Promise<{ cards: SavedCard[] }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    assertFound(user, "User not found");
+    // Un identificador de otro proveedor (una `cus_mock_…` que quedó de cuando
+    // este deploy corría en simulación) no se le manda al procesador: contesta
+    // "No such customer" y rompe la pantalla por una comodidad.
+    if (!this.esDelProveedorActual(user.stripeCustomerId)) {
+      return { cards: [] };
+    }
+    const cards = await this.provider.listSavedCards(
+      user.stripeCustomerId as string,
+    );
+    return { cards };
+  }
+
+  /**
+   * Reintentar la liquidación a mano, desde el panel.
+   *
+   * Es para el caso en que el cierre automático falló —el dueño todavía no
+   * había terminado el alta de cobros, el procesador estaba caído— y la
+   * reserva quedó devuelta con la plata sin repartir. No duplica nada: cada
+   * paso de la liquidación es idempotente.
+   */
+  async resettle(actorId: string, bookingId: string) {
+    const resultado = await this.settleBooking(bookingId, actorId);
+    if (!resultado.settled) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: resultado.reason ?? "NOT_SETTLEABLE",
+        message:
+          "Esta reserva no se puede liquidar todavía: " +
+          (resultado.reason ?? "no está en condiciones"),
+      });
+    }
+    return { settled: true, bookingId };
   }
 
   /** El ticket de una reserva, para mostrarlo antes de pagar. */
@@ -1728,6 +1827,108 @@ export class PaymentsService {
       amountMinor: hold.amountMinor,
       currency: hold.currency,
     });
+    await this.avisarDeLaLiberacion(bookingId, hold);
+  }
+
+  /** "Toyota Corolla 2020", para nombrar el auto en un mail. */
+  private vehicleLabel(booking: {
+    vehicle?: {
+      brand?: string | null;
+      model?: string | null;
+      year?: number | null;
+    } | null;
+  }): string {
+    return (
+      [booking.vehicle?.brand, booking.vehicle?.model, booking.vehicle?.year]
+        .filter(Boolean)
+        .join(" ") || "el vehículo"
+    );
+  }
+
+  /**
+   * EL MAIL DE "SE LIBERÓ TU DEPÓSITO".
+   *
+   * Hace falta porque el depósito es la única plata del alquiler que quien
+   * alquiló ve salir y no ve volver: no es un cobro, es una retención, así que
+   * liberarla no genera ningún movimiento en el resumen de la tarjeta. Sin un
+   * mail, la única señal es que el saldo disponible deja de estar recortado, y
+   * eso nadie lo mira.
+   *
+   * NUNCA HACE FALLAR LA LIQUIDACIÓN: la plata ya se soltó cuando esto corre, y
+   * una excepción acá desharía por un mail algo que salió bien.
+   */
+  private async avisarDeLaLiberacion(
+    bookingId: string,
+    hold: PaymentRecord,
+  ): Promise<void> {
+    try {
+      const booking = await this.findBookingWithUsers(bookingId);
+      if (!booking.renter?.email) return;
+      await this.email.sendDepositReleased(booking.renter.email, {
+        renterName:
+          booking.renter.displayName ??
+          `${booking.renter.firstName} ${booking.renter.lastName}`,
+        amount: (hold.amountMinor ?? 0) / 100,
+        currency: hold.currency ?? booking.currency,
+        vehicleLabel: this.vehicleLabel(booking),
+        cardBrand: hold.cardBrand,
+        cardLast4: hold.cardLast4,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisar de la liberación del depósito de ${bookingId}: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * LOS MAILS DE "SE COBRÓ PARTE DEL DEPÓSITO", A LAS DOS PARTES.
+   *
+   * No hace fallar la captura: la plata ya se movió cuando esto corre, y
+   * deshacerla por un mail que no salió sería cambiar un problema chico por
+   * uno grande.
+   */
+  private async avisarDeLaCaptura(
+    bookingId: string,
+    capturadoMinor: number,
+    retenidoMinor: number,
+    motivo: string,
+  ): Promise<void> {
+    try {
+      const booking = await this.findBookingWithUsers(bookingId);
+      const liberadoMinor = Math.max(0, retenidoMinor - capturadoMinor);
+      const nombre = (persona?: {
+        displayName?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+      }) =>
+        persona?.displayName ||
+        [persona?.firstName, persona?.lastName].filter(Boolean).join(" ") ||
+        "";
+
+      for (const parte of [
+        { datos: booking.renter, otra: booking.owner, esDueño: false },
+        { datos: booking.owner, otra: booking.renter, esDueño: true },
+      ]) {
+        if (!parte.datos?.email) continue;
+        await this.email.sendDepositCaptured(parte.datos.email, {
+          recipientName: nombre(parte.datos),
+          esDueño: parte.esDueño,
+          otherPartyName: nombre(parte.otra),
+          capturado: capturadoMinor / 100,
+          liberado: liberadoMinor / 100,
+          currency: booking.currency,
+          vehicleLabel: this.vehicleLabel(booking),
+          motivo,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `No se pudo avisar de la captura del depósito de ${bookingId}: ${message}`,
+      );
+    }
   }
 
   /**
@@ -1832,6 +2033,7 @@ export class PaymentsService {
       userAgent: ctx.userAgent,
       payload: { reference, heldMinor: retenido },
     });
+    await this.avisarDeLaCaptura(bookingId, monto, retenido, reference);
     return { capturedMinor: monto };
   }
 
@@ -1910,17 +2112,34 @@ export class PaymentsService {
     const booking = await this.findBookingForParticipant(userId, bookingId);
     const cancelledBy: CancelledBy =
       userId === booking.ownerId ? "OWNER" : "RENTER";
-    return this.cancellationOutcome(booking, cancelledBy, new Date());
+    const ahora = new Date();
+    const decision = decidirCancelacion({
+      status: booking.status,
+      startDate: booking.startDate,
+      ahora,
+      laCancelaElDueno: cancelledBy === "OWNER",
+    });
+    return {
+      ...(await this.cancellationOutcome(booking, cancelledBy, ahora, {
+        tier: decision.tier === "tardia" ? "tardia" : "libre",
+      })),
+      puede: decision.puede,
+      motivo: decision.motivo,
+      tier: decision.tier,
+      horasParaElInicio: Math.round(decision.horasParaElInicio),
+    };
   }
 
   private async cancellationOutcome(
     booking: Booking,
     cancelledBy: CancelledBy,
     now: Date,
+    opciones: { tier: "libre" | "tardia" },
   ): Promise<CancellationOutcome> {
     const ticket = this.ticketOf(booking);
     return computeCancellation({
       cancelledBy,
+      tier: opciones.tier,
       paidMinor: await this.capturedMinor(booking.id),
       rentalMinor: ticket.lines
         .filter((l) => l.code !== "INSURANCE")
@@ -1952,12 +2171,20 @@ export class PaymentsService {
     bookingId: string,
     cancelledBy: CancelledBy,
     actorId: string,
+    /*
+      El tramo lo decide bookings/cancellation-policy.ts mirando cuánto falta
+      para el inicio, y entra por acá ya resuelto. Por omisión, "tardia": es el
+      tramo que retiene la seña, así que quien llame sin decir nada no regala
+      plata del dueño por olvidarse un parámetro.
+    */
+    opciones: { tier: "libre" | "tardia" } = { tier: "tardia" },
   ): Promise<CancellationOutcome> {
     const booking = await this.findBookingWithUsers(bookingId);
     const outcome = await this.cancellationOutcome(
       booking,
       cancelledBy,
       new Date(),
+      opciones,
     );
 
     if (outcome.rule !== "UNPAID") {
@@ -2342,7 +2569,20 @@ export class PaymentsService {
     });
     assertFound(owner, "User not found");
 
-    if (!owner.stripeAccountId) {
+    /*
+      Una cuenta que quedó de la simulación se trata como "todavía no tiene".
+
+      Preguntarle por ella a Stripe da "No such account", y decirle a alguien
+      que su cuenta de cobro está rota cuando lo que hay que hacer es crearla
+      lo manda a buscar un problema que no existe. Así, el front le ofrece
+      hacer el alta, que es exactamente lo que corresponde.
+
+      El identificador se copia a una constante para que TypeScript sepa que
+      después del `if` ya no puede ser null: la comprobación es una llamada a
+      un método, y eso no alcanza para que estreche el tipo solo.
+    */
+    const cuentaDeCobro = owner.stripeAccountId;
+    if (!this.esDelProveedorActual(cuentaDeCobro)) {
       return {
         connected: false,
         status: StripeAccountStatus.NONE,
@@ -2353,7 +2593,7 @@ export class PaymentsService {
     }
 
     const estado = await this.provider.getConnectedAccountStatus(
-      owner.stripeAccountId,
+      cuentaDeCobro as string,
     );
     const status = estado.payoutsEnabled
       ? StripeAccountStatus.ENABLED
@@ -2491,8 +2731,47 @@ export class PaymentsService {
     );
   }
 
+  /**
+   * SI UN IDENTIFICADOR GUARDADO LO CREÓ EL PROVEEDOR QUE ESTÁ CORRIENDO HOY.
+   *
+   * ── El problema que esto resuelve ────────────────────────────────────────
+   * Los identificadores de cliente y de cuenta se guardan en la base la
+   * primera vez y se reusan siempre. Eso está bien mientras el proveedor no
+   * cambie. Pero este deploy corrió un tiempo con PAYMENTS_PROVIDER=mock, y el
+   * proveedor de simulación inventa identificadores propios —`cus_mock_…`,
+   * `acct_mock_…`— que quedaron escritos en las filas de quienes usaron la app
+   * en ese momento.
+   *
+   * Al pasar a Stripe de verdad, esas filas siguen teniendo el identificador
+   * viejo. Se reusa, se le manda a Stripe, y Stripe contesta lo único que
+   * puede contestar: "No such customer: 'cus_mock_…'". El cobro falla, y no
+   * hay nada en la app que explique por qué: la cuenta parece normal y la
+   * tarjeta es válida.
+   *
+   * No se arregla borrando esas filas a mano, porque vuelve a pasar con cada
+   * cuenta que quede de un modo anterior. Se arregla acá: un identificador que
+   * no es de este proveedor vale lo mismo que no tener ninguno, y se crea uno
+   * nuevo.
+   *
+   * Sirve para los dos lados: un identificador real guardado mientras corre la
+   * simulación también es inservible, y esta misma cuenta lo detecta.
+   *
+   * ── Lo que NO detecta ────────────────────────────────────────────────────
+   * Un identificador de OTRA cuenta de Stripe (si se cambia la clave secreta
+   * por la de otra cuenta). Eso solo se sabe preguntándole a Stripe, que es
+   * una llamada de red en cada cobro para un caso que pasa una vez en la vida.
+   * Cuando pasa, el filtro de errores ya lo dice con todas las letras.
+   */
+  private esDelProveedorActual(id: string | null | undefined): boolean {
+    if (!id) return false;
+    const deSimulacion = id.includes("_mock_");
+    return deSimulacion === (this.provider.name === "mock");
+  }
+
   private async ensureRenterCustomer(renter: User): Promise<string> {
-    if (renter.stripeCustomerId) return renter.stripeCustomerId;
+    if (this.esDelProveedorActual(renter.stripeCustomerId)) {
+      return renter.stripeCustomerId as string;
+    }
     const customerId = await this.provider.ensureCustomer({
       userId: renter.id,
       email: renter.email,
@@ -2506,7 +2785,12 @@ export class PaymentsService {
   }
 
   private async ensureOwnerAccount(owner: User): Promise<string> {
-    if (owner.stripeAccountId) return owner.stripeAccountId;
+    // Mismo caso que en ensureRenterCustomer: una `acct_mock_…` guardada
+    // cuando corría la simulación hace fallar la transferencia al dueño al
+    // final del alquiler, que es el peor momento para enterarse.
+    if (this.esDelProveedorActual(owner.stripeAccountId)) {
+      return owner.stripeAccountId as string;
+    }
     const account = await this.provider.createConnectedAccount({
       userId: owner.id,
       email: owner.email,
@@ -2536,7 +2820,10 @@ export class PaymentsService {
   private async findBookingWithUsers(bookingId: string) {
     const booking = await this.prisma.booking.findUnique({
       where: { id: bookingId },
-      include: { owner: true, renter: true },
+      // El vehículo viene para poder nombrarlo en los mails: "se liberó tu
+      // depósito de Toyota Corolla 2022" dice de cuál de las tres reservas
+      // está hablando, y "se liberó tu depósito" no.
+      include: { owner: true, renter: true, vehicle: true },
     });
     assertFound(booking, "Booking not found");
     return booking;

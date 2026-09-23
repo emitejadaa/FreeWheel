@@ -32,6 +32,7 @@ import {
 } from "../common/utils/authorization.util";
 import { generateOpaqueToken } from "../common/utils/verification-code.util";
 import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
+import { decidirCancelacion } from "./cancellation-policy";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
@@ -333,40 +334,93 @@ export class BookingsService {
     const booking = await this.findById(id);
     this.assertBookingParticipant(booking, userId);
 
-    if (
-      !(
-        [
-          BookingStatus.REQUESTED,
-          BookingStatus.ACCEPTED,
-          BookingStatus.READY_FOR_PICKUP,
-        ] as BookingStatus[]
-      ).includes(booking.status)
-    ) {
-      throw new BadRequestException(
-        "Booking cannot be cancelled in this status",
-      );
+    const laCancelaElDueno = userId !== booking.renterId;
+
+    /*
+      LA POLÍTICA DE CANCELACIÓN, en un solo lugar y con sus pruebas.
+
+      Hasta acá se devolvía el CIEN POR CIENTO en cualquier momento, hasta el
+      minuto anterior al retiro. Suena generoso y es un agujero: alguien podía
+      tener un auto bloqueado un mes, soltarlo el día anterior sin costo, y el
+      dueño se quedaba sin el alquiler Y sin las fechas. Ver
+      cancellation-policy.ts, que explica los plazos y por qué son esos.
+    */
+    const decision = decidirCancelacion({
+      status: booking.status,
+      startDate: booking.startDate,
+      ahora: new Date(),
+      laCancelaElDueno,
+    });
+    if (!decision.puede) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: decision.motivo,
+        message:
+          decision.motivo === "BOOKING_IN_PROGRESS"
+            ? "El auto ya está entregado: esta reserva no se cancela, se " +
+              "devuelve el auto. Devolverlo antes libera las fechas que sobran."
+            : "Esta reserva ya no se puede cancelar.",
+      });
     }
 
-    const esInquilino = userId === booking.renterId;
-    const status = esInquilino
-      ? BookingStatus.CANCELLED_BY_RENTER
-      : BookingStatus.CANCELLED_BY_OWNER;
+    const esInquilino = !laCancelaElDueno;
+    const status = laCancelaElDueno
+      ? BookingStatus.CANCELLED_BY_OWNER
+      : BookingStatus.CANCELLED_BY_RENTER;
 
-    // La plata primero, el estado después: si el reparto falla a la mitad, la
-    // reserva no queda "cancelada" con la plata sin devolver, y reintentar
-    // cancelar la termina (cada paso del reparto es idempotente).
+    /*
+      LA PLATA PRIMERO, PERO SIN QUE UNA FALLA TIRE ABAJO LA CANCELACIÓN.
+
+      El orden importa: repartir antes de cambiar el estado hace que un reparto
+      a medias no deje una reserva "cancelada" con la plata sin devolver, y
+      cada paso del reparto es idempotente, así que reintentar lo termina.
+
+      Pero una excepción acá tampoco puede contestar 500 sobre una cancelación
+      que la persona pidió y que sí corresponde: falla casi siempre por lo
+      mismo —el dueño sin el alta de cobros terminada, cuando hay que
+      transferirle la seña retenida— y eso no es motivo para dejarle la reserva
+      activa. Así que se cancela igual y la falla viaja en la respuesta, para
+      que la pantalla la pueda contar.
+    */
     const refundable: PaymentStatus[] = [
       PaymentStatus.DEPOSIT_PAID,
       PaymentStatus.FULLY_PAID,
       PaymentStatus.PARTIALLY_REFUNDED,
     ];
-    const settlement = refundable.includes(booking.paymentStatus)
-      ? await this.payments.cancelAndSettle(
+    let settlement: Awaited<
+      ReturnType<PaymentsService["cancelAndSettle"]>
+    > | null = null;
+    let refund: { ok: boolean; code: string | null; message: string | null } = {
+      ok: true,
+      code: null,
+      message: null,
+    };
+    if (refundable.includes(booking.paymentStatus)) {
+      try {
+        settlement = await this.payments.cancelAndSettle(
           id,
           esInquilino ? "RENTER" : "OWNER",
           userId,
-        )
-      : null;
+          // "delDueno" y "cerrada" no llegan acá: el primero devuelve todo
+          // igual por ser el dueño quien cancela, y el segundo ya rebotó
+          // arriba. Se mapean a "libre" para no inventar un tramo.
+          { tier: decision.tier === "tardia" ? "tardia" : "libre" },
+        );
+      } catch (error) {
+        refund = {
+          ok: false,
+          code: this.codigoDelError(error) ?? "REFUND_FAILED",
+          message:
+            "La reserva quedó cancelada, pero la devolución del dinero no se " +
+            "pudo completar. Lo reintentamos.",
+        };
+        this.logger.error(
+          `no se pudo repartir la plata de la cancelación ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
 
     const updated = await this.prisma.booking.update({
       where: { id },
@@ -397,35 +451,60 @@ export class BookingsService {
     const canceloElInquilino = status === BookingStatus.CANCELLED_BY_RENTER;
     const seDevuelvePlata = (settlement?.refundToRenterMinor ?? 0) > 0;
 
-    await this.safeNotify(() => {
-      if (!updated.renter?.email) return;
-      return this.email.sendBookingCancelled(updated.renter.email, {
-        recipientName: this.personName(updated.renter),
-        otherPartyName: this.personName(updated.owner),
-        vehicleLabel: this.vehicleLabel(updated),
-        startDate: updated.startDate,
-        endDate: updated.endDate,
-        reason: updated.cancellationReason,
+    /*
+      EL MAIL DICE QUÉ POLÍTICA SE APLICÓ Y CUÁNTO VUELVE.
+
+      Una política clara que no se cuenta en el momento en que se aplica no es
+      clara: quien cancela la noche anterior tiene que leer POR QUÉ no le
+      vuelve la seña, ahí, en el mismo mail que le confirma la cancelación, y
+      no descubrirlo tres días después mirando el resumen de la tarjeta.
+    */
+    const senaRetenida =
+      decision.retieneSena && seDevuelvePlata
+        ? (booking.senaAmountSnapshot ?? null)
+        : null;
+
+    for (const parte of [
+      {
+        datos: updated.renter,
+        otra: updated.owner,
         cancelaste: canceloElInquilino,
-        refunded: seDevuelvePlata,
-      });
-    });
-
-    await this.safeNotify(() => {
-      if (!updated.owner?.email) return;
-      return this.email.sendBookingCancelled(updated.owner.email, {
-        recipientName: this.personName(updated.owner),
-        otherPartyName: this.personName(updated.renter),
-        vehicleLabel: this.vehicleLabel(updated),
-        startDate: updated.startDate,
-        endDate: updated.endDate,
-        reason: updated.cancellationReason,
+      },
+      {
+        datos: updated.owner,
+        otra: updated.renter,
         cancelaste: !canceloElInquilino,
-        refunded: seDevuelvePlata,
+      },
+    ]) {
+      await this.safeNotify(() => {
+        if (!parte.datos?.email) return;
+        return this.email.sendBookingCancelled(parte.datos.email, {
+          recipientName: this.personName(parte.datos),
+          otherPartyName: this.personName(parte.otra),
+          vehicleLabel: this.vehicleLabel(updated),
+          startDate: updated.startDate,
+          endDate: updated.endDate,
+          reason: updated.cancellationReason,
+          cancelaste: parte.cancelaste,
+          refunded: seDevuelvePlata,
+          tier: decision.tier,
+          senaRetenida: senaRetenida != null ? Number(senaRetenida) : null,
+          currency: updated.currency,
+        });
       });
-    });
+    }
 
-    return { ...publicBooking(updated), cancellation: settlement };
+    return {
+      ...publicBooking(updated),
+      // El tramo y "¿se retiene la seña?" los lee la pantalla de cancelación;
+      // el reparto detallado es el respaldo de qué se devolvió y por qué.
+      cancellation: {
+        tier: decision.tier,
+        retieneSena: decision.retieneSena,
+        ...(settlement ?? {}),
+      },
+      refund,
+    };
   }
 
   /** Lo que pasaría si esta persona cancelara ahora. No cancela nada. */
@@ -677,6 +756,10 @@ export class BookingsService {
           vehicleLabel: this.vehicleLabel(updated),
           confirmedAt: devueltoEl,
           esDueño: persona.esDueño,
+          // El dueño tiene una ventana para revisar el auto y reclamar un
+          // daño; mientras tanto el depósito sigue retenido. Este mail es el
+          // único momento en que se le puede decir.
+          horasDeRevision: this.inspectionHours(),
         });
       });
     }
@@ -716,6 +799,31 @@ export class BookingsService {
       this.config.get<string>("DAMAGE_REPORT_WINDOW_HOURS") ?? "",
     );
     return Number.isFinite(horas) && horas > 0 ? horas : 48;
+  }
+
+  /**
+   * El código corto de un error, si lo trae.
+   *
+   * Las excepciones de este backend llevan uno adentro del cuerpo
+   * (PAYMENT_DISPUTED, PAYMENTS_NOT_CONFIGURED); las de Stripe lo llevan en
+   * `code`. Sirve para que el front pueda distinguir "hay una disputa abierta"
+   * de "falló la transferencia" sin leer un mensaje en castellano.
+   */
+  private codigoDelError(error: unknown): string | null {
+    if (typeof error !== "object" || error === null) return null;
+    const conCode = error as { code?: unknown; getResponse?: () => unknown };
+    if (typeof conCode.code === "string") return conCode.code;
+    if (typeof conCode.getResponse === "function") {
+      const cuerpo = conCode.getResponse();
+      if (
+        typeof cuerpo === "object" &&
+        cuerpo !== null &&
+        typeof (cuerpo as { code?: unknown }).code === "string"
+      ) {
+        return (cuerpo as { code: string }).code;
+      }
+    }
+    return null;
   }
 
   private async findById(id: string) {

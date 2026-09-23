@@ -133,12 +133,19 @@ Authorization: Bearer {{renterToken}}
 GET {{baseUrl}}/payments/bookings/{{bookingId}}/status
 Authorization: Bearer {{renterToken}}
 
+### 5. Las tarjetas que este renter ya dejó guardadas (para no volver a
+### escribir la misma tarjeta en los tres tramos). Devuelve marca, últimos
+### cuatro, vencimiento y el id del payment method — nunca el número.
+### Con PAYMENTS_PROVIDER=mock devuelve siempre la lista vacía.
+GET {{baseUrl}}/payments/methods
+Authorization: Bearer {{renterToken}}
+
 ### ────────────────────────────────────────────────────────────────────────
 ### Simulación (solo PAYMENTS_PROVIDER=mock — en Stripe real el estado avanza
 ### vía webhook firmado, no con estos dos endpoints)
 ### ────────────────────────────────────────────────────────────────────────
 
-### 5. Simula el pago exitoso de un tramo puntual (kind opcional: "SENA",
+### 6. Simula el pago exitoso de un tramo puntual (kind opcional: "SENA",
 ### "BALANCE" o "DEPOSIT_HOLD" — sin kind, confirma seña+saldo+depósito juntos).
 POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-confirm
 Content-Type: {{contentType}}
@@ -148,14 +155,14 @@ Authorization: Bearer {{renterToken}}
   "kind": "SENA"
 }
 
-### 6. Todos los tramos de una — así el owner puede seguir con "listo para retiro".
+### 7. Todos los tramos de una — así el owner puede seguir con "listo para retiro".
 POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-confirm
 Content-Type: {{contentType}}
 Authorization: Bearer {{renterToken}}
 
 {}
 
-### 7. Simula el rechazo de un tramo puntual.
+### 8. Simula el rechazo de un tramo puntual.
 POST {{baseUrl}}/payments/bookings/{{bookingId}}/mock-fail
 Content-Type: {{contentType}}
 Authorization: Bearer {{renterToken}}
@@ -168,9 +175,16 @@ Authorization: Bearer {{renterToken}}
 ### Stripe Connect (owner)
 ### ────────────────────────────────────────────────────────────────────────
 
-### 8. Crea la cuenta conectada del owner (onboarding de Stripe Connect).
+### 9. Crea la cuenta conectada del owner (onboarding de Stripe Connect).
 POST {{baseUrl}}/payments/connect/onboarding
 Authorization: Bearer {{ownerToken}}
+
+### 10. Volver a liquidar una reserva ya devuelta (ADMIN). Suelta el depósito
+### si sigue retenido y transfiere al owner si no se transfirió antes; no
+### duplica ninguna de las dos cosas. Existe porque confirmar la devolución no
+### se puede repetir: el token se consumió y el estado ya no lo permite.
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/settle
+Authorization: Bearer {{adminToken}}
 
 ### ────────────────────────────────────────────────────────────────────────
 ### Webhook de Stripe (público — autentica por firma sobre el raw body, NUNCA
@@ -179,7 +193,7 @@ Authorization: Bearer {{ownerToken}}
 ### o el forwarder de la CLI de Stripe apuntando a este endpoint.)
 ### ────────────────────────────────────────────────────────────────────────
 
-### 9. Ejemplo de forma (fallará con 400 "Invalid Stripe webhook signature"
+### 11. Ejemplo de forma (fallará con 400 "Invalid Stripe webhook signature"
 ### salvo que Stripe-Signature sea una firma real calculada con STRIPE_WEBHOOK_SECRET).
 POST {{baseUrl}}/payments/stripe/webhook
 Content-Type: application/json

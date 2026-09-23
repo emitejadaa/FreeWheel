@@ -168,6 +168,11 @@ Authorization: Bearer {{ownerToken}}
 ### 9. El renter confirma el return con el token que le mostró el owner.
 ### Al completarse: booking → COMPLETED, se libera el hold y se transfiere el
 ### payout al owner.
+### La respuesta trae `settlement: { ok, code, message }`. Si la liquidación
+### falla (por ejemplo el owner no terminó el alta de Connect y la transferencia
+### se rechaza) la devolución SE CONFIRMA IGUAL —el auto volvió— y ok queda en
+### false: el depósito y/o el payout quedan pendientes y un ADMIN los reintenta
+### con POST /payments/bookings/:id/settle (ver payments.rest).
 POST {{baseUrl}}/bookings/{{bookingId}}/confirm-return
 Content-Type: {{contentType}}
 Authorization: Bearer {{renterToken}}
@@ -181,8 +186,18 @@ Authorization: Bearer {{renterToken}}
 ### y READY_FOR_PICKUP; no correr sobre una reserva ya COMPLETED)
 ### ────────────────────────────────────────────────────────────────────────
 
-### 10. Cancela la reserva (reason es opcional). Si ya estaba paga, se simula
-### el refund.
+### 10. Cancela la reserva (reason es opcional). Lo que vuelve lo decide la
+### politica de cancelacion (src/bookings/cancellation-policy.ts):
+###   - hasta 48 h antes del inicio: vuelve todo;
+###   - dentro de las 48 h: vuelve el saldo y se RETIENE la seña, que se le
+###     transfiere al owner (es lo que compensa las fechas bloqueadas);
+###   - con el auto ya entregado: 400 BOOKING_IN_PROGRESS, no se cancela, se
+###     devuelve el auto;
+###   - si cancela el OWNER: vuelve todo, siempre.
+### El deposito en garantia se libera en todos los casos.
+### La respuesta trae `cancellation: { tier, retieneSena }` y
+### `refund: { ok, code, message }`: si la devolucion de la plata falla, la
+### reserva SE CANCELA IGUAL (las fechas ya quedaron libres) y ok es false.
 PATCH {{baseUrl}}/bookings/{{bookingId}}/cancel
 Content-Type: {{contentType}}
 Authorization: Bearer {{renterToken}}

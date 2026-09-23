@@ -138,6 +138,11 @@ describe("buildEnvReport", () => {
       PUBLIC_URL: "https://freewheel-api.vercel.app",
       DATA_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789a=",
       CRON_SECRET: "cron",
+      // Los cobros entraron a la lista después que esta prueba, y "con todo
+      // cargado" tiene que querer decir TODO: sin estas dos no se puede pagar
+      // ninguna reserva, que es la falla que el reporte existe para mostrar.
+      STRIPE_SECRET_KEY: "sk_test_x",
+      STRIPE_WEBHOOK_SECRET: "whsec_x",
     });
 
     const reporte = buildEnvReport();

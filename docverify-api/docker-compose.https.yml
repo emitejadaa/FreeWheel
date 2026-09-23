@@ -1,0 +1,54 @@
+# Publicar la API con HTTPS y certificado automático.
+#
+# Se usa JUNTO con docker-compose.yml, no en lugar de él:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+#
+# Requisitos, los dos del lado del proveedor y ninguno adentro del contenedor:
+#
+#   1. Un dominio (o subdominio) apuntando con un registro A a la IP pública
+#      del servidor. Sin eso, Let's Encrypt no puede emitir el certificado.
+#   2. Los puertos 80 y 443 abiertos en el firewall. El 80 no es opcional
+#      aunque todo el tráfico real vaya por HTTPS: es por donde Let's Encrypt
+#      valida el dominio y por donde Caddy renueva el certificado solo.
+#
+# El dominio y el mail van en el .env (DOMINIO y ACME_EMAIL).
+#
+# Es Caddy y no nginx por una sola razón: pide, instala y renueva el
+# certificado solo, sin certbot, sin cron y sin tocar nada después. Para un
+# servicio que alguien más va a operar, eso es una cosa menos que se puede
+# vencer un domingo.
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    container_name: docverify-proxy
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3. Si el firewall del proveedor no deja abrir UDP, esta línea se
+      # puede borrar: HTTPS sigue funcionando por TCP.
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Acá adentro vive el certificado. Es un volumen y no una carpeta
+      # temporal a propósito: si se pierde, cada `docker compose up` vuelve a
+      # pedirle uno nuevo a Let's Encrypt, y Let's Encrypt tiene un límite de
+      # 5 certificados por dominio por semana.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -47,6 +47,25 @@ export class ClaimsController {
     return this.claims.open(user.id, bookingId, dto);
   }
 
+  /**
+   * "Revisé el auto y está todo bien": cierra la ventana en el acto, suelta el
+   * depósito y liquida. Es el camino que recorre casi toda devolución.
+   */
+  @Post("bookings/:bookingId/inspection-ok")
+  @RequireVerifiedAccount()
+  @SensitiveRateLimit({
+    name: "claims.inspection-ok",
+    limit: 20,
+    windowSec: 3600,
+    by: "user",
+  })
+  inspectionOk(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.claims.todoBien(user.id, bookingId);
+  }
+
   /** El reclamo de una reserva, para cualquiera de las dos partes. */
   @Get("bookings/:bookingId/damage-claim")
   get(

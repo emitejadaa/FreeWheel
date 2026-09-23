@@ -70,6 +70,75 @@ export class ClaimsService {
     return Number.isFinite(horas) && horas > 0 ? horas : 48;
   }
 
+  /**
+   * "ESTÁ TODO BIEN": el dueño cierra la ventana antes de tiempo.
+   *
+   * Es el camino normal —la enorme mayoría de los autos vuelven bien— y sin
+   * esto la garantía de alguien que devolvió el auto impecable queda retenida
+   * dos días por las dudas, con el dueño mirando sin poder destrabarla aunque
+   * quiera. La retención le recorta el límite de la tarjeta a una persona que
+   * no hizo nada.
+   *
+   * Cierra la ventana y liquida en el acto: se suelta el depósito y se le paga
+   * al dueño. Es irreversible a propósito, igual que las 48 horas cumplidas.
+   */
+  async todoBien(ownerId: string, bookingId: string) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+    });
+    assertFound(booking, "Booking not found");
+
+    if (booking.ownerId !== ownerId) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: "NOT_BOOKING_OWNER",
+        message: "Solo el dueño del auto puede cerrar la revisión.",
+      });
+    }
+
+    if (booking.status !== BookingStatus.INSPECTION) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "NOT_IN_INSPECTION",
+        message: booking.settledAt
+          ? "Esta reserva ya está cerrada."
+          : "Esta reserva todavía no está en revisión.",
+      });
+    }
+
+    const existente = await this.prisma.damageClaim.findUnique({
+      where: { bookingId },
+    });
+    if (existente && existente.status === DamageClaimStatus.OPEN) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: "CLAIM_ALREADY_OPEN",
+        message:
+          "Ya abriste un reclamo por esta reserva. Retiralo si el auto está bien.",
+      });
+    }
+
+    const ahora = new Date();
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: { inspectionEndsAt: ahora },
+    });
+
+    await this.auditLog.create({
+      actorId: ownerId,
+      targetUserId: booking.renterId,
+      action: "booking.inspection.ok",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: { closedEarly: true },
+    });
+
+    const resultado = await this.payments.settleBooking(bookingId, ownerId, {
+      now: ahora,
+    });
+    return { settled: resultado.settled, reason: resultado.reason ?? null };
+  }
+
   /** El dueño abre el reclamo, dentro de la ventana y con fotos. */
   async open(ownerId: string, bookingId: string, dto: OpenDamageClaimDto) {
     const booking = await this.prisma.booking.findUnique({

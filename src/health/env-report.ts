@@ -113,6 +113,31 @@ const OPCIONALES: Grupo[] = [
     vars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
     consecuencia: "ese botón no funciona; el registro normal sí",
   },
+  {
+    /*
+      PAGOS FALTABA EN ESTA LISTA, Y ES EL GRUPO QUE MÁS FALTA HACE.
+
+      Sin estas dos, `allSet` decía true y el reporte entero se veía perfecto
+      mientras NINGUNA reserva se podía pagar. Es justo la falla silenciosa que
+      este archivo existe para hacer visible.
+
+      Son dos y hacen cosas distintas, así que conviene entender qué se pierde
+      con cada una:
+
+       · STRIPE_SECRET_KEY: sin ella el módulo de pagos arranca con el
+         proveedor "sin configurar" y toda operación contesta 503.
+       · STRIPE_WEBHOOK_SECRET: con ella faltando los cobros SE HACEN —la
+         tarjeta se debita— pero el aviso de Stripe se rechaza por falta de
+         firma, así que la reserva se queda impaga para siempre con la plata ya
+         cobrada. Es la peor de las dos y la que menos se nota.
+    */
+    feature: "cobros con tarjeta",
+    vars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"],
+    consecuencia:
+      "sin la clave secreta no se puede pagar ninguna reserva (503); sin la " +
+      "del webhook el cobro se hace pero la reserva queda impaga, porque el " +
+      "aviso de Stripe se rechaza por falta de firma",
+  },
 ];
 
 export interface EnvReport {
@@ -154,6 +179,22 @@ export function buildEnvReport(): EnvReport {
     // saberlos es justo lo que hace falta para entender qué está pasando.
     modes: {
       PAYMENTS_PROVIDER: process.env.PAYMENTS_PROVIDER ?? "stripe (defecto)",
+      /*
+        EN QUÉ MONEDA SE COBRA, QUE NO ES OBVIO Y ROMPE COSAS.
+
+        De acá sale la moneda que se le graba a cada reserva al aceptarla
+        (pricing.service.ts), y esa es la que viaja a Stripe al cobrar. El
+        defecto es "usd", NO la moneda del país: una cuenta de Stripe solo
+        puede cobrar en las monedas que admite, así que si el defecto no
+        coincide, el cobro falla con "Invalid currency" y no hay nada en la app
+        que lo explique.
+
+        No es un secreto —es cómo está configurada la API— y saberlo es
+        exactamente lo que hace falta para entender por qué un pago no sale.
+      */
+      DEFAULT_CURRENCY: (
+        process.env.DEFAULT_CURRENCY ?? "usd (defecto)"
+      ).toLowerCase(),
       SMS_PROVIDER: process.env.SMS_PROVIDER ?? "mock (defecto)",
       REQUIRE_PHONE_VERIFICATION:
         process.env.REQUIRE_PHONE_VERIFICATION ?? "false (defecto)",

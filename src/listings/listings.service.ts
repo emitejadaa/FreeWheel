@@ -14,7 +14,7 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import {
-  blockingBookingStatuses,
+  occupiedBookingWhere,
   overlappingRangeWhere,
 } from "../availability/availability.service";
 import { assertFound } from "../common/utils/entity.util";
@@ -430,9 +430,12 @@ export class ListingsService {
       const overlap = overlappingRangeWhere(query.startDate, query.endDate);
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : []),
+        // La ocupación de una RESERVA no es la de un bloqueo: un auto que salió
+        // y todavía no volvió sigue ocupado hoy aunque su reserva venciera
+        // anteayer (ver occupiedBookingWhere).
         {
           bookings: {
-            none: { status: { in: blockingBookingStatuses }, ...overlap },
+            none: occupiedBookingWhere(query.startDate, query.endDate),
           },
         },
         { availabilityBlocks: { none: overlap } },

@@ -15,6 +15,20 @@ export const blockingBookingStatuses: BookingStatus[] = [
   BookingStatus.RETURN_PENDING,
 ];
 
+/**
+ * LAS RESERVAS EN LAS QUE EL AUTO ESTÁ AFUERA Y TODAVÍA NO VOLVIÓ.
+ *
+ * COMPLETED no está, y eso es lo que hace que devolver antes libere las fechas:
+ * quien alquila un mes y devuelve a las dos semanas confirma la devolución, la
+ * reserva pasa a COMPLETED, deja de ocupar, y el dueño puede volver a alquilar
+ * las dos semanas que sobran. Las fechas guardadas en la reserva no cambian
+ * —son las que se pagaron— pero ya no ocupan nada.
+ */
+export const sinDevolverStatuses: BookingStatus[] = [
+  BookingStatus.IN_PROGRESS,
+  BookingStatus.RETURN_PENDING,
+];
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Fecha (UTC) como YYYY-MM-DD, sin la parte de hora. */
@@ -64,6 +78,72 @@ export function overlappingRangeWhere(
 ): { startDate: { lt: Date }; endDate: { gte: Date } } {
   const { from, to } = dayWindow(startDate, endDate);
   return { startDate: { lt: to }, endDate: { gte: from } };
+}
+
+/**
+ * LA CONDICIÓN DE OCUPACIÓN DE UNA RESERVA, que ya no es la misma que la de un
+ * bloqueo manual.
+ *
+ * Un bloqueo del dueño ocupa exactamente los días que dice. Una reserva ocupa
+ * hasta que el auto vuelve, que puede ser después: si la reserva terminaba
+ * ayer y nadie confirmó la devolución, el auto sigue afuera y hoy no está
+ * disponible. Prometerlo igual es prometer un auto que no se tiene, y quien se
+ * lleva el golpe es el dueño, que queda con dos personas esperando el mismo
+ * auto.
+ *
+ * Son dos ramas:
+ *
+ *  1. La de siempre: cualquier reserva que ocupa, con su rango de fechas.
+ *  2. Las que no volvieron. Solo se agrega cuando la ventana consultada llega
+ *     hasta hoy o más acá, porque el fin efectivo de esas reservas es hoy (ver
+ *     effectiveEnd): si se pregunta por un rango que terminó antes de hoy, esa
+ *     rama no puede aportar nada y se deja afuera.
+ *
+ * `hoy` entra por parámetro para poder probar esto sin depender del reloj de la
+ * máquina, que es lo que hace que una prueba pase hoy y falle en enero.
+ */
+export function occupiedBookingWhere(
+  startDate: Date,
+  endDate: Date,
+  hoy: Date = new Date(),
+) {
+  const { from, to } = dayWindow(startDate, endDate);
+  const enCurso = startOfUtcDay(hoy).getTime() >= from.getTime();
+  return {
+    OR: [
+      {
+        status: { in: blockingBookingStatuses },
+        startDate: { lt: to },
+        endDate: { gte: from },
+      },
+      ...(enCurso
+        ? [{ status: { in: sinDevolverStatuses }, startDate: { lt: to } }]
+        : []),
+    ],
+  };
+}
+
+/**
+ * HASTA CUÁNDO OCUPA UNA RESERVA DE VERDAD.
+ *
+ * No es siempre su fecha de fin. Un auto que salió y no volvió sigue ocupado
+ * HOY aunque la reserva venciera anteayer: la fecha de fin es una promesa, y la
+ * promesa se puede incumplir. Mientras el auto no esté devuelto, prometerlo
+ * para mañana es prometer algo que no se tiene.
+ *
+ * Por eso el fin efectivo de una reserva sin devolver es el más lejano entre su
+ * fecha de fin y hoy, y crece un día por día hasta que alguien confirma la
+ * devolución. Ahí la reserva pasa a COMPLETED y suelta todo de una.
+ *
+ * Mientras la reserva está en fecha no cambia nada: un alquiler del 1 al 10 no
+ * bloquea el 15 por estar en curso, que sería lo contrario de lo que se quiere.
+ */
+function effectiveEnd(
+  booking: { endDate: Date; status: BookingStatus },
+  hoy: Date,
+): Date {
+  if (!sinDevolverStatuses.includes(booking.status)) return booking.endDate;
+  return booking.endDate.getTime() >= hoy.getTime() ? booking.endDate : hoy;
 }
 
 /**
@@ -127,6 +207,19 @@ export class AvailabilityService {
       }),
     ]);
 
+    /*
+      Los días que ocupa cada reserva se calculan con su fin EFECTIVO, no con
+      la fecha que dice. Una que salió y no volvió ocupa hasta hoy, y el
+      calendario tiene que pintar esos días: si la consulta los devuelve
+      ocupados pero el calendario los muestra libres, alguien los elige, el
+      servidor le dice que no, y el error no se entiende desde ninguna parte.
+    */
+    const hoy = startOfUtcDay(new Date());
+    const ocupaciones = bookings.map((b) => ({
+      startDate: b.startDate,
+      endDate: effectiveEnd(b, hoy),
+    }));
+
     return {
       listingId,
       vehicleId: listing.vehicleId,
@@ -143,7 +236,7 @@ export class AvailabilityService {
       // calendario del front necesita para pintar/bloquear fechas sin tener que
       // recalcular solapamientos en el navegador.
       unavailableDates: expandRangesToDays(
-        [...bookings, ...manualBlocks],
+        [...ocupaciones, ...manualBlocks],
         startDate,
         endDate,
       ),
@@ -329,8 +422,7 @@ export class AvailabilityService {
   ) {
     return {
       listingId,
-      status: { in: blockingBookingStatuses },
-      ...overlappingRangeWhere(startDate, endDate),
+      ...occupiedBookingWhere(startDate, endDate),
     };
   }
 

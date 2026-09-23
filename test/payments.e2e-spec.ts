@@ -231,13 +231,27 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       .send({ token: returnToken })
       .expect(201);
 
-    // Todavía no se le pagó a nadie: la ventana está abierta.
+    /*
+      TODAVÍA NO SE LE PAGÓ A NADIE Y EL DEPÓSITO SIGUE RETENIDO, que es el
+      cambio de fondo.
+
+      Antes el depósito se soltaba en el mismo instante en que se confirmaba la
+      devolución, y eso dejaba el reclamo por daños en una situación imposible:
+      cuando el dueño se acercaba al auto y veía el golpe, la retención ya no
+      existía y no había nada que capturar.
+    */
     const enInspeccion = await http()
       .get(`/payments/bookings/${bookingId}/status`)
       .set("Authorization", auth(renter.token))
       .expect(200);
     expect(enInspeccion.body.ownerTransferId).toBeNull();
     expect(enInspeccion.body.inspectionEndsAt).toEqual(expect.any(String));
+
+    const durante = (
+      enInspeccion.body.records as { kind: string; status: string }[]
+    ).map((r) => `${r.kind}:${r.status}`);
+    expect(durante).toContain("DEPOSIT_HOLD:AUTHORIZED");
+    expect(durante).not.toContain("DEPOSIT_HOLD:RELEASED");
 
     await prisma.booking.update({
       where: { id: bookingId },
@@ -258,11 +272,58 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       (r: { kind: string; status: string }) => `${r.kind}:${r.status}`,
     );
     expect(kinds).toContain("OWNER_TRANSFER:PAID");
+    // Cerrada la ventana sin reclamos, recién ahí se suelta.
     expect(kinds).toContain("DEPOSIT_HOLD:RELEASED");
 
     // Owner now has a connected account on file.
     const ownerRow = await prisma.user.findUnique({ where: { id: owner.id } });
     expect(ownerRow?.stripeAccountId).toMatch(/^acct_/);
+  });
+
+  /**
+   * "REVISÉ EL AUTO Y ESTÁ TODO BIEN": el camino que recorre casi toda
+   * devolución. Sin esto, la garantía de alguien que devolvió el auto
+   * impecable queda retenida 48 horas por las dudas, recortándole el límite de
+   * la tarjeta, y el dueño no tiene forma de destrabarla aunque quiera.
+   */
+  it("el dueño puede cerrar la revisión antes de tiempo y eso suelta el depósito", async () => {
+    const { owner, renter, bookingId, returnToken } = await acceptedBooking();
+    await hastaElRetiro(owner, renter, bookingId);
+    await http()
+      .post(`/bookings/${bookingId}/confirm-return`)
+      .set("Authorization", auth(renter.token))
+      .send({ token: returnToken })
+      .expect(201);
+
+    const cerrada = await http()
+      .post(`/bookings/${bookingId}/inspection-ok`)
+      .set("Authorization", auth(owner.token))
+      .expect(201);
+    expect(cerrada.body.settled).toBe(true);
+
+    const status = await http()
+      .get(`/payments/bookings/${bookingId}/status`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    const kinds = (
+      status.body.records as { kind: string; status: string }[]
+    ).map((r) => `${r.kind}:${r.status}`);
+    expect(kinds).toContain("DEPOSIT_HOLD:RELEASED");
+    expect(kinds).toContain("OWNER_TRANSFER:PAID");
+
+    // Quien alquiló no puede cerrarla: no es su revisión.
+    const otra = await acceptedBooking();
+    await hastaElRetiro(otra.owner, otra.renter, otra.bookingId);
+    await http()
+      .post(`/bookings/${otra.bookingId}/confirm-return`)
+      .set("Authorization", auth(otra.renter.token))
+      .send({ token: otra.returnToken })
+      .expect(201);
+    const negada = await http()
+      .post(`/bookings/${otra.bookingId}/inspection-ok`)
+      .set("Authorization", auth(otra.renter.token))
+      .expect(403);
+    expect(negada.body.code).toBe("NOT_BOOKING_OWNER");
   });
 
   /**
@@ -690,6 +751,44 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         where: { bookingId, kind: "CHECKOUT" },
       });
       expect(fila.status).toBe("FAILED");
+    });
+
+    it("DESPUÉS DE UN RECHAZO, LA RESERVA SE PUEDE SEGUIR PAGANDO", async () => {
+      /*
+        El error que esto vino a tapar, y costó caro: una tarjeta rechazada
+        dejaba el registro en FAILED, que el servicio trata como inservible, así
+        que salía a pedir otro intent. Pero la clave de idempotencia es la misma
+        —la reserva, el tramo y el importe no cambiaron—, así que Stripe
+        devolvía EL MISMO intent, y el servicio intentaba insertar un segundo
+        registro con el mismo stripePaymentIntentId, que es una columna única.
+
+        Violación de unicidad, error de Prisma sin atrapar, y un 500 mudo en la
+        pantalla de pago. O sea que después de UN rechazo, esa reserva no se
+        podía pagar nunca más, y el error no hablaba ni de la tarjeta ni del
+        cobro.
+      */
+      const { renter, bookingId } = await acceptedBooking();
+      await acceptContract(app, bookingId, renter.token);
+      // Por `sena-intent` a propósito: la ruta vieja quedó como alias del
+      // cobro único para que un front sin actualizar siga funcionando, y este
+      // es el único lugar que lo comprueba.
+      const primero = await createIntent(app, "sena", bookingId, renter.token);
+      await sendWebhook(app, "payment_intent.payment_failed", {
+        id: primero.paymentIntentId,
+      }).expect(201);
+
+      const segundo = await http()
+        .post(`/payments/bookings/${bookingId}/sena-intent`)
+        .set("Authorization", auth(renter.token))
+        .expect(201);
+      expect(segundo.body.clientSecret).toBeTruthy();
+
+      // Y sigue habiendo UN registro del cobro, no dos por el mismo intent.
+      const filas = await prisma.paymentRecord.findMany({
+        where: { bookingId, kind: "CHECKOUT" },
+      });
+      const ids = new Set(filas.map((f) => f.stripePaymentIntentId));
+      expect(ids.size).toBe(filas.length);
     });
 
     it("descarta un evento del modo REAL llegando a un deploy de prueba", async () => {
