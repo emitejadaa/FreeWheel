@@ -1,251 +1,365 @@
-import { Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { randomBytes } from "crypto";
-import Stripe from "stripe";
-import {
-  CaptureHoldInput,
-  ConnectedAccountResult,
-  ConnectedAccountStatus,
-  CreateConnectedAccountInput,
-  CreateIntentInput,
-  EnsureCustomerInput,
-  PaymentIntentResult,
+import type { ConfigService } from "@nestjs/config";
+import type {
+  ChargebackResult,
+  CollectorCredentials,
+  CreatePaymentInput,
+  OAuthCredentials,
   PaymentProvider,
-  RefundInput,
+  PaymentResult,
+  ProcessorNotification,
+  ProcessorPaymentStatus,
   RefundResult,
-  ReleaseHoldInput,
-  SavedCard,
-  TransferInput,
-  TransferResult,
-  WebhookEvent,
 } from "./payment-provider.interface";
+import {
+  huellaDeTarjeta,
+  mensajeDelMotivo,
+  parseMercadoPagoNotification,
+  vencimientoDeReserva,
+  verifyMercadoPagoSignature,
+} from "./mercadopago/mercadopago.shared";
 
 /**
- * EL PROVEEDOR OFFLINE, PARA LOS TESTS.
+ * EL PROCESADOR DE LAS PRUEBAS: se comporta como Mercado Pago, sin red.
  *
- * Implementación determinística del mismo contrato, sin red. Existe para que
- * la suite de tests pueda recorrer el circuito entero —crear intents,
- * confirmarlos, capturar y soltar la retención, devolver, transferir— sin
- * depender de que Stripe esté disponible ni de que haya claves cargadas.
+ * ── Quién decide el resultado ────────────────────────────────────────────────
+ * Igual que en el sandbox de Mercado Pago, lo decide el NOMBRE DEL TITULAR, que
+ * acá viaja adentro del token de la tarjeta (el front de las pruebas no tiene
+ * un formulario de tarjeta de donde sacarlo):
  *
- * NO ES EL CAMINO DE PRODUCCIÓN NI EL DE LA DEMO. Los pagos reales, incluso
- * los de prueba, van por StripePaymentsProvider: un simulador siempre dice que
- * sí, y las cosas que rompen un sistema de pagos —una tarjeta rechazada, una
- * que pide autenticación del banco, una disputa— no se prueban contra algo que
- * no las produce.
+ *   · `tok_APRO_…` → aprobado (o autorizado, si es una reserva de fondos)
+ *   · `tok_CONT_…` → en revisión (in_process)
+ *   · `tok_OTHE_…` → rechazado, error general
+ *   · `tok_FUND_…` → rechazado, fondos insuficientes
+ *   · `tok_SECU_…` → rechazado, código de seguridad inválido
+ *   · `tok_CALL_…` → rechazado, hay que llamar al banco
+ *   · `tok_EXPI_…` → rechazado, vencimiento
  *
- * Las firmas de webhook SÍ se verifican de verdad cuando hay
- * STRIPE_WEBHOOK_SECRET (el esquema de firma de Stripe es pura criptografía,
- * no necesita red), así que ese camino de seguridad se ejercita igual que en
- * producción.
+ * Cualquier otro token se aprueba. Son los mismos nombres que se escriben en
+ * el sandbox real (APRO, CONT, OTHE…), así que una prueba de acá y una prueba
+ * a mano contra Mercado Pago hablan el mismo idioma.
+ *
+ * ── Estado ───────────────────────────────────────────────────────────────────
+ * Guarda los pagos en memoria para que consultarlos devuelva lo mismo que se
+ * creó, como la API de verdad. Las pruebas pueden cambiar ese estado "del lado
+ * de Mercado Pago" (una devolución hecha desde el panel, una contracara) con
+ * los métodos `simular…`, y después mandar el aviso firmado.
+ *
+ * EN PRODUCCIÓN NO ARRANCA (ver payments.module.ts).
  */
-@Injectable()
 export class MockPaymentsProvider implements PaymentProvider {
   readonly name = "mock";
-  private readonly webhookSecret: string;
-  private readonly stripe: Stripe;
-  private readonly enProduccion: boolean;
+  readonly liveMode = false;
 
-  constructor(config: ConfigService) {
-    this.webhookSecret = config.get<string>("STRIPE_WEBHOOK_SECRET") ?? "";
-    this.enProduccion =
-      (config.get<string>("NODE_ENV") ?? process.env.NODE_ENV) === "production";
-    // Key-independent: only used for the offline signature helpers.
-    this.stripe = new Stripe(
-      config.get<string>("STRIPE_SECRET_KEY") ?? "sk_test_mock",
-    );
+  private seq = 0;
+  private readonly pagos = new Map<string, PaymentResult>();
+  private readonly idempotencia = new Map<string, string>();
+  private readonly contracargos = new Map<string, ChargebackResult>();
+  private readonly webhookSecret: string;
+  private devolucionesFallan = false;
+
+  constructor(config?: ConfigService) {
+    this.webhookSecret = (
+      config?.get<string>("MP_WEBHOOK_SECRET") ?? "mp_webhook_secret_for_tests"
+    ).trim();
   }
 
   private id(prefix: string): string {
-    return `${prefix}_${randomBytes(12).toString("hex")}`;
+    this.seq += 1;
+    return `${prefix}_${Date.now().toString(36)}${this.seq}`;
   }
 
-  createPaymentIntent(input: CreateIntentInput): Promise<PaymentIntentResult> {
-    const id = this.id(`pi_mock_${input.kind.toLowerCase()}`);
-    return Promise.resolve({
-      id,
-      clientSecret: `${id}_secret_${randomBytes(6).toString("hex")}`,
-      status: "requires_payment_method",
+  createPayment(input: CreatePaymentInput): Promise<PaymentResult> {
+    // Misma clave de idempotencia, mismo pago: como la API real.
+    const repetido = this.idempotencia.get(input.idempotencyKey);
+    if (repetido) {
+      return Promise.resolve({ ...this.pagos.get(repetido)! });
+    }
+
+    const titular = /^tok_([A-Z]{4})_/.exec(input.card.token)?.[1] ?? "APRO";
+    const { status, statusDetail } = this.resultadoPara(titular, input.capture);
+    const ahora = new Date();
+    const pago: PaymentResult = {
+      id: this.id("mp_mock_pay"),
+      status,
+      statusDetail,
       amountMinor: input.amountMinor,
-      currency: input.currency,
-    });
-  }
-
-  createDepositHold(input: CreateIntentInput): Promise<PaymentIntentResult> {
-    const id = this.id("pi_mock_deposit");
-    // Con un medio de pago guardado y sin el cliente presente, la retención
-    // queda autorizada en el acto, como con una tarjeta que no pide
-    // autenticación. Sin eso, espera que el cliente la confirme.
-    const autorizada = Boolean(input.offSession && input.paymentMethodId);
-    return Promise.resolve({
-      id,
-      clientSecret: `${id}_secret_${randomBytes(6).toString("hex")}`,
-      status: autorizada ? "requires_capture" : "requires_payment_method",
-      amountMinor: input.amountMinor,
-      currency: input.currency,
-      paymentMethodId: input.paymentMethodId ?? null,
-      captureBefore: autorizada
-        ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        : null,
-    });
-  }
-
-  captureHold(input: CaptureHoldInput): Promise<PaymentIntentResult> {
-    return Promise.resolve({
-      id: input.paymentIntentId,
-      clientSecret: null,
-      status: "succeeded",
-      amountMinor: input.amountMinor ?? 0,
-      currency: "usd",
-    });
-  }
-
-  releaseHold(input: ReleaseHoldInput): Promise<PaymentIntentResult> {
-    return Promise.resolve({
-      id: input.paymentIntentId,
-      clientSecret: null,
-      status: "canceled",
-      amountMinor: 0,
-      currency: "usd",
-    });
-  }
-
-  refund(input: RefundInput): Promise<RefundResult> {
-    return Promise.resolve({
-      id: this.id("re_mock"),
-      amountMinor: input.amountMinor ?? 0,
-      status: "succeeded",
-    });
-  }
-
-  transferToOwner(input: TransferInput): Promise<TransferResult> {
-    return Promise.resolve({
-      id: this.id("tr_mock"),
-      amountMinor: input.amountMinor,
-    });
-  }
-
-  /**
-   * El estado de un intent. Offline no hay nada que consultar: se devuelve una
-   * tarjeta de prueba fija para que el camino que guarda las señas antifraude
-   * quede ejercitado en los tests y no sea código que nunca corre.
-   */
-  retrieveIntent(paymentIntentId: string): Promise<PaymentIntentResult> {
-    return Promise.resolve({
-      id: paymentIntentId,
-      clientSecret: null,
-      status: "succeeded",
-      amountMinor: 0,
-      currency: "usd",
-      chargeId: `ch_mock_${paymentIntentId}`,
-      // En null y no en 0: `0` significaría "se cobró cero", y el control que
-      // compara lo cobrado contra lo esperado gritaría en cada test. Null es
-      // "no lo sé", que es la verdad de un provider que no cobra nada.
-      amountReceivedMinor: null,
-      amountCapturableMinor: null,
+      capturedMinor: status === "approved" ? input.amountMinor : null,
+      refundedMinor: 0,
+      currency: input.currency.toUpperCase(),
+      externalReference: input.externalReference,
+      kind: input.kind,
+      collectorId: input.collector.userId,
+      liveMode: false,
       card: {
-        brand: "visa",
-        last4: "4242",
-        fingerprint: "fp_mock_4242",
-        country: "US",
-        cvcCheck: "pass",
-        threeDSecure: false,
+        brand: input.card.paymentMethodId,
+        last4: "3704",
+        fingerprint: huellaDeTarjeta({
+          firstSix: "450995",
+          lastFour: "3704",
+          expMonth: 11,
+          expYear: 2030,
+          holderDocument: input.card.payer.identification?.number ?? null,
+        }),
+        country: "AR",
       },
-      risk: { level: "normal", score: 5 },
-      failure: null,
-      paymentMethodId: "pm_mock_4242",
+      risk: null,
+      failure:
+        status === "rejected"
+          ? { code: statusDetail, message: mensajeDelMotivo(statusDetail) }
+          : null,
+      captureBefore:
+        status === "authorized" ? vencimientoDeReserva(ahora) : null,
+      approvedAt:
+        status === "approved" || status === "authorized" ? ahora : null,
+    };
+    this.pagos.set(pago.id, pago);
+    this.idempotencia.set(input.idempotencyKey, pago.id);
+    return Promise.resolve({ ...pago });
+  }
+
+  getPayment(
+    _collector: CollectorCredentials,
+    paymentId: string,
+  ): Promise<PaymentResult> {
+    const pago = this.pagos.get(paymentId);
+    if (!pago) {
+      return Promise.reject(new Error(`Payment not found: ${paymentId}`));
+    }
+    return Promise.resolve({ ...pago });
+  }
+
+  capturePayment(
+    _collector: CollectorCredentials,
+    paymentId: string,
+    amountMinor: number,
+    _idempotencyKey?: string,
+  ): Promise<PaymentResult> {
+    const pago = this.pagos.get(paymentId);
+    if (!pago || pago.status !== "authorized") {
+      return Promise.reject(
+        new Error(`Payment ${paymentId} is not authorized`),
+      );
+    }
+    if (amountMinor > pago.amountMinor) {
+      return Promise.reject(
+        new Error("Cannot capture more than the authorized amount"),
+      );
+    }
+    const capturado: PaymentResult = {
+      ...pago,
+      status: "approved",
+      statusDetail: "accredited",
+      capturedMinor: amountMinor,
       captureBefore: null,
+    };
+    this.pagos.set(paymentId, capturado);
+    return Promise.resolve({ ...capturado });
+  }
+
+  cancelPayment(
+    _collector: CollectorCredentials,
+    paymentId: string,
+    _idempotencyKey?: string,
+  ): Promise<PaymentResult> {
+    const pago = this.pagos.get(paymentId);
+    if (!pago) {
+      return Promise.reject(new Error(`Payment not found: ${paymentId}`));
+    }
+    const cancelado: PaymentResult = {
+      ...pago,
+      status: "cancelled",
+      statusDetail: "by_collector",
+      captureBefore: null,
+    };
+    this.pagos.set(paymentId, cancelado);
+    return Promise.resolve({ ...cancelado });
+  }
+
+  refundPayment(
+    _collector: CollectorCredentials,
+    paymentId: string,
+    amountMinor: number | null,
+    _idempotencyKey?: string,
+  ): Promise<RefundResult> {
+    if (this.devolucionesFallan) {
+      // Lo que contesta Mercado Pago cuando la cuenta del vendedor no tiene
+      // saldo para devolver su parte.
+      return Promise.reject(
+        new Error("Insufficient balance in collector account"),
+      );
+    }
+    const pago = this.pagos.get(paymentId);
+    if (!pago || pago.status !== "approved") {
+      return Promise.reject(
+        new Error(`Payment ${paymentId} is not refundable`),
+      );
+    }
+    const disponible =
+      (pago.capturedMinor ?? pago.amountMinor) - pago.refundedMinor;
+    const monto = amountMinor ?? disponible;
+    if (monto > disponible) {
+      return Promise.reject(new Error("Refund exceeds the available amount"));
+    }
+    const devuelto = pago.refundedMinor + monto;
+    this.pagos.set(paymentId, {
+      ...pago,
+      refundedMinor: devuelto,
+      status:
+        devuelto >= (pago.capturedMinor ?? pago.amountMinor)
+          ? "refunded"
+          : "approved",
+    });
+    return Promise.resolve({
+      id: this.id("mp_mock_refund"),
+      amountMinor: monto,
+      status: "approved",
     });
   }
 
-  ensureCustomer(input: EnsureCustomerInput): Promise<string> {
+  getChargeback(
+    _collector: CollectorCredentials,
+    chargebackId: string,
+  ): Promise<ChargebackResult> {
+    const contracargo = this.contracargos.get(chargebackId);
+    if (!contracargo) {
+      return Promise.reject(new Error(`Chargeback not found: ${chargebackId}`));
+    }
+    return Promise.resolve({ ...contracargo });
+  }
+
+  authorizationUrl(input: {
+    state: string;
+    redirectUri: string;
+    codeChallenge?: string | null;
+  }): string {
+    const url = new URL("https://auth.mercadopago.mock/authorization");
+    url.searchParams.set("client_id", "mock_client");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("platform_id", "mp");
+    url.searchParams.set("state", input.state);
+    url.searchParams.set("redirect_uri", input.redirectUri);
+    if (input.codeChallenge) {
+      url.searchParams.set("code_challenge", input.codeChallenge);
+      url.searchParams.set("code_challenge_method", "S256");
+    }
+    return url.toString();
+  }
+
+  exchangeAuthorizationCode(input: {
+    code: string;
+  }): Promise<OAuthCredentials> {
+    if (!input.code || input.code.startsWith("invalid")) {
+      return Promise.reject(new Error("invalid_grant"));
+    }
+    return Promise.resolve(this.credenciales(input.code));
+  }
+
+  refreshCredentials(refreshToken: string): Promise<OAuthCredentials> {
     return Promise.resolve(
-      `cus_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`,
+      this.credenciales(refreshToken.replace(/^TG-mock-/, "")),
     );
   }
 
+  verifyNotificationSignature(input: {
+    signatureHeader?: string | null;
+    requestId?: string | null;
+    dataId?: string | null;
+  }): void {
+    verifyMercadoPagoSignature({ secret: this.webhookSecret, ...input });
+  }
+
+  parseNotification(input: {
+    body: unknown;
+    query: Record<string, unknown>;
+  }): ProcessorNotification {
+    return parseMercadoPagoNotification(input);
+  }
+
+  // ── Lo que las pruebas cambian "del lado de Mercado Pago" ────────────────
+
+  /** Un cambio hecho por fuera de la API de FreeWheel (el panel, el banco). */
+  simularCambio(paymentId: string, cambio: Partial<PaymentResult>): void {
+    const pago = this.pagos.get(paymentId);
+    if (!pago) throw new Error(`Payment not found: ${paymentId}`);
+    this.pagos.set(paymentId, { ...pago, ...cambio });
+  }
+
+  /** Una contracara abierta por el banco de quien pagó. */
+  simularContracargo(paymentId: string): string {
+    const pago = this.pagos.get(paymentId);
+    if (!pago) throw new Error(`Payment not found: ${paymentId}`);
+    const id = this.id("mp_mock_cb");
+    this.contracargos.set(id, {
+      id,
+      paymentIds: [paymentId],
+      amountMinor: pago.capturedMinor ?? pago.amountMinor,
+      reason: "fraud",
+      status: "dispute",
+    });
+    this.pagos.set(paymentId, { ...pago, status: "charged_back" });
+    return id;
+  }
+
   /**
-   * La simulación no guarda tarjetas, y contesta que no tiene ninguna.
-   *
-   * Podría inventar una —"Visa ···· 4242"— y sería peor: el front ofrecería
-   * pagar con una tarjeta que no existe, el cobro se confirmaría igual porque
-   * acá todo sale bien, y el camino de "escribir la tarjeta" —que es el que
-   * corre de verdad— no se probaría nunca.
+   * Las devoluciones fallan, como cuando el dueño ya retiró la plata de su
+   * cuenta y no le alcanza el saldo para devolver su parte.
    */
-  listSavedCards(_customerId: string): Promise<SavedCard[]> {
-    return Promise.resolve([]);
+  simularFallaEnDevoluciones(fallan: boolean): void {
+    this.devolucionesFallan = fallan;
   }
 
-  createConnectedAccount(
-    input: CreateConnectedAccountInput,
-  ): Promise<ConnectedAccountResult> {
-    return Promise.resolve({
-      accountId: `acct_mock_${input.userId.replace(/-/g, "").slice(0, 16)}`,
-      onboardingUrl:
-        input.returnUrl ?? "https://mock.stripe.local/connect/onboarding",
-    });
+  consultar(paymentId: string): PaymentResult | undefined {
+    const pago = this.pagos.get(paymentId);
+    return pago ? { ...pago } : undefined;
   }
 
-  getConnectedAccountStatus(
-    accountId: string,
-  ): Promise<ConnectedAccountStatus> {
-    return Promise.resolve({
-      accountId,
-      chargesEnabled: true,
-      payoutsEnabled: true,
-      detailsSubmitted: true,
-    });
-  }
+  // ── Ayudantes ──────────────────────────────────────────────────────────
 
-  constructWebhookEvent(
-    rawBody: Buffer,
-    signature: string | undefined,
-  ): WebhookEvent {
-    if (this.webhookSecret && signature) {
-      const event = this.stripe.webhooks.constructEvent(
-        rawBody,
-        signature,
-        this.webhookSecret,
-      );
-      return {
-        id: event.id,
-        type: event.type,
-        data: {
-          object: event.data.object as unknown as Record<string, unknown>,
-        },
-        livemode: event.livemode,
-      };
-    }
-
-    // Camino permisivo: sin secreto de firma configurado, se cree lo que llega.
-    //
-    // En los tests hace falta para poder recorrer el circuito de pago sin una
-    // cuenta de Stripe. En producción NO, Y NO HAY VARIABLE QUE LO HABILITE.
-    //
-    // Antes la había (ALLOW_UNSIGNED_WEBHOOKS) y se sacó a propósito. Este
-    // endpoint es público: aceptar un evento sin firma significa que cualquiera
-    // que sepa la URL puede mandar un "payment_intent.succeeded" y hacer
-    // figurar una reserva como pagada sin haber pagado nunca. Eso no es un
-    // modo de demostración, es un agujero, y un agujero que se abre con una
-    // variable de entorno es un agujero que un día queda abierto sin que nadie
-    // se acuerde.
-    if (this.enProduccion) {
-      throw new Error(
-        "Evento de webhook sin firma verificada. En producción hay que " +
-          "configurar STRIPE_WEBHOOK_SECRET y PAYMENTS_PROVIDER=stripe.",
-      );
-    }
-
-    const parsed = JSON.parse(rawBody.toString("utf8")) as {
-      id?: string;
-      type?: string;
-      data?: { object?: Record<string, unknown> };
-    };
+  private credenciales(code: string): OAuthCredentials {
+    const limpio = code.replace(/[^A-Za-z0-9]/g, "").slice(0, 24) || "x";
     return {
-      id: parsed.id ?? this.id("evt_mock"),
-      type: parsed.type ?? "unknown",
-      data: { object: parsed.data?.object ?? {} },
-      livemode: false,
+      userId: `mp_user_${limpio}`,
+      accessToken: `TEST-mock-access-${limpio}`,
+      refreshToken: `TG-mock-${limpio}`,
+      publicKey: `TEST-mock-pk-${limpio}`,
+      expiresAt: new Date(Date.now() + 180 * 24 * 3_600_000),
+      liveMode: false,
     };
+  }
+
+  private resultadoPara(
+    titular: string,
+    capture: boolean,
+  ): { status: ProcessorPaymentStatus; statusDetail: string } {
+    switch (titular) {
+      case "CONT":
+        return { status: "in_process", statusDetail: "pending_contingency" };
+      case "OTHE":
+        return { status: "rejected", statusDetail: "cc_rejected_other_reason" };
+      case "FUND":
+        return {
+          status: "rejected",
+          statusDetail: "cc_rejected_insufficient_amount",
+        };
+      case "SECU":
+        return {
+          status: "rejected",
+          statusDetail: "cc_rejected_bad_filled_security_code",
+        };
+      case "CALL":
+        return {
+          status: "rejected",
+          statusDetail: "cc_rejected_call_for_authorize",
+        };
+      case "EXPI":
+        return {
+          status: "rejected",
+          statusDetail: "cc_rejected_bad_filled_date",
+        };
+      default:
+        return capture
+          ? { status: "approved", statusDetail: "accredited" }
+          : { status: "authorized", statusDetail: "pending_capture" };
+    }
   }
 }

@@ -450,9 +450,32 @@ model User {
   acceptedTermsAt         DateTime?
   googleId                String?             @unique
   phoneVerifiedAt         DateTime?
+  /// Columnas de la época de Stripe. Quedan porque sacarlas es un cambio
+  /// destructivo sobre la base, y la rama `pagos-stripe` las sigue usando.
   stripeCustomerId        String?             @unique
   stripeAccountId         String?             @unique
   stripeAccountStatus     StripeAccountStatus @default(NONE)
+  /// ── La cuenta de Mercado Pago del dueño, vinculada por OAuth ────────────
+  ///
+  /// Los cobros de una reserva se hacen CON LA CUENTA DEL DUEÑO (split de
+  /// pagos): la plata entra directo a su Mercado Pago y FreeWheel cobra su
+  /// parte como comisión de la aplicación. Por eso hace falta su token.
+  ///
+  /// Los dos tokens van CIFRADOS (AES-256-GCM, ver EncryptionService): con el
+  /// access token se puede cobrar, devolver y consultar todo en la cuenta de
+  /// esa persona. Una base filtrada con esto en claro es una cuenta de
+  /// Mercado Pago ajena abierta.
+  mpUserId                String?             @unique
+  mpAccessTokenEnc        String?
+  mpRefreshTokenEnc       String?
+  /// La clave pública del dueño. No es secreta: el front la usa para
+  /// tokenizar la tarjeta, y un token hecho con otra clave pública no sirve
+  /// para cobrar en la cuenta del dueño.
+  mpPublicKey             String?
+  mpTokenExpiresAt        DateTime?
+  mpLinkedAt              DateTime?
+  /// true si la vinculación es de producción, false si es de prueba.
+  mpLiveMode              Boolean?
   /// Promedio de las reseñas recibidas y cuántas son. Se guardan calculados para
   /// no tener que recorrer todas las reseñas cada vez que se muestra un perfil.
   ratingAverage           Float?
@@ -741,76 +764,78 @@ model ListingAvailabilityBlock {
 }
 
 model Booking {
-  id                      String        @id @default(uuid())
-  listingId               String
-  vehicleId               String
-  ownerId                 String
-  renterId                String
-  listing                 Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
-  vehicle                 Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  owner                   User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  renter                  User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
-  startDate               DateTime
-  endDate                 DateTime
-  status                  BookingStatus @default(REQUESTED)
-  pricePerDaySnapshot     Float
-  totalPriceSnapshot      Float
-  currency                String        @default("ARS")
-  pickupTokenHash         String?
-  returnTokenHash         String?
-  pickupTokenPreview      String?
-  returnTokenPreview      String?
-  pickupConfirmedAt       DateTime?
-  returnConfirmedAt       DateTime?
-  cancelledAt             DateTime?
-  cancellationReason      String?
-  paymentStatus           PaymentStatus @default(NOT_REQUIRED)
-  paymentProvider         String?
-  providerPaymentId       String?
-  platformFeeSnapshot     Float?
-  depositSnapshot         Float?
-  rentalSubtotalSnapshot  Float?
-  insuranceSnapshot       Float?
-  senaAmountSnapshot      Float?
-  balanceAmountSnapshot   Float?
-  ownerPayoutSnapshot     Float?
-  transferGroup           String?
-  ownerTransferId         String?
-  depositPaymentIntentId  String?
-  depositCapturedAmount   Float?
+  id                     String        @id @default(uuid())
+  listingId              String
+  vehicleId              String
+  ownerId                String
+  renterId               String
+  listing                Listing       @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  vehicle                Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  owner                  User          @relation("BookingOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  renter                 User          @relation("BookingRenter", fields: [renterId], references: [id], onDelete: Restrict)
+  startDate              DateTime
+  endDate                DateTime
+  status                 BookingStatus @default(REQUESTED)
+  pricePerDaySnapshot    Float
+  totalPriceSnapshot     Float
+  currency               String        @default("ARS")
+  pickupTokenHash        String?
+  returnTokenHash        String?
+  pickupTokenPreview     String?
+  returnTokenPreview     String?
+  pickupConfirmedAt      DateTime?
+  returnConfirmedAt      DateTime?
+  cancelledAt            DateTime?
+  cancellationReason     String?
+  paymentStatus          PaymentStatus @default(NOT_REQUIRED)
+  paymentProvider        String?
+  providerPaymentId      String?
+  platformFeeSnapshot    Float?
+  depositSnapshot        Float?
+  rentalSubtotalSnapshot Float?
+  insuranceSnapshot      Float?
+  senaAmountSnapshot     Float?
+  balanceAmountSnapshot  Float?
+  ownerPayoutSnapshot    Float?
+  transferGroup          String?
+  ownerTransferId        String?
+  /// El cobro que retiene el depósito (en la base se llama como en Stripe).
+  depositPaymentId       String?       @map("depositPaymentIntentId")
+  depositCapturedAmount  Float?
   /// Hasta cuándo se puede cobrar de la retención del depósito. Una retención
   /// en tarjeta vence sola (alrededor de 7 días, más con autorización
   /// extendida), y pasado ese momento ya no hay de dónde cobrar un daño. Se
   /// guarda para no prometerle al dueño una garantía que ya no existe.
-  depositHoldExpiresAt    DateTime?
-  /// El PaymentIntent del cobro único (alquiler + cobertura).
-  checkoutPaymentIntentId String?
+  depositHoldExpiresAt   DateTime?
+  /// El cobro único (alquiler + cobertura). La columna conserva el nombre de
+  /// Stripe; `@map` evita un cambio destructivo sobre la base.
+  checkoutPaymentId      String?       @map("checkoutPaymentIntentId")
   /// El medio de pago que dejó guardado el cobro, para autorizar el depósito
   /// sin volver a pedirle la tarjeta a nadie. Es un identificador del
   /// procesador (pm_…), que solo sirve con nuestra clave secreta.
-  savedPaymentMethodId    String?
-  paidAt                  DateTime?
-  refundedAt              DateTime?
+  savedPaymentMethodId   String?
+  paidAt                 DateTime?
+  refundedAt             DateTime?
   /// Hasta cuándo el dueño puede reportar un daño después de la devolución.
-  inspectionEndsAt        DateTime?
+  inspectionEndsAt       DateTime?
   /// Cuándo el dueño revisó el auto devuelto y dijo que estaba todo bien.
   ///
   /// Cierra la ventana antes de tiempo. Es un dato distinto de que la ventana
   /// se haya vencido sola: dice que una persona miró el auto. La pantalla del
   /// dueño lo usa para dejar de ofrecer el botón de revisar.
-  ownerInspectedAt        DateTime?
+  ownerInspectedAt       DateTime?
   /// Cuándo se liquidó: depósito liberado y pago al dueño hecho. Es lo que
   /// hace idempotente la liquidación: una reserva liquidada no se liquida dos
   /// veces aunque el cron y una persona lo pidan a la vez.
-  settledAt               DateTime?
+  settledAt              DateTime?
   /// Quién canceló: RENTER, OWNER o PLATFORM.
-  cancelledByRole         String?
+  cancelledByRole        String?
   /// Cómo se repartió la plata al cancelar, línea por línea. Es la constancia
   /// de qué regla se aplicó (arrepentimiento, seña perdida, seña doblada) y
   /// por qué, escrita en el momento en que se decidió.
-  cancellationSettlement  Json?
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
+  cancellationSettlement Json?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
 
   paymentRecords PaymentRecord[]
   contract       Contract?
@@ -921,28 +946,34 @@ model LedgerEntry {
 }
 
 model PaymentRecord {
-  id                    String              @id @default(uuid())
-  bookingId             String?
-  userId                String?
-  booking               Booking?            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  user                  User?               @relation(fields: [userId], references: [id], onDelete: Restrict)
-  status                PaymentRecordStatus @default(MOCK)
-  kind                  PaymentRecordKind?
-  provider              String?
-  providerId            String?
-  stripePaymentIntentId String?             @unique
-  stripeChargeId        String?
-  stripeTransferId      String?
-  stripeRefundId        String?
-  amount                Float?
-  amountMinor           Int?
-  applicationFeeMinor   Int?
-  currency              String              @default("ARS")
+  id                  String              @id @default(uuid())
+  bookingId           String?
+  userId              String?
+  booking             Booking?            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  user                User?               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status              PaymentRecordStatus @default(MOCK)
+  kind                PaymentRecordKind?
+  provider            String?
+  providerId          String?
+  /// El id del cobro en el procesador. La columna se llama como en Stripe y
+  /// se mapea: renombrarla en la base sería un cambio destructivo para nada.
+  providerPaymentId   String?             @unique @map("stripePaymentIntentId")
+  stripeChargeId      String?
+  stripeTransferId    String?
+  providerRefundId    String?             @map("stripeRefundId")
+  /// La cuenta de Mercado Pago que cobró (la del dueño). Hace falta para
+  /// saber con qué token operar sobre este cobro después: devolverlo,
+  /// capturarlo o soltarlo.
+  collectorId         String?
+  amount              Float?
+  amountMinor         Int?
+  applicationFeeMinor Int?
+  currency            String              @default("ARS")
   /// Cuánto de este cobro ya se devolvió. Una devolución parcial deja el
   /// registro en PARTIALLY_REFUNDED y este número es el que dice cuánta plata
   /// sigue siendo nuestra; sin él, dos devoluciones parciales podrían sumar
   /// más que el cobro original y nadie se enteraría.
-  refundedAmountMinor   Int                 @default(0)
+  refundedAmountMinor Int                 @default(0)
 
   /// ── LO QUE PERMITE RECONSTRUIR UN COBRO DISCUTIDO ────────────────────────
   ///
@@ -1127,7 +1158,10 @@ model Message {
   @@index([senderId])
 }
 
-model StripeEvent {
+/// Los avisos del procesador de pagos, uno por notificación. La unicidad de
+/// `eventId` es lo que descarta los duplicados. La tabla conserva el nombre de
+/// la época de Stripe.
+model ProcessorEvent {
   id          String    @id @default(uuid())
   eventId     String    @unique
   type        String
@@ -1136,6 +1170,7 @@ model StripeEvent {
   createdAt   DateTime  @default(now())
 
   @@index([type])
+  @@map("StripeEvent")
 }
 
 /// EL CONTRATO DE UNA RESERVA.

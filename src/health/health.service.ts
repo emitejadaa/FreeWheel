@@ -76,6 +76,16 @@ const REQUIRED_SCHEMA: {
   { feature: "verificación de autos", table: "VehicleVerification" },
   { feature: "tope de intentos persistente", table: "RateLimitBucket" },
   {
+    feature: "cuenta de Mercado Pago del dueño",
+    table: "User",
+    column: "mpUserId",
+  },
+  {
+    feature: "cuenta que cobró cada pago",
+    table: "PaymentRecord",
+    column: "collectorId",
+  },
+  {
     feature: "candado de cuenta por contraseñas falladas",
     table: "User",
     column: "loginLockedUntil",

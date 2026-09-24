@@ -63,6 +63,16 @@ export interface Ticket {
     kind: "HOLD";
     note: string;
   };
+  /**
+   * Cómo se mueve la plata con el procesador. Va en el ticket porque cambia
+   * lo que cada uno recibe: Mercado Pago cobra su comisión de la parte del
+   * dueño, y ese monto no se conoce antes de pagar (depende del plazo de
+   * liberación que el dueño eligió en su cuenta).
+   */
+  processor: {
+    name: "mercadopago";
+    note: string;
+  };
 }
 
 const aMinor = (valor: number | null | undefined): number =>
@@ -93,7 +103,7 @@ export function buildTicket(s: TicketSnapshots): Ticket {
     distribution: [
       {
         code: "OWNER",
-        label: "Para el dueño del auto",
+        label: "Para el dueño del auto (en su cuenta de Mercado Pago)",
         amountMinor: rental - commission,
       },
       {
@@ -103,7 +113,8 @@ export function buildTicket(s: TicketSnapshots): Ticket {
       },
       {
         code: "INSURER",
-        label: "Para la cobertura",
+        label:
+          "Para la cobertura (la cobra FreeWheel por cuenta de la aseguradora)",
         amountMinor: total - (rental - commission) - commission,
       },
     ],
@@ -121,8 +132,16 @@ export function buildTicket(s: TicketSnapshots): Ticket {
       amountMinor: aMinor(s.deposit),
       kind: "HOLD",
       note:
-        "No es un cobro: se retiene en tu tarjeta y se libera si el auto " +
-        "vuelve sin daños reportados dentro de la ventana de inspección.",
+        "No es un cobro: es una reserva de fondos en tu tarjeta, que se " +
+        "autoriza cerca del retiro y se libera si el auto vuelve sin daños " +
+        "reportados dentro de la ventana de inspección.",
+    },
+    processor: {
+      name: "mercadopago",
+      note:
+        "El pago se hace con Mercado Pago y se acredita directo en la cuenta " +
+        "del dueño. Mercado Pago descuenta su comisión de la parte del dueño, " +
+        "según el plazo de liberación que el dueño tenga configurado.",
     },
   };
 }

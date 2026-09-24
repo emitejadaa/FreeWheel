@@ -133,7 +133,7 @@ export function corsEstricto(): boolean {
  * nuestra. Si algún día se pasa a autenticar con cookies, esto hay que cerrarlo
  * SÍ O SÍ antes.
  *
- * Un pedido SIN cabecera Origin (curl, Postman, el webhook de Stripe) pasa
+ * Un pedido SIN cabecera Origin (curl, Postman, los avisos de Mercado Pago) pasa
  * siempre: CORS es una protección del navegador y bloquear ahí no agrega
  * seguridad, solo rompe integraciones.
  */

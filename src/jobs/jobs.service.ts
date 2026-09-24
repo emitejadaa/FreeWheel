@@ -10,6 +10,8 @@ export interface JobRunResult {
   bookingsSettled: number;
   settlementsFailed: number;
   payoutsRetried: number;
+  paymentsReconciled: number;
+  refundsRetried: number;
   retention: unknown;
 }
 
@@ -90,6 +92,16 @@ export class JobsService {
     }
 
     const payoutsRetried = await this.payments.retryPendingPayouts();
+
+    // Los cobros que quedaron sin resolver se le preguntan a Mercado Pago: un
+    // pago aprobado mientras un aviso se perdía, o una reserva de fondos que
+    // venció sola, se ven igual aunque el aviso no llegue nunca.
+    const paymentsReconciled =
+      await this.payments.reconcilePendingPayments(now);
+    // Y las cancelaciones cuya devolución falló (el dueño sin saldo en su
+    // cuenta) se vuelven a intentar hasta que salgan.
+    const refundsRetried = await this.payments.retryFailedCancellations(now);
+
     const retention = await this.retention.purgeExpired(now);
 
     const resumen = {
@@ -97,6 +109,8 @@ export class JobsService {
       bookingsSettled,
       settlementsFailed,
       payoutsRetried,
+      paymentsReconciled,
+      refundsRetried,
       retention,
     };
     this.logger.log(`corrida diaria: ${JSON.stringify(resumen)}`);

@@ -1,17 +1,22 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Headers,
+  HttpCode,
   Param,
   Post,
   Query,
   Req,
+  Res,
   UseFilters,
   UseGuards,
 } from "@nestjs/common";
+import { SkipThrottle } from "@nestjs/throttler";
 import { Throttle } from "@nestjs/throttler";
 import { UserRole } from "@prisma/client";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { VerifiedAccountGuard } from "../common/guards/verified-account.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
@@ -23,8 +28,8 @@ import { CaptureDepositDto } from "./dto/capture-deposit.dto";
 import { LedgerRemittanceDto } from "./dto/ledger-remittance.dto";
 import { clientIp, clientUserAgent } from "../common/utils/client-ip.util";
 import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
-import { StripeErrorFilter } from "./filters/stripe-error.filter";
-import { SimulatePaymentDto } from "./dto/simulate-payment.dto";
+import { ProcessorErrorFilter } from "./filters/processor-error.filter";
+import { CardPaymentDto, cardInputFrom } from "./dto/card-payment.dto";
 import { PaymentsService } from "./payments.service";
 import type { PaymentContext } from "./payments.service";
 
@@ -41,25 +46,39 @@ function contextOf(req: Request, actorId?: string): PaymentContext {
   };
 }
 
-// Toda acción de pago exige una cuenta verificada, con el DNI vigente. El
-// webhook de Stripe queda público: se autentica por firma.
+// Toda acción de pago exige una cuenta verificada, con el DNI vigente. Los
+// avisos de Mercado Pago y la vuelta del OAuth quedan públicos: se autentican
+// por firma y por el `state` cifrado, respectivamente.
 //
-// EL FILTRO HACE QUE UN ERROR DE STRIPE DIGA QUÉ PASÓ. Sin él, cualquier
-// rechazo del procesador —una tarjeta sin fondos, una moneda que esa cuenta no
-// cobra— llega al filtro global, que lo trata como un error inesperado y
-// contesta "Internal server error". El detalle quedaba solo en los logs del
-// deploy, que administra otra persona. Ver filters/stripe-error.filter.ts.
-@UseFilters(StripeErrorFilter)
+// EL FILTRO HACE QUE UN ERROR DE MERCADO PAGO DIGA QUÉ PASÓ en vez de un 500
+// mudo. Ver filters/processor-error.filter.ts.
+@UseFilters(ProcessorErrorFilter)
 @Controller("payments")
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   /**
-   * EL PAGO DE LA RESERVA: alquiler + cobertura, de una sola vez. Exige que
-   * quien alquila haya aceptado el contrato (409 CONTRACT_NOT_ACCEPTED).
+   * LO QUE EL FRONT NECESITA PARA ARMAR EL FORMULARIO DE PAGO: la clave
+   * pública DEL DUEÑO (la tarjeta se tokeniza con la clave de la cuenta que
+   * cobra), el importe y el ticket.
+   */
+  @Get("bookings/:bookingId/checkout")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  getCheckoutConfig(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.getCheckoutConfig(user.id, bookingId);
+  }
+
+  /**
+   * EL PAGO DE LA RESERVA: alquiler + cobertura, de una sola vez, con la
+   * tarjeta que tokenizó el formulario de Mercado Pago. Exige que quien
+   * alquila haya aceptado el contrato (409 CONTRACT_NOT_ACCEPTED).
    *
    * Los límites son más bajos que el general del servidor, y no es por costo:
-   * crear intents contra un procesador es la forma barata de probar tarjetas
+   * mandar pagos contra un procesador es la forma barata de probar tarjetas
    * robadas de a cientos, y un límite es lo único que la frena.
    */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
@@ -75,12 +94,14 @@ export class PaymentsController {
   createCheckout(
     @CurrentUser() user: CurrentUserPayload,
     @Param("bookingId") bookingId: string,
+    @Body() dto: CardPaymentDto,
     @Req() req: Request,
   ) {
     return this.paymentsService.createCheckout(
       user.id,
       bookingId,
       contextOf(req, user.id),
+      cardInputFrom(dto),
     );
   }
 
@@ -95,7 +116,7 @@ export class PaymentsController {
     return this.paymentsService.getTicket(user.id, bookingId);
   }
 
-  /** DEPRECADO: alias del cobro único (ver createSenaIntent en el servicio). */
+  /** DEPRECADO: alias del cobro único, con el mismo cuerpo. */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
   @SensitiveRateLimit({
     name: "payments.checkout",
@@ -109,35 +130,29 @@ export class PaymentsController {
   createSenaIntent(
     @CurrentUser() user: CurrentUserPayload,
     @Param("bookingId") bookingId: string,
+    @Body() dto: CardPaymentDto,
     @Req() req: Request,
   ) {
     return this.paymentsService.createSenaIntent(
       user.id,
       bookingId,
       contextOf(req, user.id),
+      cardInputFrom(dto),
     );
   }
 
-  /** DEPRECADO: el pago es uno solo (409 PAYMENT_IS_SINGLE salvo reservas viejas). */
-  @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  /** DEPRECADO: el pago es uno solo (409 PAYMENT_IS_SINGLE). */
   @Post("bookings/:bookingId/balance-intent")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
-  createBalanceIntent(
-    @CurrentUser() user: CurrentUserPayload,
-    @Param("bookingId") bookingId: string,
-    @Req() req: Request,
-  ) {
-    return this.paymentsService.createBalanceIntent(
-      user.id,
-      bookingId,
-      contextOf(req, user.id),
-    );
+  createBalanceIntent() {
+    return this.paymentsService.createBalanceIntent();
   }
 
   /**
-   * Autorizar el depósito con quien alquila presente. Es el plan B: lo normal
-   * es que el servidor lo autorice solo cuando el dueño marca el auto listo.
+   * AUTORIZAR EL DEPÓSITO EN GARANTÍA: una reserva de fondos en la tarjeta,
+   * con quien alquila presente. Se habilita cerca del retiro (una reserva de
+   * fondos vale 7 días); antes contesta 409 DEPOSIT_TOO_EARLY con la fecha.
    */
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
   @SensitiveRateLimit({
@@ -152,65 +167,20 @@ export class PaymentsController {
   createDepositHold(
     @CurrentUser() user: CurrentUserPayload,
     @Param("bookingId") bookingId: string,
+    @Body() dto: CardPaymentDto,
     @Req() req: Request,
   ) {
     return this.paymentsService.createDepositHold(
       user.id,
       bookingId,
       contextOf(req, user.id),
+      cardInputFrom(dto),
     );
   }
 
   /**
-   * Simulación de pago SIN pasar por el procesador.
-   *
-   * Existe solo para los tests automatizados, que corren con
-   * PAYMENTS_PROVIDER=mock. Con el provider Stripe —que es el de la demo y el
-   * de producción— contesta 403: ahí el pago lo confirma Stripe y el aviso
-   * llega por webhook, exactamente como va a pasar el día que se cobre de
-   * verdad.
-   */
-  @Post("bookings/:bookingId/mock-confirm")
-  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
-  @RequireVerifiedAccount()
-  mockConfirm(
-    @CurrentUser() user: CurrentUserPayload,
-    @Param("bookingId") bookingId: string,
-    @Body() dto: SimulatePaymentDto,
-    @Req() req: Request,
-  ) {
-    return this.paymentsService.simulatePaymentSuccess(
-      user.id,
-      bookingId,
-      dto.kind,
-      contextOf(req, user.id),
-    );
-  }
-
-  @Post("bookings/:bookingId/mock-fail")
-  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
-  @RequireVerifiedAccount()
-  mockFail(
-    @CurrentUser() user: CurrentUserPayload,
-    @Param("bookingId") bookingId: string,
-    @Body() dto: SimulatePaymentDto,
-  ) {
-    return this.paymentsService.simulatePaymentFailure(
-      user.id,
-      bookingId,
-      dto.kind,
-    );
-  }
-
-  /**
-   * LAS TARJETAS GUARDADAS DE QUIEN PREGUNTA. Solo las propias: no recibe
-   * ningún identificador, sale del token.
-   *
-   * Existe para que los tres tramos de un alquiler no obliguen a escribir la
-   * misma tarjeta tres veces seguidas (ver PaymentsService.listSavedCards).
-   * No devuelve ningún número de tarjeta —este servidor no los tiene—: marca,
-   * últimos cuatro, vencimiento, y el identificador con el que el procesador
-   * la reconoce, que solo sirve para cobros de esta misma persona.
+   * LAS TARJETAS GUARDADAS. Con el split de Mercado Pago no hay (ver el
+   * servicio): la ruta queda para que el front que la llamaba no se rompa.
    */
   @Get("methods")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
@@ -250,24 +220,67 @@ export class PaymentsController {
     );
   }
 
+  /**
+   * VINCULAR LA CUENTA DE MERCADO PAGO DEL DUEÑO: devuelve la URL a la que
+   * hay que mandarlo. Mercado Pago lo trae de vuelta a
+   * /payments/mercadopago/oauth/callback, y de ahí al front.
+   */
   @Post("connect/onboarding")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
+  @SensitiveRateLimit({
+    name: "payments.connect",
+    limit: 10,
+    windowSec: 600,
+    by: "user",
+  })
   createOnboarding(@CurrentUser() user: CurrentUserPayload) {
     return this.paymentsService.createOwnerOnboarding(user.id);
   }
 
-  /**
-   * Si este dueño ya puede cobrar.
-   *
-   * Sin esto, alguien completaba a medias el alta en Stripe, publicaba su
-   * auto, y recién al devolverlo descubría que la transferencia no salía.
-   */
+  /** Si este dueño ya puede cobrar. */
   @Get("connect/status")
   @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
   @RequireVerifiedAccount()
   getConnectStatus(@CurrentUser() user: CurrentUserPayload) {
     return this.paymentsService.getOwnerPayoutStatus(user.id);
+  }
+
+  /** Desvincular la cuenta. No se puede con cobros sin cerrar. */
+  @Delete("connect")
+  @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
+  @RequireVerifiedAccount()
+  unlink(@CurrentUser() user: CurrentUserPayload) {
+    return this.paymentsService.unlinkOwner(user.id);
+  }
+
+  /**
+   * LA VUELTA DEL OAUTH DE MERCADO PAGO.
+   *
+   * La hace el navegador del dueño, sin la sesión de FreeWheel: lo único que
+   * dice quién es la persona es el `state` cifrado. Termina siempre en una
+   * redirección al front (con `?status=ok` o `?status=error&code=…`), nunca
+   * en un JSON: quien la ve es una persona, no el front.
+   */
+  @Get("mercadopago/oauth/callback")
+  @SensitiveRateLimit({
+    name: "payments.oauth-callback",
+    limit: 20,
+    windowSec: 600,
+    by: "ip",
+  })
+  async oauthCallback(
+    @Query("code") code: string | undefined,
+    @Query("state") state: string | undefined,
+    @Query("error") error: string | undefined,
+    @Res() res: Response,
+  ) {
+    const destino = await this.paymentsService.completeOwnerOnboarding({
+      code,
+      state,
+      error,
+    });
+    res.redirect(302, destino);
   }
 
   /**
@@ -353,6 +366,38 @@ export class PaymentsController {
   }
 
   /**
+   * Registra una transferencia a un dueño de un saldo que el split no le
+   * podía dar (el ajuste de una cancelación con seña).
+   */
+  @Post("admin/ledger/owners/:ownerId/payout")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  ownerPayout(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("ownerId") ownerId: string,
+    @Body() dto: LedgerRemittanceDto,
+  ) {
+    return this.paymentsService.recordOwnerPayoutPaid(
+      user.id,
+      ownerId,
+      dto.amountMinor,
+      dto.currency,
+      dto.reference,
+    );
+  }
+
+  /** Reintenta la devolución de una cancelación que quedó sin hacerse. */
+  @Post("admin/bookings/:bookingId/retry-refund")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  retryRefund(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.retryCancellation(user.id, bookingId);
+  }
+
+  /**
    * VOLVER A LIQUIDAR UNA RESERVA DEVUELTA Y SIN LIQUIDAR.
    *
    * Solo un administrador, por lo mismo que la captura del depósito: mueve
@@ -375,29 +420,22 @@ export class PaymentsController {
   }
 
   /**
-   * El aviso de Stripe. Público, pero verificado por firma contra el cuerpo
-   * CRUDO del pedido (express.raw está registrado para esta ruta exacta en
-   * app.factory, antes del parser de JSON, así que `req.body` acá es el Buffer
-   * sin tocar).
+   * LOS AVISOS DE MERCADO PAGO. Públicos, pero verificados por firma
+   * (x-signature, HMAC con MP_WEBHOOK_SECRET). Y aun firmados son solo una
+   * pista: el estado de cada cobro se le pregunta a la API.
    *
-   * Si el cuerpo no es un Buffer, algo se metió en el medio y lo parseó: la
-   * firma ya no se puede verificar sobre los bytes originales y reconstruirlo
-   * con JSON.stringify daría otros bytes. Antes se reconstruía igual, lo que
-   * en el mejor caso fallaba la verificación y en el peor la hacía pasar sobre
-   * algo que no era lo que Stripe firmó. Ahora se corta.
+   * Contesta 200 rápido: Mercado Pago reintenta lo que no se contesta, y un
+   * aviso que se procesa dos veces no hace nada la segunda (la unicidad del
+   * id lo descarta).
    */
-  @Post("stripe/webhook")
-  handleStripeWebhook(@Req() req: Request) {
-    const signature = req.headers["stripe-signature"];
-    if (!Buffer.isBuffer(req.body)) {
-      throw new Error(
-        "El webhook de Stripe llegó con el cuerpo ya parseado: la firma no se " +
-          "puede verificar. Revisar el orden de los middlewares en app.factory.",
-      );
-    }
-    return this.paymentsService.handleWebhook(
-      req.body,
-      Array.isArray(signature) ? signature[0] : signature,
-    );
+  @Post("mercadopago/webhook")
+  @HttpCode(200)
+  @SkipThrottle()
+  handleMercadoPagoWebhook(
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Query() query: Record<string, unknown>,
+    @Body() body: unknown,
+  ) {
+    return this.paymentsService.handleNotification({ headers, query, body });
   }
 }

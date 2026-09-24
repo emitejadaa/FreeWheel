@@ -9,9 +9,10 @@ import { PaymentsService } from "./payments.service";
 /**
  * Los avisos de un pago.
  *
- * Van enganchados en onIntentSucceeded, que es el ÚNICO lugar por donde pasan los
- * dos caminos de cobro: el webhook de Stripe y el pago simulado del modo mock.
- * Lo que se prueba acá son las tres decisiones que se tomaron ahí:
+ * Van enganchados en aplicarResultado, que es el ÚNICO lugar por donde pasan
+ * los tres caminos de un cobro: la respuesta al crearlo, el aviso de Mercado
+ * Pago y la conciliación diaria. Lo que se prueba acá son las tres decisiones
+ * que se tomaron ahí:
  *
  *  1. que el concepto se muestre en castellano y no como código interno;
  *  2. que el DEPÓSITO EN GARANTÍA no le avise al dueño que "recibió un pago",
@@ -48,8 +49,9 @@ describe("PaymentsService: avisos de un pago", () => {
       email as unknown as EmailService,
       {} as never, // LedgerService: el aviso no lo usa
       {} as never, // ContractsService: el aviso no lo usa
+      {} as never, // EncryptionService: el aviso no lo usa
     );
-    // El aviso es interno a propósito: se dispara desde onIntentSucceeded y no es
+    // El aviso es interno a propósito: se dispara desde aplicarResultado y no es
     // parte de la API del servicio. Se lo llama directo para probarlo aislado.
     const avisar = (kind: PaymentRecordKind | null, amount: number | null) =>
       (

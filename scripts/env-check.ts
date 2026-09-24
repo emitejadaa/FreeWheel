@@ -32,11 +32,10 @@ const documentedOptionalVariables = [
   "CLOUDINARY_API_KEY",
   "CLOUDINARY_API_SECRET",
   "PAYMENTS_PROVIDER",
-  "STRIPE_SECRET_KEY",
-  "STRIPE_PUBLISHABLE_KEY",
-  "STRIPE_WEBHOOK_SECRET",
-  "STRIPE_API_VERSION",
-  "STRIPE_CONNECT_ENABLED",
+  "MP_CLIENT_ID",
+  "MP_CLIENT_SECRET",
+  "MP_WEBHOOK_SECRET",
+  "MP_TEST_MODE",
   "PLATFORM_FEE_PCT",
   "INSURANCE_PCT",
   "SENA_PCT",
@@ -77,12 +76,14 @@ function main() {
     );
   }
 
-  const stripeKey = process.env.STRIPE_SECRET_KEY ?? "";
-  const isLiveKey = /^(sk|rk)_live_/.test(stripeKey);
+  // Producción con Mercado Pago es una decisión explícita (MP_TEST_MODE=false):
+  // este chequeo avisa para que no pase por accidente en un entorno local.
+  const isLiveKey =
+    (process.env.MP_TEST_MODE ?? "true").trim().toLowerCase() === "false" &&
+    process.env.NODE_ENV !== "production";
   if (isLiveKey) {
     console.error(
-      "Refusing live Stripe key: STRIPE_SECRET_KEY must be a TEST key " +
-        "(sk_test_/rk_test_). This build is test-mode only.",
+      "MP_TEST_MODE=false fuera de producción: este entorno movería plata real.",
     );
   }
 

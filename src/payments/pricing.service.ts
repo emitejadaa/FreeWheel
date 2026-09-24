@@ -8,9 +8,9 @@ export interface ComputeBookingInput {
 
 /**
  * Full money breakdown for a booking. Decimal fields are convenient snapshots
- * for display/persistence; the `*Minor` fields are integer minor units (cents)
- * and are the source of truth for every Stripe amount (Stripe only accepts
- * integers in the currency's smallest unit).
+ * for display/persistence; the `*Minor` fields are integer minor units
+ * (centavos) and are the source of truth for every amount. The conversion to
+ * the decimal pesos that Mercado Pago expects happens only inside its provider.
  */
 export interface BookingPricing {
   currency: string;
@@ -58,8 +58,18 @@ export class PricingService {
     const feePct = this.pct("PLATFORM_FEE_PCT", 0.1);
     const insurancePct = this.pct("INSURANCE_PCT", 0.1);
     const senaPct = this.pct("SENA_PCT", 0.3);
-    const depositUsd = this.amount("DEPOSIT_DEFAULT_USD", 200);
-    const currency = (this.config.get<string>("DEFAULT_CURRENCY") ?? "usd")
+    // DEPOSIT_DEFAULT es el depósito en la moneda de la reserva. El nombre
+    // viejo (DEPOSIT_DEFAULT_USD) se sigue leyendo para no romper un deploy
+    // que ya lo tenía, pero con Mercado Pago la moneda es el peso: 200 de
+    // depósito son 200 pesos, que no cubren nada. Hay que cargarlo.
+    const depositUsd = this.amount(
+      "DEPOSIT_DEFAULT",
+      this.amount("DEPOSIT_DEFAULT_USD", 200),
+    );
+    // Pesos por omisión: Mercado Pago Argentina solo cobra en pesos. Una
+    // reserva congelada en otra moneda no se puede pagar (409
+    // CURRENCY_NOT_SUPPORTED), así que el defecto tiene que ser el que anda.
+    const currency = (this.config.get<string>("DEFAULT_CURRENCY") ?? "ars")
       .trim()
       .toLowerCase();
 

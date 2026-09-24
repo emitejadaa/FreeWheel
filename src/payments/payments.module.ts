@@ -10,7 +10,7 @@ import { PaymentsService } from "./payments.service";
 import { PricingService } from "./pricing.service";
 import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
 import { MockPaymentsProvider } from "./providers/mock-payments.provider";
-import { StripePaymentsProvider } from "./providers/stripe-payments.provider";
+import { MercadoPagoPaymentsProvider } from "./providers/mercadopago/mercadopago.provider";
 import { UnconfiguredPaymentsProvider } from "./providers/unconfigured-payments.provider";
 
 /**
@@ -18,30 +18,27 @@ import { UnconfiguredPaymentsProvider } from "./providers/unconfigured-payments.
  *
  * Tres caminos, y el orden en que se eligen importa:
  *
- *   1. `stripe` (el valor por omisión) con STRIPE_SECRET_KEY cargada → Stripe
- *      de verdad, en modo de prueba. Es lo que corre en la demo y lo que va a
- *      correr en producción: el día que se cobre en serio, lo que cambia son
- *      las claves.
- *   2. `stripe` SIN la clave → el provider que no cobra y lo dice. Cada
- *      operación de pago contesta 503 PAYMENTS_NOT_CONFIGURED y todo el resto
- *      de la plataforma funciona. La alternativa era negarse a arrancar, o sea
- *      convertir "falta cargar una clave" en "la API entera está caída", que
- *      es una respuesta desproporcionada a una función que falta.
+ *   1. `mercadopago` (el valor por omisión) con MP_CLIENT_ID y
+ *      MP_CLIENT_SECRET cargadas → Mercado Pago de verdad. MP_TEST_MODE decide
+ *      si las cuentas que se vinculan son de prueba (por omisión) o reales.
+ *   2. `mercadopago` SIN esas credenciales → el provider que no cobra y lo
+ *      dice. Cada operación de pago contesta 503 PAYMENTS_NOT_CONFIGURED y
+ *      todo el resto de la plataforma funciona.
  *   3. `mock` → provider offline, sin red, SOLO para los tests automatizados.
  *      EN PRODUCCIÓN NO ARRANCA: un servidor que contesta "pagado" sin que
  *      haya pasado plata es peor que uno que no cobra, porque alguien entrega
  *      un auto contra un pago que no existe.
  *
- * El valor por omisión era "mock" y se cambió: un deploy al que se le olvidara
- * la variable arrancaba con pagos de mentira y nadie se enteraba hasta que
- * alguien preguntara dónde estaba su plata.
+ * Stripe ya no está acá: vive en la rama `pagos-stripe`. Stripe no opera con
+ * entidades argentinas, así que en producción no había forma de usarlo sin
+ * una sociedad en el exterior (ver CONSULTAS-LEGALES.md §12).
  */
 const paymentProvider: Provider = {
   provide: PAYMENT_PROVIDER,
   inject: [ConfigService],
   useFactory: (config: ConfigService) => {
     const which = (
-      config.get<string>("PAYMENTS_PROVIDER") ?? "stripe"
+      config.get<string>("PAYMENTS_PROVIDER") ?? "mercadopago"
     ).toLowerCase();
     const enProduccion =
       (config.get<string>("NODE_ENV") ?? process.env.NODE_ENV) === "production";
@@ -51,16 +48,19 @@ const paymentProvider: Provider = {
         throw new Error(
           'Refusing to start: PAYMENTS_PROVIDER="mock" en producción. El ' +
             "provider offline no cobra nada y marcaría reservas como pagadas " +
-            "sin que haya pasado plata. Usar PAYMENTS_PROVIDER=stripe.",
+            "sin que haya pasado plata. Usar PAYMENTS_PROVIDER=mercadopago.",
         );
       }
       return new MockPaymentsProvider(config);
     }
 
-    if (!config.get<string>("STRIPE_SECRET_KEY")) {
+    if (
+      !config.get<string>("MP_CLIENT_ID") ||
+      !config.get<string>("MP_CLIENT_SECRET")
+    ) {
       return new UnconfiguredPaymentsProvider();
     }
-    return new StripePaymentsProvider(config);
+    return new MercadoPagoPaymentsProvider(config);
   },
 };
 

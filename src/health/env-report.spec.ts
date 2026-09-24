@@ -141,8 +141,9 @@ describe("buildEnvReport", () => {
       // Los cobros entraron a la lista después que esta prueba, y "con todo
       // cargado" tiene que querer decir TODO: sin estas dos no se puede pagar
       // ninguna reserva, que es la falla que el reporte existe para mostrar.
-      STRIPE_SECRET_KEY: "sk_test_x",
-      STRIPE_WEBHOOK_SECRET: "whsec_x",
+      MP_CLIENT_ID: "123",
+      MP_CLIENT_SECRET: "secreto",
+      MP_WEBHOOK_SECRET: "clave-de-avisos",
     });
 
     const reporte = buildEnvReport();

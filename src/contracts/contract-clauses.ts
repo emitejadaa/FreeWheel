@@ -16,7 +16,7 @@
  * versión harían imposible saber cuál se aceptó.
  */
 
-export const CONTRACT_CLAUSES_VERSION = "2026-09-22.v1";
+export const CONTRACT_CLAUSES_VERSION = "2026-09-24.v2";
 
 /** Parámetros de la política que el texto menciona con números. */
 export interface ClausePolicy {
@@ -41,19 +41,22 @@ export function buildClauses(p: ClausePolicy): Clause[] {
         "El dueño da en alquiler a quien alquila el vehículo identificado en " +
         "este contrato, por el período indicado, a cambio del precio detallado. " +
         "FreeWheel es la plataforma que pone en contacto a las partes, verifica " +
-        "su identidad, administra el cobro y la liquidación por cuenta de ellas " +
-        "y media en los reclamos. FreeWheel no es propietaria del vehículo.",
+        "su identidad, gestiona el cobro a través de Mercado Pago y media en " +
+        "los reclamos. FreeWheel no es propietaria del vehículo ni recibe ni " +
+        "custodia el dinero que corresponde al dueño.",
     },
     {
       id: "precio",
       title: "Precio y forma de pago",
       text:
-        "El precio se paga en un único pago a través de la plataforma, antes " +
-        "del retiro del vehículo. El detalle de cada concepto (alquiler, seña " +
-        "incluida en el alquiler, cobertura, comisión de FreeWheel y lo que " +
-        "recibe el dueño) forma parte de este contrato. Al dueño se le " +
-        "transfiere su parte una vez cerrada la ventana de inspección " +
-        "posterior a la devolución.",
+        "El precio se paga en un único pago con Mercado Pago, antes del retiro " +
+        "del vehículo. El detalle de cada concepto (alquiler, seña incluida en " +
+        "el alquiler, cobertura, comisión de FreeWheel y lo que recibe el " +
+        "dueño) forma parte de este contrato. El pago se acredita directamente " +
+        "en la cuenta de Mercado Pago del dueño, que recibe el precio del " +
+        "alquiler menos la comisión de FreeWheel y los cargos de Mercado Pago; " +
+        "FreeWheel recibe su comisión y el concepto de cobertura. Los plazos " +
+        "en que el dinero queda disponible son los de Mercado Pago.",
     },
     {
       id: "sena",
@@ -82,12 +85,13 @@ export function buildClauses(p: ClausePolicy): Clause[] {
       id: "deposito",
       title: "Depósito en garantía",
       text:
-        "Antes del retiro se retiene en la tarjeta de quien alquila el monto " +
-        "del depósito indicado. No es un cobro: se libera al cerrarse la " +
-        "ventana de inspección sin reclamo, o se cobra total o parcialmente " +
-        "para cubrir un daño reclamado y aceptado o resuelto. La retención " +
-        "tiene la duración que permita el emisor de la tarjeta; vencida, el " +
-        "daño que se reclame se rige por la cláusula de reclamos.",
+        "Antes del retiro, quien alquila autoriza en su tarjeta una reserva " +
+        "de fondos por el monto del depósito indicado, a favor del dueño. No " +
+        "es un cobro: se libera al cerrarse la ventana de inspección sin " +
+        "reclamo, o se cobra total o parcialmente, a favor del dueño, para " +
+        "cubrir un daño reclamado y aceptado o resuelto. La reserva de fondos " +
+        "dura siete días desde que se autoriza; vencida, el daño que se " +
+        "reclame se rige por la cláusula de reclamos.",
     },
     {
       id: "entrega",

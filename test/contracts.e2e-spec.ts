@@ -3,6 +3,7 @@ import request from "supertest";
 import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { linkOwnerMercadoPago } from "./helpers/payments";
 import {
   AuthedUser,
   createListing,
@@ -50,6 +51,7 @@ describe("Contracts", () => {
         endDate: futureDate(8),
       })
       .expect(201);
+    await linkOwnerMercadoPago(app, owner);
     await http()
       .patch(`/bookings/${created.body.id}/accept`)
       .set("Authorization", auth(owner.token))

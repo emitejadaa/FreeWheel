@@ -1,19 +1,29 @@
 /**
- * Provider-agnostic payment boundary. Both the real Stripe provider and the
- * deterministic mock provider implement this so the orchestration in
- * PaymentsService never depends on a concrete payment processor.
+ * LA FRONTERA CON EL PROCESADOR DE PAGOS.
  *
- * All amounts are integer minor units (cents). Stripe is the reference model:
- * separate charges & transfers (the platform charges the renter and transfers
- * the owner payout on check-out), manual-capture holds for the security
- * deposit, and signed webhooks.
+ * El procesador de verdad es Mercado Pago, con el modelo de marketplace que
+ * Mercado Pago llama "split de pagos 1:1":
+ *
+ *   · cada dueño vincula SU cuenta de Mercado Pago con FreeWheel (OAuth);
+ *   · el cobro de una reserva se crea con el token del DUEÑO, así que la plata
+ *     entra directo a su cuenta;
+ *   · FreeWheel se queda con su parte como `application_fee`, que Mercado Pago
+ *     acredita en la cuenta de FreeWheel en el mismo cobro.
+ *
+ * Es el modelo que se eligió a propósito: FreeWheel nunca custodia plata de
+ * los dueños. Cobrar todo en una cuenta propia y transferirle al dueño después
+ * es, funcionalmente, custodiar fondos de terceros, que es justo lo que regula
+ * el régimen de PSP del BCRA (ver CONSULTAS-LEGALES.md §3).
+ *
+ * Todos los importes son enteros en unidades mínimas (centavos). La
+ * conversión a pesos con decimales, que es lo que pide la API de Mercado Pago,
+ * se hace adentro del provider y en ningún otro lado.
  *
  * ── Quién decide si un pago pasa ────────────────────────────────────────────
- * El procesador, siempre. Este backend no mira números de tarjeta —nunca los
- * recibe— ni tiene reglas propias sobre qué tarjeta vale: crea el intent, el
- * cliente paga contra Stripe, y Stripe dice si salió. Lo que este backend hace
- * con esa respuesta es registrarla entera, que es lo que después permite
- * responder un desconocimiento de cobro.
+ * El procesador, siempre. Este backend nunca recibe un número de tarjeta: el
+ * front lo tokeniza con el SDK de Mercado Pago y acá llega el token. Lo que
+ * este backend hace con la respuesta es registrarla entera, que es lo que
+ * después permite responder un desconocimiento de cobro.
  */
 
 export const PAYMENT_PROVIDER = Symbol("PAYMENT_PROVIDER");
@@ -24,145 +34,160 @@ export type PaymentRecordKindLike =
   | "BALANCE"
   | "DEPOSIT_HOLD";
 
-export interface CreateIntentInput {
+/**
+ * LA CUENTA QUE COBRA: la del dueño del auto.
+ *
+ * El access token viaja descifrado solo en memoria y solo hasta el provider.
+ * No se loguea, no se devuelve y no se guarda así en ningún lado.
+ */
+export interface CollectorCredentials {
+  /** El user_id de Mercado Pago del dueño. */
+  userId: string;
+  accessToken: string;
+}
+
+/**
+ * La tarjeta, tal como la deja el SDK de Mercado Pago del front: un token de
+ * un solo uso más lo que la persona eligió (cuotas, emisor). Nunca el número.
+ */
+export interface CardPaymentInput {
+  token: string;
+  paymentMethodId: string;
+  issuerId?: string | null;
+  installments: number;
+  payer: {
+    email: string;
+    identification?: { type: string; number: string } | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  };
+  /**
+   * El identificador del dispositivo que arma el SDK de Mercado Pago
+   * (MP_DEVICE_SESSION_ID). Mejora la aprobación: sin él, el antifraude de
+   * Mercado Pago rechaza más pagos legítimos.
+   */
+  deviceSessionId?: string | null;
+}
+
+export interface PaymentItem {
+  id: string;
+  title: string;
+  description?: string;
+  quantity: number;
+  unitPriceMinor: number;
+  categoryId?: string;
+}
+
+export interface CreatePaymentInput {
   bookingId: string;
   kind: PaymentRecordKindLike;
   amountMinor: number;
   currency: string;
-  customerId?: string | null;
-  transferGroup?: string | null;
+  /**
+   * Lo que se queda FreeWheel: comisión + cobertura en el cobro de la
+   * reserva, cero en el depósito (lo que se cobre de un depósito es del
+   * dueño, como indemnización).
+   */
+  applicationFeeMinor: number;
+  /** false = reserva de fondos: se autoriza y se captura después. */
+  capture: boolean;
+  card: CardPaymentInput;
+  collector: CollectorCredentials;
+  description: string;
+  externalReference: string;
+  notificationUrl?: string | null;
+  statementDescriptor?: string | null;
   metadata?: Record<string, string>;
-  idempotencyKey?: string;
+  items?: PaymentItem[];
   /**
-   * Guardar el medio de pago para usarlo después sin el cliente presente. El
-   * cobro único lo pide para poder autorizar el depósito cerca del retiro sin
-   * volver a pedirle la tarjeta a nadie.
+   * Clave de idempotencia. Un reintento con la MISMA clave devuelve el mismo
+   * pago en vez de cobrar otra vez.
    */
-  setupFutureUsage?: "off_session";
-  /** Un medio de pago ya guardado (pm_…) con el que operar. */
-  paymentMethodId?: string | null;
-  /** Operar sin el cliente presente (confirmar en el servidor). */
-  offSession?: boolean;
-  /**
-   * Dejar la tarjeta guardada en el cliente cuando el cobro salga bien, para
-   * que la próxima vez esté en la lista y no haya que escribirla de nuevo.
-   *
-   * No guarda ningún número acá: el procesador guarda la tarjeta contra el
-   * cliente y devuelve un identificador. Es `listSavedCards` quien después la
-   * encuentra.
-   *
-   * Es distinto de `setupFutureUsage`, que declara ante el banco PARA QUÉ se
-   * va a reusar. Uno es comodidad; el otro es el permiso.
-   */
-  saveCard?: boolean;
+  idempotencyKey: string;
 }
 
 /**
- * UNA TARJETA QUE EL PROCESADOR YA TIENE GUARDADA, para no volver a pedirla.
+ * Los estados de un pago, como los nombra Mercado Pago.
  *
- * Lo único que viaja de la tarjeta son las señas que sirven para reconocerla
- * —marca, últimos cuatro, vencimiento—. El número no existe de este lado.
- *
- * `id` es el identificador que le dio el procesador. Con él se confirma un
- * cobro sin pedir la tarjeta de nuevo, y solo sirve para cobros del MISMO
- * cliente: el procesador rechaza usarlo con otro.
+ *   · approved     → cobrado.
+ *   · authorized   → reserva de fondos vigente, sin capturar (el depósito).
+ *   · in_process   → en revisión (antifraude manual, emisor lento).
+ *   · pending      → esperando algo de la persona (3-D Secure, un medio offline).
+ *   · rejected     → rechazado; `statusDetail` dice por qué.
+ *   · cancelled    → cancelado (una reserva de fondos soltada o vencida).
+ *   · refunded     → devuelto entero.
+ *   · charged_back → la persona desconoció el cobro ante su banco.
+ *   · in_mediation → hay un reclamo abierto en Mercado Pago.
  */
-export interface SavedCard {
-  id: string;
-  brand: string | null;
-  last4: string | null;
-  expMonth: number | null;
-  expYear: number | null;
-}
-
-/**
- * LO QUE SE SABE DE UN COBRO, en un solo lugar.
- *
- * Los campos de tarjeta y de riesgo vienen vacíos hasta que alguien paga: un
- * intent recién creado no tiene tarjeta todavía. Se llenan cuando el
- * procesador avisa que el cobro se concretó (o que falló), y es ahí cuando se
- * guardan.
- *
- * Nada de esto es un número de tarjeta. Son las señas que el procesador
- * devuelve —marca, últimos cuatro, país, y el identificador estable que le da
- * a esa tarjeta— y que permiten contestar "¿quién pagó esto?" sin que el
- * número pase nunca por este servidor.
- */
-export interface PaymentIntentResult {
-  id: string;
-  clientSecret: string | null;
-  status: string;
-  amountMinor: number;
-  currency: string;
-  /** El cargo concreto detrás del intent, cuando ya existe. */
-  chargeId?: string | null;
-  /** Cuánto se cobró de verdad (una captura parcial cobra menos). */
-  amountReceivedMinor?: number | null;
-  /** Cuánto queda retenido y sin cobrar, en una retención. */
-  amountCapturableMinor?: number | null;
-  card?: CardDetails | null;
-  risk?: RiskDetails | null;
-  failure?: FailureDetails | null;
-  /** El medio de pago con que se pagó, para reutilizarlo (depósito). */
-  paymentMethodId?: string | null;
-  /**
-   * Hasta cuándo se puede capturar una retención. Pasado ese momento el
-   * emisor la suelta sola y no hay de dónde cobrar un daño.
-   */
-  captureBefore?: Date | null;
-}
+export type ProcessorPaymentStatus =
+  | "approved"
+  | "authorized"
+  | "in_process"
+  | "pending"
+  | "rejected"
+  | "cancelled"
+  | "refunded"
+  | "charged_back"
+  | "in_mediation";
 
 /** Las señas de la tarjeta que pagó. Nunca el número. */
 export interface CardDetails {
   brand: string | null;
   last4: string | null;
   /**
-   * El identificador estable que el procesador le da a UNA tarjeta: la misma
-   * tarjeta en dos cuentas distintas tiene el mismo fingerprint. Es lo que
-   * permite ver que cinco cuentas nuevas pagan todas con el mismo plástico,
-   * que es la forma que tiene el fraude de verse desde acá.
+   * Un identificador estable de la tarjeta. Mercado Pago no da uno entre
+   * cuentas, así que se deriva de datos que no son secretos (los primeros
+   * seis, los últimos cuatro, el vencimiento y el documento del titular),
+   * hasheados. Sirve para lo mismo que el fingerprint de Stripe: ver cinco
+   * cuentas nuevas pagando todas con el mismo plástico.
    */
   fingerprint: string | null;
   country: string | null;
-  /** Resultado de las verificaciones: "pass", "fail", "unavailable". */
-  cvcCheck?: string | null;
-  /** Si el pago pasó por autenticación fuerte (3-D Secure). */
-  threeDSecure?: boolean | null;
 }
 
-/** Lo que el procesador opina del riesgo de este cobro. */
+/** Lo que el procesador opina del riesgo. Mercado Pago no da un puntaje. */
 export interface RiskDetails {
-  /** "normal", "elevated", "highest", "not_assessed". */
   level: string | null;
-  /** 0-100. Más alto, más riesgoso. */
   score: number | null;
 }
 
 /** Por qué no se pudo cobrar, tal como lo dijo el procesador. */
 export interface FailureDetails {
-  /** "card_declined", "insufficient_funds", "expired_card"... */
+  /** El status_detail de Mercado Pago: "cc_rejected_insufficient_amount"... */
   code: string | null;
   message: string | null;
-  /** El motivo fino del rechazo, cuando el emisor lo da. */
-  declineCode?: string | null;
 }
 
-export interface CaptureHoldInput {
-  paymentIntentId: string;
-  amountMinor?: number;
-  idempotencyKey?: string;
-}
-
-export interface ReleaseHoldInput {
-  paymentIntentId: string;
-  idempotencyKey?: string;
-}
-
-export interface RefundInput {
-  paymentIntentId: string;
-  amountMinor?: number;
-  reason?: string;
-  idempotencyKey?: string;
+/** Lo que se sabe de un pago, en un solo lugar. */
+export interface PaymentResult {
+  id: string;
+  status: ProcessorPaymentStatus;
+  statusDetail: string | null;
+  amountMinor: number;
+  /** Lo que efectivamente se cobró (una captura parcial cobra menos). */
+  capturedMinor: number | null;
+  /** Lo devuelto hasta ahora. */
+  refundedMinor: number;
+  currency: string;
+  externalReference: string | null;
+  /**
+   * El tramo (CHECKOUT, DEPOSIT_HOLD…), tal como se mandó en la metadata del
+   * pago. Hace falta para reconocer un cobro que se hizo pero cuya respuesta
+   * nunca llegó (un corte de red en el peor momento).
+   */
+  kind: string | null;
+  /** La cuenta que cobró. */
+  collectorId: string | null;
+  liveMode: boolean;
+  card: CardDetails | null;
+  risk: RiskDetails | null;
+  failure: FailureDetails | null;
+  /**
+   * Hasta cuándo se puede capturar una reserva de fondos. Pasado ese momento
+   * Mercado Pago la cancela sola y no hay de dónde cobrar un daño.
+   */
+  captureBefore: Date | null;
+  approvedAt: Date | null;
 }
 
 export interface RefundResult {
@@ -171,107 +196,106 @@ export interface RefundResult {
   status: string;
 }
 
-export interface TransferInput {
-  amountMinor: number;
-  currency: string;
-  destination: string;
-  transferGroup?: string | null;
-  metadata?: Record<string, string>;
-  idempotencyKey?: string;
-}
-
-export interface TransferResult {
+export interface ChargebackResult {
   id: string;
+  paymentIds: string[];
   amountMinor: number;
+  reason: string | null;
+  status: string | null;
 }
 
-export interface EnsureCustomerInput {
+/** Lo que devuelve el OAuth de Mercado Pago al vincular una cuenta. */
+export interface OAuthCredentials {
   userId: string;
-  email: string;
-  name?: string | null;
+  accessToken: string;
+  refreshToken: string;
+  publicKey: string;
+  expiresAt: Date;
+  liveMode: boolean;
 }
 
-export interface CreateConnectedAccountInput {
-  userId: string;
-  email: string;
-  refreshUrl?: string;
-  returnUrl?: string;
-}
-
-export interface ConnectedAccountResult {
-  accountId: string;
-  onboardingUrl: string | null;
-}
-
-export interface ConnectedAccountStatus {
-  accountId: string;
-  chargesEnabled: boolean;
-  payoutsEnabled: boolean;
-  detailsSubmitted: boolean;
-}
-
-export interface WebhookEvent {
-  id: string;
-  type: string;
-  data: { object: Record<string, unknown> };
-  /**
-   * Si el evento viene del modo real o del de prueba.
-   *
-   * Se mira: un evento `livemode: true` llegando a un deploy configurado en
-   * test significa que algo está muy mal (claves cruzadas, un webhook apuntado
-   * al proyecto equivocado) y procesarlo movería plata de verdad sobre
-   * reservas de mentira.
-   */
-  livemode: boolean;
+/**
+ * Un aviso del procesador, ya leído. Es SOLO UNA PISTA: dice qué recurso
+ * cambió, no cómo quedó. El estado verdadero se consulta siempre a la API
+ * con el token del dueño, así que un aviso falso no puede inventar un cobro.
+ */
+export interface ProcessorNotification {
+  /** "payment", "chargebacks", "mp-connect"... */
+  topic: string;
+  action: string | null;
+  dataId: string | null;
+  notificationId: string | null;
+  /** La cuenta a la que se refiere el aviso (el dueño). */
+  collectorUserId: string | null;
+  liveMode: boolean | null;
 }
 
 export interface PaymentProvider {
   readonly name: string;
 
-  /** Immediate-capture intent (sena / balance). */
-  createPaymentIntent(input: CreateIntentInput): Promise<PaymentIntentResult>;
+  /** true si las credenciales de la plataforma son de producción. */
+  readonly liveMode: boolean;
 
-  /** Manual-capture intent used as the refundable security deposit hold. */
-  createDepositHold(input: CreateIntentInput): Promise<PaymentIntentResult>;
+  /** Crea un cobro (o una reserva de fondos, con `capture: false`). */
+  createPayment(input: CreatePaymentInput): Promise<PaymentResult>;
 
-  /** Capture all or part of a previously authorized hold. */
-  captureHold(input: CaptureHoldInput): Promise<PaymentIntentResult>;
+  getPayment(
+    collector: CollectorCredentials,
+    paymentId: string,
+  ): Promise<PaymentResult>;
 
-  /** Release (cancel) an uncaptured hold. */
-  releaseHold(input: ReleaseHoldInput): Promise<PaymentIntentResult>;
+  /** Captura toda o parte de una reserva de fondos. */
+  capturePayment(
+    collector: CollectorCredentials,
+    paymentId: string,
+    amountMinor: number,
+    idempotencyKey: string,
+  ): Promise<PaymentResult>;
 
-  /**
-   * El estado completo de un intent, con tarjeta y riesgo ya resueltos.
-   *
-   * Hace falta porque el webhook NO trae esos datos: `payment_intent.succeeded`
-   * manda el id del cargo, no el cargo. Sin esta llamada el registro antifraude
-   * quedaría vacío justo en los cobros que se concretaron, que son los únicos
-   * que alguien puede llegar a desconocer.
-   */
-  retrieveIntent(paymentIntentId: string): Promise<PaymentIntentResult>;
+  /** Suelta una reserva de fondos (o cancela un pago pendiente). */
+  cancelPayment(
+    collector: CollectorCredentials,
+    paymentId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentResult>;
 
-  refund(input: RefundInput): Promise<RefundResult>;
+  /** Devuelve todo (`amountMinor` null) o una parte de un cobro. */
+  refundPayment(
+    collector: CollectorCredentials,
+    paymentId: string,
+    amountMinor: number | null,
+    idempotencyKey: string,
+  ): Promise<RefundResult>;
 
-  /** Transfer the owner payout to their connected account (separate transfers). */
-  transferToOwner(input: TransferInput): Promise<TransferResult>;
+  getChargeback(
+    collector: CollectorCredentials,
+    chargebackId: string,
+  ): Promise<ChargebackResult>;
 
-  ensureCustomer(input: EnsureCustomerInput): Promise<string>;
+  /** La URL a la que se manda al dueño para vincular su cuenta. */
+  authorizationUrl(input: {
+    state: string;
+    redirectUri: string;
+    codeChallenge?: string | null;
+  }): string;
 
-  /**
-   * Las tarjetas que este cliente ya dejó guardadas, de la más nueva a la más
-   * vieja. Lista vacía si no hay ninguna, que es el caso del primer cobro.
-   */
-  listSavedCards(customerId: string): Promise<SavedCard[]>;
+  exchangeAuthorizationCode(input: {
+    code: string;
+    redirectUri: string;
+    codeVerifier?: string | null;
+  }): Promise<OAuthCredentials>;
 
-  createConnectedAccount(
-    input: CreateConnectedAccountInput,
-  ): Promise<ConnectedAccountResult>;
+  refreshCredentials(refreshToken: string): Promise<OAuthCredentials>;
 
-  getConnectedAccountStatus(accountId: string): Promise<ConnectedAccountStatus>;
+  /** Verifica la firma de un aviso. Tira si no es válida. */
+  verifyNotificationSignature(input: {
+    signatureHeader?: string | null;
+    requestId?: string | null;
+    dataId?: string | null;
+  }): void;
 
-  /** Verifies the signature and returns the parsed event. Throws if invalid. */
-  constructWebhookEvent(
-    rawBody: Buffer,
-    signature: string | undefined,
-  ): WebhookEvent;
+  parseNotification(input: {
+    body: unknown;
+    query: Record<string, unknown>;
+  }): ProcessorNotification;
 }

@@ -102,11 +102,26 @@ describe("PricingService", () => {
       days: 1,
     });
 
-    expect(pricing.currency).toBe("usd");
+    // Pesos: Mercado Pago Argentina solo cobra en pesos, así que el defecto
+    // tiene que ser una moneda que se pueda cobrar.
+    expect(pricing.currency).toBe("ars");
     expect(pricing.commission).toBe(10);
     expect(pricing.insurance).toBe(10);
     expect(pricing.sena).toBe(30); // 30% del alquiler (100)
     expect(pricing.deposit).toBe(200);
+  });
+
+  it("toma DEPOSIT_DEFAULT antes que el nombre viejo en dólares", () => {
+    const valores: Record<string, string> = {
+      DEPOSIT_DEFAULT: "150000",
+      DEPOSIT_DEFAULT_USD: "200",
+    };
+    const config = { get: (clave: string) => valores[clave] };
+    const pricing = new PricingService(config as never).computeBooking({
+      pricePerDay: 100,
+      days: 1,
+    });
+    expect(pricing.deposit).toBe(150000);
   });
 
   it("rejects non-positive day counts", () => {

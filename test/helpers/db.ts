@@ -13,7 +13,7 @@ export async function cleanDatabase(prisma: PrismaService): Promise<void> {
   await prisma.conversation.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.mediaAsset.deleteMany();
-  await prisma.stripeEvent.deleteMany();
+  await prisma.processorEvent.deleteMany();
   await prisma.rateLimitBucket.deleteMany();
   // La aceptación apunta al contrato y el reclamo a la reserva: los dos van
   // antes que aquello que describen.

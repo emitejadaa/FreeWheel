@@ -32,6 +32,19 @@ export const Accounts = {
   insurancePayable: () => "insurance:payable",
   /** La plata que entra y sale por el procesador de pagos. */
   processorClearing: () => "processor:clearing",
+  /**
+   * CUENTAS DE ORDEN DEL SPLIT DE PAGOS.
+   *
+   * Con Mercado Pago, la parte del dueño entra DIRECTO a su cuenta: nunca
+   * pasa por FreeWheel, así que no es plata de FreeWheel y no puede estar en
+   * sus bolsillos. Pero la reserva tiene que poder explicarse entera —cuánto
+   * se cobró y a dónde fue cada peso—, y para eso están estas dos: anotan lo
+   * que el dueño recibió por fuera, sin mezclarlo con lo propio.
+   *
+   * Sumadas dan cero siempre. No representan un saldo a cobrar ni a pagar.
+   */
+  splitOwnerDirect: (ownerId: string) => `split:owner:${ownerId}:direct`,
+  splitCollected: () => "split:collected",
 } as const;
 
 /** El dueño de una cuenta, si es de una persona. */

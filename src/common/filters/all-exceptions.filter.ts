@@ -20,7 +20,7 @@ import type { Request, Response } from "express";
  * NADA sobre lo que trabajar: ni si era la base, ni una columna que falta, ni
  * un error del código.
  *
- * Es el mismo motivo por el que existen env-report.ts y stripe-error.filter.ts,
+ * Es el mismo motivo por el que existen env-report.ts y processor-error.filter.ts,
  * y está dicho en sus encabezados.
  *
  * ── QUÉ SE DICE Y QUÉ NO ──────────────────────────────────────────────────

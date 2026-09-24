@@ -10,7 +10,11 @@ import {
   futureDate,
   registerUser,
 } from "./helpers/factory";
-import { payBookingFully } from "./helpers/payments";
+import {
+  authorizeDeposit,
+  linkOwnerMercadoPago,
+  payBookingFully,
+} from "./helpers/payments";
 import { EmailService } from "../src/email/email.service";
 import type { FakeEmailService } from "./helpers/email.fake";
 
@@ -42,6 +46,9 @@ describe("Bookings", () => {
     const owner = await registerUser(app);
     const vehicle = await createVehicle(app, owner.token);
     const listing = await createListing(app, owner.token, vehicle.id);
+    // Con Mercado Pago el cobro se hace en la cuenta del dueño: sin vincularla
+    // no puede aceptar reservas (409 OWNER_PAYMENTS_NOT_LINKED).
+    await linkOwnerMercadoPago(app, owner);
     const renter = await registerUser(app);
     return { owner, renter, listingId: listing.id };
   }
@@ -70,6 +77,7 @@ describe("Bookings", () => {
       .expect(200);
 
     await payBookingFully(app, id, renter.token);
+    await authorizeDeposit(app, id, renter.token);
     await http()
       .patch(`/bookings/${id}/ready-for-pickup`)
       .set("Authorization", auth(owner.token))
@@ -130,6 +138,7 @@ describe("Bookings", () => {
     const returnToken = accepted.body.returnQrToken;
 
     await payBookingFully(app, id, renter.token);
+    await authorizeDeposit(app, id, renter.token);
 
     const ready = await http()
       .patch(`/bookings/${id}/ready-for-pickup`)
@@ -309,6 +318,7 @@ describe("Bookings", () => {
       .set("Authorization", auth(owner.token))
       .expect(200);
     await payBookingFully(app, id, renter.token);
+    await authorizeDeposit(app, id, renter.token);
     await http()
       .patch(`/bookings/${id}/ready-for-pickup`)
       .set("Authorization", auth(owner.token))
@@ -347,6 +357,7 @@ describe("Bookings", () => {
       .set("Authorization", auth(owner.token))
       .expect(200);
     await payBookingFully(app, id, renter.token);
+    await authorizeDeposit(app, id, renter.token);
     const cancelled = await http()
       .patch(`/bookings/${id}/cancel`)
       .set("Authorization", auth(renter.token))

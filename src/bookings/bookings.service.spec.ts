@@ -74,6 +74,7 @@ describe("BookingsService", () => {
     calculateDays: jest.Mock;
   };
   let payments: {
+    assertOwnerCanCollect: jest.Mock;
     assertReadyForPickup: jest.Mock;
     authorizeDepositForPickup: jest.Mock;
     cancelAndSettle: jest.Mock;
@@ -129,6 +130,9 @@ describe("BookingsService", () => {
       calculateDays: jest.fn().mockReturnValue(2),
     };
     payments = {
+      // El dueño de las pruebas tiene Mercado Pago vinculado: lo que se
+      // prueba acá es la reserva, no la vinculación.
+      assertOwnerCanCollect: jest.fn().mockResolvedValue(undefined),
       assertReadyForPickup: jest.fn().mockResolvedValue(undefined),
       authorizeDepositForPickup: jest
         .fn()

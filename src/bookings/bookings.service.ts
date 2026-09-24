@@ -209,6 +209,13 @@ export class BookingsService {
       throw new BadRequestException("Only requested bookings can be accepted");
     }
 
+    // Aceptar es comprometerse a cobrar por esta reserva, y con Mercado Pago
+    // el cobro se hace EN LA CUENTA DEL DUEÑO. Sin la cuenta vinculada, quien
+    // alquila no tendría cómo pagar: se frena acá, que es donde el dueño lo
+    // puede arreglar en el momento, y no en la pantalla de pago de la otra
+    // persona.
+    await this.payments.assertOwnerCanCollect(ownerId);
+
     await this.availability.assertListingIsBookable(
       booking.listingId,
       booking.startDate,
@@ -805,7 +812,7 @@ export class BookingsService {
    * El código corto de un error, si lo trae.
    *
    * Las excepciones de este backend llevan uno adentro del cuerpo
-   * (PAYMENT_DISPUTED, PAYMENTS_NOT_CONFIGURED); las de Stripe lo llevan en
+   * (PAYMENT_DISPUTED, PAYMENTS_NOT_CONFIGURED); las del procesador lo llevan en
    * `code`. Sirve para que el front pueda distinguir "hay una disputa abierta"
    * de "falló la transferencia" sin leer un mensaje en castellano.
    */
@@ -915,23 +922,29 @@ export function publicBooking<T extends object>(
   | "pickupTokenPreview"
   | "returnTokenPreview"
   | "savedPaymentMethodId"
+  | "checkoutPaymentId"
+  | "depositPaymentId"
   | "checkoutPaymentIntentId"
   | "depositPaymentIntentId"
   | "transferGroup"
   | "providerPaymentId"
 > {
+  // Los nombres viejos (…PaymentIntentId) siguen en la lista por si algo
+  // arma una reserva a mano con ellos: sacar de más no rompe nada.
   const {
     pickupTokenHash: _a,
     returnTokenHash: _b,
     pickupTokenPreview: _c,
     returnTokenPreview: _d,
     savedPaymentMethodId: _e,
-    checkoutPaymentIntentId: _f,
-    depositPaymentIntentId: _g,
+    checkoutPaymentId: _f,
+    depositPaymentId: _g,
+    checkoutPaymentIntentId: _f2,
+    depositPaymentIntentId: _g2,
     transferGroup: _h,
     providerPaymentId: _i,
     ...visible
   } = booking as Record<string, unknown>;
-  void [_a, _b, _c, _d, _e, _f, _g, _h, _i];
+  void [_a, _b, _c, _d, _e, _f, _g, _f2, _g2, _h, _i];
   return visible as never;
 }
