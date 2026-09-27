@@ -40,9 +40,29 @@ export function configureApp(app: INestApplication): void {
 }
 
 async function bootstrapNest(expressApp: Express): Promise<INestApplication> {
+  /*
+    abortOnError: false NO ES UN DETALLE.
+
+    Por defecto, cuando un proveedor falla al construirse (una variable de
+    entorno que falta, la base que no contesta) Nest imprime el error y llama
+    a process.abort(). En un servidor de toda la vida se reinicia y listo. Acá
+    el proceso ES la función de Vercel: al abortarse, la función muere sin
+    contestar nada y Vercel devuelve su propia página de error,
+
+        500: INTERNAL_SERVER_ERROR · FUNCTION_INVOCATION_FAILED
+
+    que no dice qué se rompió. Peor todavía: un proceso muerto tampoco manda
+    cabeceras CORS, así que el navegador lo informa como un problema de CORS y
+    el error verdadero queda tapado dos veces.
+
+    Con abortOnError en false, create() rechaza la promesa en vez de matar el
+    proceso. El error viaja por el .catch de más abajo hasta el manejador del
+    final, y el navegador recibe un 503 en JSON con el motivo escrito.
+  */
   const app = await NestFactory.create(
     AppModule,
     new ExpressAdapter(expressApp),
+    { abortOnError: false },
   );
 
   // CORS NO se habilita acá: lo resuelve createServer() antes de que esto
