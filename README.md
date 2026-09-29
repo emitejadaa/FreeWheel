@@ -416,7 +416,7 @@ inmutables una vez verificada.
 
 ### La lectura automática vive aparte
 
-En [`docverify-api/`](docverify-api/README.md): un servicio de Python
+En [`docverify-api/`](docverify-api/): un servicio de Python
 independiente, con su propio deploy y **sin ninguna conexión con este
 backend** — no comparten base, ni configuración, ni llamadas. Encuadra el
 documento, lo endereza y lo lee por todos los medios que tenga, con un endpoint

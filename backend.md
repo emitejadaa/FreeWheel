@@ -1380,7 +1380,7 @@ Un analisis completo tarda ~10 segundos las dos caras en una maquina comun.
 Hostearlo salio mal dos veces y por motivos distintos, los dos medidos: en los
 planes chicos de Render (512 MB) el proceso muere a mitad del analisis, y la
 cuenta de Hugging Face tiene cupo cero para Spaces de CPU. Se hostea como un
-proceso de Python comun en un servidor propio: ver `docverify-api/README.md`.
+proceso de Python comun en un servidor propio.
 
 CUIDADO con una cosa: un backend en Vercel NO puede alcanzar una API en
 127.0.0.1 ni en 192.168.x.y. Son direcciones privadas y no hay ruta desde
