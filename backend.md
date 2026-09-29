@@ -14,7 +14,7 @@ El backend esta pensado para evolucionar hacia produccion con:
 - JWT para autenticacion de API.
 - Google OAuth opcional.
 - Gmail SMTP opcional para emails transaccionales.
-- Provider mock de pagos reemplazable por Stripe, Mercado Pago u otro proveedor real.
+- Pagos con Stripe en modo de prueba (PaymentIntents + Connect), y un provider mock para los tests.
 - Registro de metadata de archivos externos, compatible con assets subidos fuera del backend.
 
 ## 2. Principios De Diseno
@@ -1922,7 +1922,7 @@ Baja prioridad:
 
 ### Fase 2 - Pagos Reales
 
-- Elegir provider: Stripe, Mercado Pago u otro.
+- Provider: Stripe (modo de prueba).
 - Implementar provider concreto bajo la interfaz actual.
 - Webhooks firmados.
 - Idempotencia por provider event id.

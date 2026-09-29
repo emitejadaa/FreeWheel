@@ -42,8 +42,6 @@ const ALL_PRESENT: Row[] = [
   { table_name: "VehicleVerification", column_name: "id" },
   { table_name: "RateLimitBucket", column_name: "id" },
   { table_name: "User", column_name: "loginLockedUntil" },
-  { table_name: "User", column_name: "mpUserId" },
-  { table_name: "PaymentRecord", column_name: "collectorId" },
 ];
 
 describe("HealthService.checkDatabase", () => {

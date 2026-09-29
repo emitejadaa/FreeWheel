@@ -3,7 +3,6 @@ import request from "supertest";
 import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
-import { linkOwnerMercadoPago } from "./helpers/payments";
 import {
   createAdmin,
   createListing,
@@ -231,7 +230,6 @@ describe("Admin", () => {
           endDate: futureDate(8),
         })
         .expect(201);
-      await linkOwnerMercadoPago(app, owner);
       await http()
         .patch(`/bookings/${booking.body.id}/accept`)
         .set("Authorization", auth(owner.token))
@@ -546,7 +544,6 @@ describe("Admin", () => {
       // Aceptar la reserva crea el contrato, que referencia a la reserva con
       // Restrict: es la fila que hacía fallar el borrado con un error de clave
       // foránea antes de que se la borrara en orden.
-      await linkOwnerMercadoPago(app, owner);
       await http()
         .patch(`/bookings/${booking.body.id}/accept`)
         .set("Authorization", auth(owner.token))

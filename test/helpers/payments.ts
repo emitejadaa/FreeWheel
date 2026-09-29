@@ -1,108 +1,81 @@
 import type { INestApplication } from "@nestjs/common";
+import Stripe from "stripe";
 import request from "supertest";
-import { signMercadoPagoNotification } from "../../src/payments/providers/mercadopago/mercadopago.shared";
-import { PAYMENT_PROVIDER } from "../../src/payments/providers/payment-provider.interface";
-import type { MockPaymentsProvider } from "../../src/payments/providers/mock-payments.provider";
 
 const WEBHOOK_SECRET =
-  process.env.MP_WEBHOOK_SECRET ?? "mp_webhook_secret_for_tests";
+  process.env.STRIPE_WEBHOOK_SECRET ?? "whsec_dummy_for_tests";
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "sk_test_dummy");
 
-let seq = 0;
+let evtSeq = 0;
 
-/** El provider de pruebas, para cambiar cosas "del lado de Mercado Pago". */
-export function mercadoPago(app: INestApplication): MockPaymentsProvider {
-  return app.get(PAYMENT_PROVIDER);
+/** Signs a Stripe event payload exactly like Stripe does (pure crypto). */
+export function signWebhook(event: Record<string, unknown>): {
+  payload: string;
+  signature: string;
+} {
+  const payload = JSON.stringify(event);
+  const signature = stripe.webhooks.generateTestHeaderString({
+    payload,
+    secret: WEBHOOK_SECRET,
+  });
+  return { payload, signature };
 }
 
-/**
- * LA TARJETA, COMO LA ARMA EL FORMULARIO DE MERCADO PAGO.
- *
- * El resultado lo decide el "titular", igual que en el sandbox: APRO se
- * aprueba, FUND no tiene fondos, CONT queda en revisión, etc. (ver
- * MockPaymentsProvider). Cada llamada arma un token nuevo, como el formulario.
- */
-export function tarjeta(titular = "APRO", extra: Record<string, unknown> = {}) {
-  seq += 1;
-  return {
-    token: `tok_${titular}_${Date.now().toString(36)}${seq}`,
-    payment_method_id: "visa",
-    issuer_id: "310",
-    installments: 1,
-    transaction_amount: 1, // el Brick lo manda; el servidor lo ignora
-    payer: {
-      email: "comprador@test.com",
-      identification: { type: "DNI", number: "12345678" },
-    },
-    ...extra,
-  };
-}
-
-/**
- * Manda un aviso firmado como lo firma Mercado Pago. `firma` permite mandar
- * uno con una firma mala.
- */
-export function sendNotification(
+/** Posts a signed webhook to the app. Returns the supertest Test (chainable). */
+export function sendWebhook(
   app: INestApplication,
-  topic: string,
-  dataId: string,
+  type: string,
+  object: Record<string, unknown>,
   opts: {
-    action?: string;
-    userId?: string | null;
-    liveMode?: boolean;
-    notificationId?: string;
-    firma?: string;
+    id?: string;
+    signature?: string;
+    payload?: string;
+    /** Para probar que un evento del modo REAL se descarta acá. */
+    livemode?: boolean;
   } = {},
 ) {
-  seq += 1;
-  const requestId = `req-${Date.now()}-${seq}`;
-  const firma =
-    opts.firma ??
-    signMercadoPagoNotification({
-      secret: WEBHOOK_SECRET,
-      dataId,
-      requestId,
-    });
+  evtSeq += 1;
+  const event = {
+    id: opts.id ?? `evt_test_${Date.now()}_${evtSeq}`,
+    type,
+    data: { object },
+    livemode: opts.livemode ?? false,
+  };
+  const signed = signWebhook(event);
+  const payload = opts.payload ?? signed.payload;
+  const signature = opts.signature ?? signed.signature;
   return request(app.getHttpServer())
-    .post(
-      `/payments/mercadopago/webhook?data.id=${encodeURIComponent(dataId)}&type=${topic}`,
-    )
-    .set("x-signature", firma)
-    .set("x-request-id", requestId)
-    .send({
-      id: opts.notificationId ?? `${Date.now()}${seq}`,
-      type: topic,
-      action: opts.action ?? `${topic}.updated`,
-      data: { id: dataId },
-      user_id: opts.userId ?? undefined,
-      live_mode: opts.liveMode ?? false,
-    });
+    .post("/payments/stripe/webhook")
+    .set("Stripe-Signature", signature)
+    .set("Content-Type", "application/json")
+    .send(payload);
 }
 
-/**
- * VINCULA LA CUENTA DE MERCADO PAGO DE UN DUEÑO, por el camino de verdad:
- * pide la URL de vinculación, saca el `state` y vuelve por el callback con un
- * código, como hace Mercado Pago. Devuelve el user_id de Mercado Pago.
- */
-export async function linkOwnerMercadoPago(
+type IntentKind = "checkout" | "sena" | "balance" | "deposit";
+
+const PATHS: Record<IntentKind, string> = {
+  checkout: "checkout",
+  sena: "sena-intent",
+  balance: "balance-intent",
+  deposit: "deposit-hold",
+};
+
+export async function createIntent(
   app: INestApplication,
-  owner: { id: string; token: string },
-): Promise<string> {
-  const inicio = await request(app.getHttpServer())
-    .post("/payments/connect/onboarding")
-    .set("Authorization", `Bearer ${owner.token}`)
+  kind: IntentKind,
+  bookingId: string,
+  token: string,
+): Promise<{
+  paymentIntentId: string;
+  clientSecret: string | null;
+  amountMinor: number;
+  currency: string;
+}> {
+  const res = await request(app.getHttpServer())
+    .post(`/payments/bookings/${bookingId}/${PATHS[kind]}`)
+    .set("Authorization", `Bearer ${token}`)
     .expect(201);
-  const state = new URL(inicio.body.onboardingUrl as string).searchParams.get(
-    "state",
-  );
-  const code = `codigo${owner.id.replace(/-/g, "").slice(0, 16)}`;
-  const vuelta = await request(app.getHttpServer())
-    .get("/payments/mercadopago/oauth/callback")
-    .query({ code, state })
-    .expect(302);
-  if (!String(vuelta.headers.location).includes("status=ok")) {
-    throw new Error(`La vinculación falló: ${vuelta.headers.location}`);
-  }
-  return `mp_user_${code}`;
+  return res.body;
 }
 
 /** Quien alquila firma el contrato. Sin esto, el cobro se niega con 409. */
@@ -117,61 +90,31 @@ export async function acceptContract(
     .expect(201);
 }
 
-/** Paga la reserva con una tarjeta (por omisión, una que se aprueba). */
-export async function checkout(
-  app: INestApplication,
-  bookingId: string,
-  token: string,
-  titular = "APRO",
-) {
-  const res = await request(app.getHttpServer())
-    .post(`/payments/bookings/${bookingId}/checkout`)
-    .set("Authorization", `Bearer ${token}`)
-    .send(tarjeta(titular))
-    .expect(201);
-  return res.body as {
-    paymentId: string;
-    status: string;
-    statusDetail: string | null;
-    approved: boolean;
-    message: string | null;
-    bookingPaymentStatus: string;
-  };
-}
-
 /**
- * DEJA LA RESERVA PAGA, como la deja una persona en el front: firma el
- * contrato y paga con una tarjeta que se aprueba. Con Mercado Pago el
- * resultado llega en la misma respuesta: no hace falta esperar un aviso.
+ * DEJA LA RESERVA PAGA, como la deja una persona en el front.
+ *
+ * Son tres pasos y ninguno sobra:
+ *   1. firmar el contrato (el cobro se niega si no está firmado);
+ *   2. crear el cobro único —alquiler + cobertura, todo junto—;
+ *   3. avisar que Stripe lo confirmó, que es lo que de verdad marca la
+ *      reserva como pagada. Sin el webhook, crear el intent no cobró nada.
+ *
+ * El depósito en garantía NO se pide acá: se autoriza solo, sin el cliente
+ * presente, cuando el dueño marca el auto listo para entregar, usando la
+ * tarjeta que quedó guardada en el paso 2.
  */
 export async function payBookingFully(
   app: INestApplication,
   bookingId: string,
   token: string,
-): Promise<{ checkout: { paymentId: string } }> {
+): Promise<{ checkout: { paymentIntentId: string } }> {
   await acceptContract(app, bookingId, token);
-  const pago = await checkout(app, bookingId, token);
-  if (!pago.approved) {
-    throw new Error(`El pago de prueba no se aprobó: ${pago.statusDetail}`);
-  }
-  return { checkout: pago };
-}
 
-/**
- * Autoriza el depósito en garantía (una reserva de fondos). Las pruebas lo
- * hacen sobre reservas que empiezan pronto, dentro de la ventana en que se
- * habilita.
- */
-export async function authorizeDeposit(
-  app: INestApplication,
-  bookingId: string,
-  token: string,
-  titular = "APRO",
-) {
-  const res = await request(app.getHttpServer())
-    .post(`/payments/bookings/${bookingId}/deposit-hold`)
-    .set("Authorization", `Bearer ${token}`)
-    .send(tarjeta(titular))
-    .expect(201);
-  return res.body as { paymentId: string; status: string; approved: boolean };
+  const checkout = await createIntent(app, "checkout", bookingId, token);
+  await sendWebhook(app, "payment_intent.succeeded", {
+    id: checkout.paymentIntentId,
+    latest_charge: "ch_test_checkout",
+  }).expect(201);
+
+  return { checkout };
 }

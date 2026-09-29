@@ -12,6 +12,12 @@ const tsTransform = {
 /** @type {import('jest').Config} */
 module.exports = {
   maxWorkers: 1,
+  // Va acá y no solo en cada proyecto: `testTimeout` es una opción global y
+  // Jest la ignora adentro de `projects`. Con eso, los e2e largos (una reserva
+  // entera, del pago a la liquidación) cortaban a los 5 s por defecto y el
+  // test que venía atrás fallaba borrando usuarios que el anterior seguía
+  // usando.
+  testTimeout: 30000,
   projects: [
     {
       displayName: "unit",

@@ -2,18 +2,15 @@ import "dotenv/config";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import Stripe from "stripe";
 
-// El recorrido de pagos corre contra el provider de pruebas (PAYMENTS_PROVIDER=mock),
-// que se comporta como Mercado Pago: el resultado lo decide el "titular" que
-// viaja en el token de la tarjeta (tok_APRO_… se aprueba).
-function tarjetaDePrueba() {
-  return {
-    token: `tok_APRO_func${Date.now().toString(36)}`,
-    payment_method_id: "visa",
-    installments: 1,
-    payer: { email: "comprador@test.com", identification: { type: "DNI", number: "12345678" } },
-  };
-}
+// Used only to SIGN test webhooks (pure crypto, no network). The target server
+// must share STRIPE_WEBHOOK_SECRET (e.g. local dev with PAYMENTS_PROVIDER=mock).
+const STRIPE_WEBHOOK_SECRET =
+  process.env.STRIPE_WEBHOOK_SECRET ?? "whsec_dummy_for_tests";
+const stripeForSigning = new Stripe(
+  process.env.STRIPE_SECRET_KEY ?? "sk_test_dummy",
+);
 
 type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE" | "OPTIONS";
 type ResultStatus = "PASS" | "FAIL" | "SKIP";
@@ -675,11 +672,10 @@ async function runBookingFlow(
     "POST /auth/register",
     "POST /bookings",
     "PATCH /bookings/:id/accept",
-    "POST /payments/connect/onboarding",
-    "GET /payments/mercadopago/oauth/callback",
-    "POST /contracts/bookings/:bookingId/accept",
-    "POST /payments/bookings/:bookingId/checkout",
+    "POST /payments/bookings/:bookingId/sena-intent",
+    "POST /payments/bookings/:bookingId/balance-intent",
     "POST /payments/bookings/:bookingId/deposit-hold",
+    "POST /payments/stripe/webhook",
     "PATCH /bookings/:id/ready-for-pickup",
     "GET /bookings/:id/tokens",
     "POST /bookings/:id/confirm-pickup",
@@ -700,8 +696,7 @@ async function runBookingFlow(
   if (!renterToken) return;
 
   const renterHeaders = { Authorization: `Bearer ${renterToken}` };
-  // Mañana: el depósito se autoriza recién 48 horas antes del retiro.
-  const startDate = new Date(Date.now() + 1000 * 60 * 60 * 24);
+  const startDate = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
   const endDate = new Date(startDate.getTime() + 1000 * 60 * 60 * 24 * 2);
 
   if (endpointSet.has("GET /listings/:id/availability")) {
@@ -748,34 +743,6 @@ async function runBookingFlow(
 
   await record(
     results,
-    "Link owner Mercado Pago account",
-    "POST",
-    "/payments/connect/onboarding",
-    async () => {
-      const inicio = await request(
-        baseUrl,
-        "POST",
-        "/payments/connect/onboarding",
-        undefined,
-        { headers: ownerHeaders },
-      );
-      expectStatus(inicio, [200, 201]);
-      const url = (inicio.body as { onboardingUrl?: string }).onboardingUrl;
-      const state = url ? new URL(url).searchParams.get("state") : null;
-      if (!state) throw new Error("No onboarding state returned");
-      const vuelta = await request(
-        baseUrl,
-        "GET",
-        `/payments/mercadopago/oauth/callback?code=func${Date.now()}&state=${encodeURIComponent(state)}`,
-        undefined,
-        {},
-      );
-      expectStatus(vuelta, [200, 302]);
-    },
-  );
-
-  await record(
-    results,
     "Accept booking as owner",
     "PATCH",
     "/bookings/:id/accept",
@@ -793,31 +760,54 @@ async function runBookingFlow(
 
   await record(
     results,
-    "Pay booking with Mercado Pago (contract + checkout + deposit)",
+    "Drive Stripe payment (seña + saldo + depósito)",
     "POST",
-    "/payments/bookings/:bookingId/checkout",
+    "/payments/bookings/:bookingId/sena-intent",
     async () => {
-      const contrato = await request(
-        baseUrl,
-        "POST",
-        `/contracts/bookings/${bookingId}/accept`,
-        undefined,
-        { headers: renterHeaders },
-      );
-      expectStatus(contrato, [200, 201]);
-      for (const path of ["checkout", "deposit-hold"]) {
-        const pago = await request(
+      const pay = async (
+        kind: string,
+        path: string,
+        eventType: string,
+      ): Promise<void> => {
+        const intent = await request(
           baseUrl,
           "POST",
           `/payments/bookings/${bookingId}/${path}`,
-          tarjetaDePrueba(),
+          undefined,
           { headers: renterHeaders },
         );
-        expectStatus(pago, [200, 201]);
-        if (!(pago.body as { approved?: boolean }).approved) {
-          throw new Error(`${path} was not approved`);
+        expectStatus(intent, [200, 201]);
+        const piId = (intent.body as { paymentIntentId?: string })
+          .paymentIntentId;
+        if (!piId) {
+          throw new Error(`No paymentIntentId returned for ${kind}`);
         }
-      }
+        const event = {
+          id: `evt_func_${Date.now()}_${kind}`,
+          type: eventType,
+          data: { object: { id: piId, latest_charge: `ch_${kind}` } },
+        };
+        const signature = stripeForSigning.webhooks.generateTestHeaderString({
+          payload: JSON.stringify(event),
+          secret: STRIPE_WEBHOOK_SECRET,
+        });
+        const hook = await request(
+          baseUrl,
+          "POST",
+          "/payments/stripe/webhook",
+          event,
+          { headers: { "Stripe-Signature": signature } },
+        );
+        expectStatus(hook, [200, 201]);
+      };
+
+      await pay("sena", "sena-intent", "payment_intent.succeeded");
+      await pay("balance", "balance-intent", "payment_intent.succeeded");
+      await pay(
+        "deposit",
+        "deposit-hold",
+        "payment_intent.amount_capturable_updated",
+      );
     },
   );
 
