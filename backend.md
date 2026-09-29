@@ -1379,22 +1379,20 @@ Un analisis completo tarda ~10 segundos las dos caras en una maquina comun.
 
 Hostearlo salio mal dos veces y por motivos distintos, los dos medidos: en los
 planes chicos de Render (512 MB) el proceso muere a mitad del analisis, y la
-cuenta de Hugging Face tiene cupo cero para Spaces de CPU. El workflow
-`.github/workflows/deploy-docverify.yml` sigue en el repo y publica
-`docverify-api/` en un Space en cada push a main, listo para cuando ese cupo se
-destrabe.
+cuenta de Hugging Face tiene cupo cero para Spaces de CPU. Se hostea como un
+proceso de Python comun en un servidor propio: ver `docverify-api/README.md`.
 
 CUIDADO con una cosa: un backend en Vercel NO puede alcanzar una API en
 127.0.0.1 ni en 192.168.x.y. Son direcciones privadas y no hay ruta desde
 internet. O el backend corre local tambien, o hace falta un tunel, o hay que dar
 vuelta el flujo (que la API pregunte por trabajo en vez de esperar a que la
-llamen). Esta explicado en docverify-api/README.md.
+llamen).
 
 No puede ir en Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y
 el tope de una funcion serverless son 250 MB. Y NECESITA 2 GB de RAM: esta
 medido que en 512 MB un analisis de dos caras no termina —el proceso muere a los
 2-3 minutos, sin traceback—, asi que los planes chicos de Render quedaron
-descartados. La comparacion completa esta en `docverify-api/README.md`.
+descartados.
 
 El endpoint que usa este backend:
 
@@ -1437,8 +1435,7 @@ no filtrarlos. El **domicilio** se saco por una razon practica: el del documento
 casi nunca coincide con el que la persona cargo, asi que cruzarlo produce
 rechazos falsos sin detectar ningun fraude.
 
-El contrato completo esta en `docverify-api/README.md` y se puede consultar en
-vivo en `GET /contrato`.
+El contrato completo se puede consultar en vivo en `GET /contrato`.
 
 ### Flujo De Reserva Actual
 

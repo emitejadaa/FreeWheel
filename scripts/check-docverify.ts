@@ -169,8 +169,8 @@ async function main(): Promise<void> {
   const local = esLocal(url.hostname);
   if (local && (process.env.VERCEL || process.env.VERCEL_URL)) {
     mal(`${url.hostname} es una dirección privada y esto corre en Vercel`);
-    nota("Un backend desplegado no tiene ruta hasta tu máquina. Opciones en");
-    nota("docverify-api/README.md (exponerla con un túnel, o desplegarla).");
+    nota("Un backend desplegado no tiene ruta hasta tu máquina: exponé la API");
+    nota("con un túnel o hosteala en un servidor alcanzable desde internet.");
     process.exitCode = 1;
     return;
   }
@@ -226,17 +226,14 @@ async function main(): Promise<void> {
     return;
   }
   if (!protegida && !local) {
-    // El caso del túnel, y es el peligroso: la API corre en una máquina, así
-    // que ninguna señal de plataforma está puesta y se cree en local —arranca
-    // sin token y con CORS abierto— pero la URL la alcanza cualquiera. Por acá
-    // pasan documentos de identidad de personas reales.
+    // El caso peligroso: la API arranca sin token si DOCVERIFY_TOKEN está
+    // vacío, pero la URL la alcanza cualquiera. Por acá pasan documentos de
+    // identidad de personas reales.
     avisos.push([
       "La API es alcanzable desde internet y NO pide token: cualquiera que",
-      "sepa la URL puede mandarle documentos. Si la estás exponiendo con un",
-      "túnel, levantala así (la variable la obliga a exigir token):",
-      '  DOCVERIFY_EXPUESTO=1 DOCVERIFY_TOKEN="<un secreto largo>" \\',
-      "    .venv/bin/python -m uvicorn app.main:app --port 8000",
-      "y poné el MISMO DOCVERIFY_TOKEN en el backend.",
+      "sepa la URL puede mandarle documentos. Poné en docverify-api/.env",
+      '  DOCVERIFY_TOKEN="<un secreto largo>"',
+      "reiniciala, y poné el MISMO DOCVERIFY_TOKEN en el backend.",
     ]);
   } else if (!protegida && token) {
     nota("DOCVERIFY_TOKEN está puesta pero la API no pide token: sobra, y no");

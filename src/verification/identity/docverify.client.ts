@@ -446,7 +446,7 @@ export class DocverifyClient {
 
     // Solo señales que pone la plataforma: ninguna de estas existe en la
     // máquina de uno, así que no hay forma de que esto se dispare en un local
-    // que anda bien. La lista es la misma de docverify-api/app/config.py.
+    // que anda bien.
     const plataforma = [
       "VERCEL",
       "VERCEL_URL",
@@ -462,8 +462,8 @@ export class DocverifyClient {
       // (ver shortDetail), así que el qué hacer va adelante y el detalle atrás.
       detail:
         `DOCVERIFY_URL apunta a ${host}, que desde un deploy es el propio ` +
-        "servidor y no tu máquina: exponé la API con un túnel y poné esa URL " +
-        `(ver docverify-api/README.md). Detectado por ${plataforma}.`,
+        "servidor y no tu máquina: exponé la API con un túnel y poné esa URL. " +
+        `Detectado por ${plataforma}.`,
       // No hay reintento que agregue una ruta que no existe.
       retryable: false,
     };
