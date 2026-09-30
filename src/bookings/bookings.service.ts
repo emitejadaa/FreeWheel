@@ -81,6 +81,13 @@ export class BookingsService {
 
     const days = this.availability.calculateDays(data.startDate, data.endDate);
     const totalPriceSnapshot = listing.pricePerDay * days;
+    // La moneda es la del cobro desde el pedido: sin esto la reserva quedaba
+    // con el default del schema ("ARS") hasta que el dueño aceptaba, y los
+    // mails del pedido decían pesos sobre un alquiler que se cobra en dólares.
+    const { currency } = this.pricing.computeBooking({
+      pricePerDay: listing.pricePerDay,
+      days,
+    });
 
     const created = await this.prisma.booking.create({
       data: {
@@ -92,6 +99,7 @@ export class BookingsService {
         endDate: data.endDate,
         pricePerDaySnapshot: listing.pricePerDay,
         totalPriceSnapshot,
+        currency,
       },
       include: BOOKING_PARTICIPANT_INCLUDE,
     });

@@ -117,6 +117,15 @@ Authorization: Bearer {{ownerToken}}
 ### Cobros (renter)
 ### ────────────────────────────────────────────────────────────────────────
 
+### 0. Lo que el front necesita para montar Stripe.js: la clave pública (de la
+### misma cuenta que la secreta del backend), la moneda y el provider. Pública.
+GET {{baseUrl}}/payments/config
+
+### 0b. El cobro único (alquiler + cobertura). Requiere el contrato aceptado.
+### Devuelve el clientSecret que el front confirma con stripe.confirmPayment.
+POST {{baseUrl}}/payments/bookings/{{bookingId}}/checkout
+Authorization: Bearer {{renterToken}}
+
 ### 1. Crea (o reusa) el PaymentIntent de la seña (30% — SENA_PCT).
 POST {{baseUrl}}/payments/bookings/{{bookingId}}/sena-intent
 Authorization: Bearer {{renterToken}}
@@ -129,7 +138,9 @@ Authorization: Bearer {{renterToken}}
 POST {{baseUrl}}/payments/bookings/{{bookingId}}/deposit-hold
 Authorization: Bearer {{renterToken}}
 
-### 4. Estado del pago: montos calculados en el servidor + records.
+### 4. Estado del pago: montos calculados en el servidor + records. Con
+### Stripe, los cobros que el webhook todavía no confirmó se le preguntan a
+### Stripe en esta misma consulta.
 GET {{baseUrl}}/payments/bookings/{{bookingId}}/status
 Authorization: Bearer {{renterToken}}
 

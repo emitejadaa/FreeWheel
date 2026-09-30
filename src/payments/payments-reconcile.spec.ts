@@ -162,7 +162,10 @@ describe("PaymentsService: conciliar con Stripe al consultar el estado", () => {
       records: [record(PaymentRecordKind.CHECKOUT)],
       retrieve: jest.fn().mockResolvedValue(
         intent("requires_payment_method", {
-          failure: { code: "card_declined", message: "Your card was declined." },
+          failure: {
+            code: "card_declined",
+            message: "Your card was declined.",
+          },
         }),
       ),
     });
@@ -173,7 +176,9 @@ describe("PaymentsService: conciliar con Stripe al consultar el estado", () => {
       records: [record(PaymentRecordKind.CHECKOUT)],
       retrieve: jest
         .fn()
-        .mockResolvedValue(intent("requires_payment_method", { failure: null })),
+        .mockResolvedValue(
+          intent("requires_payment_method", { failure: null }),
+        ),
     });
     await virgen.reconcile();
     expect(virgen.handlers.onIntentFailed).not.toHaveBeenCalled();
@@ -298,16 +303,14 @@ describe("PaymentsService: un éxito se aplica una sola vez", () => {
       }
     ).onIntentSucceeded("pi_test_1", "evt_1");
 
-    expect(tx.paymentRecord.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: "rec_1",
-          status: expect.objectContaining({
-            in: expect.not.arrayContaining([PaymentRecordStatus.CAPTURED]),
-          }),
-        }),
-      }),
-    );
+    // El candado: la escritura solo toca la fila si todavía está en un estado
+    // aplicable, y CAPTURED no lo es.
+    const [args] = tx.paymentRecord.updateMany.mock.calls[0] as [
+      { where: { id: string; status: { in: PaymentRecordStatus[] } } },
+    ];
+    expect(args.where.id).toBe("rec_1");
+    expect(args.where.status.in).not.toContain(PaymentRecordStatus.CAPTURED);
+    expect(args.where.status.in).toContain(PaymentRecordStatus.REQUIRES_ACTION);
     expect(tx.booking.update).not.toHaveBeenCalled();
     expect(ensureFunds).not.toHaveBeenCalled();
     expect(prisma.paymentEvent.create).not.toHaveBeenCalled();

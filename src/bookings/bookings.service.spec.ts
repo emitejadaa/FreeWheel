@@ -213,6 +213,8 @@ describe("BookingsService", () => {
           ownerId: listing.ownerId,
           renterId: "renter-1",
           totalPriceSnapshot: 200,
+          // La moneda del cobro desde el pedido, no el "ARS" del schema.
+          currency: PRICING.currency,
         }),
       }),
     );
