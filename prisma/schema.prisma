@@ -1248,6 +1248,37 @@ model VehicleVerification {
 /// instancia nueva arranca en cero, así que un atacante que reparte sus
 /// intentos entre instancias no se topa nunca con el límite. Para lo que
 /// importa —login, códigos, pagos— el contador vive en la base.
+/// Cuántas veces se le preguntó cada cosa al asistente, en TODO el sitio.
+///
+/// POR QUÉ ESTÁ EN LA BASE Y NO EN EL NAVEGADOR.
+///
+/// El asistente ofrece preguntas sugeridas en botones, y el front ya las
+/// acomoda a lo que viene preguntando cada persona, contando en su propio
+/// navegador. Eso sirve, pero no es lo que se quería: lo útil es saber qué le
+/// pregunta la gente al sitio, no qué le pregunta uno. Esa cuenta no puede vivir
+/// en un navegador por definición.
+///
+/// QUÉ SE GUARDA, Y QUÉ NO.
+///
+/// Solo el identificador de la pregunta y un número. NO se guarda quién
+/// preguntó, ni cuándo lo hizo cada uno, ni el texto que escribió. Alcanza para
+/// ordenar los botones, que es todo lo que se quiere, y así esto no es un
+/// registro de lo que cada persona le preguntó al asistente: eso sería otra
+/// cosa, mucho más delicada, para ordenar cuatro botones.
+///
+/// `questionId` es el id de la pregunta en la tabla del front
+/// (src/data/preguntasWili.js en el repo del front). Es la clave primaria: una
+/// fila por pregunta y nada más, no una fila por vez que se preguntó. La lista
+/// de ids válidos está escrita también del lado del servidor, en
+/// src/ai/questions.service.ts, porque la ruta que suma es pública.
+model AssistantQuestionCount {
+  questionId  String   @id
+  count       Int      @default(0)
+  lastAskedAt DateTime @default(now()) @updatedAt
+
+  @@index([count])
+}
+
 model RateLimitBucket {
   key             String    @id
   count           Int       @default(0)

@@ -14,9 +14,11 @@ import { OptionalJwtAuthGuard } from "../auth/guards/optional-jwt-auth.guard";
 import { CurrentUser } from "../common/decorators/current-user.decorator";
 import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { AiChatDto } from "./dto/ai-chat.dto";
+import { AiQuestionAskedDto } from "./dto/ai-question-asked.dto";
 import { AiTranscribeDto } from "./dto/ai-transcribe.dto";
 import { AiVisionDto } from "./dto/ai-vision.dto";
 import { AiService } from "./ai.service";
+import { QuestionsService } from "./questions.service";
 
 /**
  * Proxy de IA. Todas las llamadas a Groq salen desde acá y nunca desde el
@@ -29,7 +31,10 @@ import { AiService } from "./ai.service";
  */
 @Controller("ai")
 export class AiController {
-  constructor(private readonly ai: AiService) {}
+  constructor(
+    private readonly ai: AiService,
+    private readonly questions: QuestionsService,
+  ) {}
 
   /**
    * ¿Está funcionando la revisión por IA? Dice si falta la clave, qué contestó
@@ -82,6 +87,44 @@ export class AiController {
   @Post("vision")
   vision(@Body() dto: AiVisionDto) {
     return this.ai.vision(dto.imageDataUrl, dto.lang ?? "es");
+  }
+
+  /**
+   * LAS PREGUNTAS MÁS HECHAS AL ASISTENTE, PARA ORDENAR LOS BOTONES.
+   *
+   * Las dos rutas son PÚBLICAS, como el chat: el asistente contesta también a
+   * visitantes sin cuenta, y si solo contaran las preguntas de los logueados el
+   * ranking diría qué pregunta la mitad de la gente.
+   *
+   * Lo que se guarda es el id de la pregunta y un número, nada más. Ver
+   * questions.service.ts.
+   */
+
+  /**
+   * Suma uno. El front la llama DESPUÉS de haber contestado, así que no hay
+   * nadie esperando esta respuesta: por eso el servicio no lanza nunca y esto
+   * devuelve `{ contada }` en vez de un error.
+   *
+   * El tope es bajo a propósito. No alcanza para impedir que alguien infle una
+   * pregunta —con paciencia se puede, y hay que decirlo—, pero el daño máximo
+   * es que cuatro botones queden en otro orden, y a cambio una sola IP no puede
+   * mover el ranking en un rato.
+   */
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post("questions/asked")
+  questionAsked(@Body() dto: AiQuestionAskedDto) {
+    return this.questions.contar(dto.questionId);
+  }
+
+  /**
+   * El ranking. De lectura, sin datos de nadie adentro: son ocho ids y ocho
+   * números. Si la migración todavía no está aplicada vuelve vacío, y el front
+   * se queda con la cuenta de su propio navegador.
+   */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get("questions/top")
+  questionsTop() {
+    return this.questions.ranking();
   }
 
   // Transcribir consume más que una respuesta de texto: solo usuarios logueados
