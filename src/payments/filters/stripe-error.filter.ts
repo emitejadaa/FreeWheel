@@ -60,6 +60,21 @@ export class StripeErrorFilter implements ExceptionFilter {
     response.status(statusCode).json({ statusCode, code, message });
   }
 
+  /**
+   * ¿Este rechazo es "Connect no está habilitado en la cuenta de la plataforma"?
+   *
+   * Dos señales, y alcanza con una: la frase de Stripe y la dirección del panel
+   * a la que manda. Se buscan sin distinguir mayúsculas y sobre el texto crudo,
+   * que es lo único estable que da la API para este caso.
+   */
+  static esConnectSinHabilitar(detalle: string): boolean {
+    const texto = String(detalle ?? "").toLowerCase();
+    return (
+      texto.includes("signed up for connect") ||
+      texto.includes("dashboard.stripe.com/connect")
+    );
+  }
+
   private traducir(error: Stripe.errors.StripeError): {
     statusCode: number;
     code: string;
@@ -81,6 +96,52 @@ export class StripeErrorFilter implements ExceptionFilter {
         code: error.code ?? "card_declined",
         message: detalle,
         alLog: detalle,
+      };
+    }
+
+    /*
+      CONNECT NO ESTÁ HABILITADO EN NUESTRA CUENTA DE STRIPE.
+
+      Es un StripeInvalidRequestError como cualquier otro, pero NO es un pedido
+      mal armado: es una casilla sin tildar en el panel de Stripe de la
+      plataforma. El mensaje que contesta Stripe es para quien programa, está en
+      inglés, y lo que pide es que te des de alta como plataforma de Connect.
+
+      Hasta acá llegaba tal cual a la pantalla de Ajustes de un dueño de auto,
+      abajo del botón "Completar mis datos de cobro". O sea que a alguien que
+      quiere alquilar su Corolla le decíamos, en inglés, que se diera de alta
+      como plataforma de pagos en Stripe. Las dos cosas que puede hacer con eso
+      son igual de malas: creer que hizo algo mal, o ir a Stripe a crear una
+      plataforma que no tiene nada que ver con él.
+
+      No es suyo y no lo puede resolver, así que se lo decimos así. Lo que sí
+      puede saber es qué significa para él: que puede publicar igual, pero que
+      la plata no le va a llegar hasta que esto esté habilitado.
+
+      SE RECONOCE POR EL TEXTO, y no por un código, porque Stripe no le pone
+      uno: `error.code` viene vacío en este caso. Si algún día cambian la
+      redacción, esto deja de reconocerlo y vuelve a salir el mensaje genérico
+      de abajo, que es el lado seguro de equivocarse.
+
+      El detalle completo queda en el log, con lo que hay que hacer: activar
+      Connect en dashboard.stripe.com/connect con la cuenta dueña de la
+      STRIPE_SECRET_KEY del servidor.
+    */
+    if (
+      error instanceof Stripe.errors.StripeInvalidRequestError &&
+      StripeErrorFilter.esConnectSinHabilitar(detalle)
+    ) {
+      return {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        code: "STRIPE_CONNECT_NOT_ENABLED",
+        message:
+          "El alta para cobrar todavía no está habilitada en la plataforma. " +
+          "No es algo que puedas resolver vos: podés publicar tus autos igual, " +
+          "pero la plata de los alquileres no va a poder transferirse hasta " +
+          "que lo habilitemos.",
+        alLog:
+          `${detalle} -> hay que activar Connect en ` +
+          `dashboard.stripe.com/connect con la cuenta dueña de STRIPE_SECRET_KEY`,
       };
     }
 
