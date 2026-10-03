@@ -42,6 +42,7 @@ const ALL_PRESENT: Row[] = [
   { table_name: "VehicleVerification", column_name: "id" },
   { table_name: "RateLimitBucket", column_name: "id" },
   { table_name: "User", column_name: "loginLockedUntil" },
+  { table_name: "AssistantQuestionCount", column_name: "questionId" },
 ];
 
 describe("HealthService.checkDatabase", () => {
@@ -72,7 +73,30 @@ describe("HealthService.checkDatabase", () => {
     expect(result.missing).toHaveLength(2);
     expect(result.missing.join(" ")).toContain("Favorite");
     expect(result.missing.join(" ")).toContain("Vehicle.category");
+    expect(result.missing.join(" ")).not.toContain("AssistantQuestionCount");
     expect(result.hint).toContain("migraciones");
+  });
+
+  it("NOMBRA LA TABLA DE LAS PREGUNTAS DEL ASISTENTE CUANDO NO ESTÁ", async () => {
+    /*
+      Esta es la única que falla en silencio.
+
+      El contador de preguntas atrapa el error de tabla inexistente a propósito:
+      un contador de botones no puede dejar al asistente sin contestar. El
+      costado malo es que, si la migración nunca se aplicara, la función queda
+      muerta sin que nadie se entere —el ranking vuelve vacío y el front se
+      acomoda con la cuenta de cada navegador, igual que antes—. Acá se ve.
+    */
+    const { prisma } = makePrisma(
+      ALL_PRESENT.filter(
+        (fila) => fila.table_name !== "AssistantQuestionCount",
+      ),
+    );
+    const result = await new HealthService(prisma).checkDatabase();
+
+    expect(result.schemaUpToDate).toBe(false);
+    expect(result.missing.join(" ")).toContain("AssistantQuestionCount");
+    expect(result.missing.join(" ")).toContain("preguntas más hechas");
   });
 
   it("nombra lo que falta del cambio a identidad declarada y registro de pagos", () => {

@@ -85,6 +85,24 @@ const REQUIRED_SCHEMA: {
     table: "DocumentVerification",
     column: "photosPurgedAt",
   },
+  /*
+    ESTA TABLA FALLA EN SILENCIO SI NO ESTÁ, Y POR ESO TIENE QUE ESTAR ACÁ.
+
+    El contador de preguntas del asistente atrapa el error de tabla inexistente
+    a propósito: un contador de botones no puede dejar al asistente sin
+    contestar. El costado malo de eso es que, si la migración nunca se aplicara,
+    la función quedaría muerta sin que nadie se entere: el ranking vuelve vacío
+    y el front se acomoda con la cuenta de cada navegador, igual que antes.
+
+    Acá se ve. Es para lo mismo que existe el resto de esta lista, y está dicho
+    en el encabezado de health.controller.ts: el deploy lo administra otra
+    persona, así que ésta es la única forma de saber qué falta sin pedirle una
+    captura del panel.
+  */
+  {
+    feature: "preguntas más hechas al asistente",
+    table: "AssistantQuestionCount",
+  },
 ];
 
 export interface DatabaseHealth {
