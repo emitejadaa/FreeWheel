@@ -237,11 +237,15 @@ export class VerificationService {
 
   /**
    * ¿Se puede devolver el código en la respuesta HTTP? Solo con la pasarela de
-   * SMS en modo mock y la variable activada a mano. Es una comodidad para la
-   * demo, no para una app en producción.
+   * SMS en modo mock, la variable activada a mano y FUERA de producción: con el
+   * código en la respuesta, verificar el teléfono no prueba tener el teléfono.
    */
   private get exposeCodeInResponse(): boolean {
+    const enProduccion =
+      (this.config.get<string>("NODE_ENV") ?? process.env.NODE_ENV) ===
+      "production";
     return (
+      !enProduccion &&
       this.smsService.isMock &&
       (
         this.config.get<string>("VERIFICATION_CODE_IN_RESPONSE") ?? "false"
