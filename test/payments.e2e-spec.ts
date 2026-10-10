@@ -4,6 +4,8 @@ import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { PaymentsService } from "../src/payments/payments.service";
+import { LedgerService } from "../src/ledger/ledger.service";
+import { Accounts } from "../src/ledger/accounts";
 import {
   AuthedUser,
   createAdmin,
@@ -755,6 +757,42 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       );
       expect(segundo.paymentIntentId).not.toBe(primero.paymentIntentId);
       expect(segundo.amountMinor).toBe(430_000);
+    });
+
+    it("dos liquidaciones simultáneas del mismo dueño le pagan una sola vez", async () => {
+      // Cada pago al dueño transfiere TODO lo que se le debe. Con la clave de
+      // idempotencia armada con la referencia de quien lo pedía, dos pedidos a
+      // la vez transferían el saldo entero cada uno.
+      const owner = await registerUser(app);
+      const cuenta = await prisma.user.update({
+        where: { id: owner.id },
+        data: { stripeAccountId: "acct_mock_dueno" },
+      });
+      const ledger = app.get(LedgerService);
+      await ledger.post({
+        idempotencyKey: "test:debido",
+        type: "test",
+        description: "Lo que se le debe al dueño",
+        currency: "usd",
+        lines: [
+          { account: Accounts.ownerPayable(owner.id), amountMinor: 270_000 },
+          { account: Accounts.processorClearing(), amountMinor: -270_000 },
+        ],
+      });
+
+      const payments = app.get(PaymentsService);
+      await Promise.all([
+        payments.payOwner(cuenta, "cancel:reserva-a", null),
+        payments.payOwner(cuenta, "cancel:reserva-b", null),
+        payments.payOwner(cuenta, `retry:${owner.id}:270000`, null),
+      ]);
+
+      expect(await ledger.balance(Accounts.ownerPayable(owner.id))).toBe(0);
+      const transferencias = await prisma.paymentRecord.findMany({
+        where: { userId: owner.id, kind: "OWNER_TRANSFER" },
+      });
+      expect(transferencias).toHaveLength(1);
+      expect(transferencias[0].amountMinor).toBe(270_000);
     });
 
     it("una disputa frena la liquidación al dueño", async () => {

@@ -111,6 +111,25 @@ export class LedgerService {
     return Boolean(journal);
   }
 
+  /**
+   * El saldo de una cuenta y cuántos movimientos tiene, leídos en la MISMA
+   * consulta: es la foto exacta del bolsillo, y cambia con cualquier asiento
+   * nuevo. Sirve para derivar claves de idempotencia del estado del libro.
+   */
+  async snapshot(
+    account: string,
+  ): Promise<{ balanceMinor: number; entries: number }> {
+    const result = await this.prisma.ledgerEntry.aggregate({
+      where: { account },
+      _sum: { amountMinor: true },
+      _count: { _all: true },
+    });
+    return {
+      balanceMinor: result._sum.amountMinor ?? 0,
+      entries: result._count._all,
+    };
+  }
+
   /** El saldo de una cuenta. */
   async balance(account: string, db: Db = this.prisma): Promise<number> {
     const result = await db.ledgerEntry.aggregate({

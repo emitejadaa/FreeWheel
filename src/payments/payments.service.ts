@@ -1854,7 +1854,8 @@ export class PaymentsService {
     reference: string,
     actorId: string | null,
   ): Promise<{ paidMinor: number; pending: boolean }> {
-    const debido = await this.ledger.balance(Accounts.ownerPayable(owner.id));
+    const foto = await this.ledger.snapshot(Accounts.ownerPayable(owner.id));
+    const debido = foto.balanceMinor;
     if (debido <= 0) return { paidMinor: 0, pending: false };
 
     try {
@@ -1872,11 +1873,23 @@ export class PaymentsService {
         currency,
         destination: accountId,
         metadata: { ownerId: owner.id, reference },
-        idempotencyKey: `payout_${owner.id}_${reference}_${debido}`,
+        // LA CLAVE SALE DEL ESTADO DEL LIBRO, NO DE QUIÉN PIDE EL PAGO.
+        //
+        // Con la referencia adentro ("settle:<reserva>", "retry:…"), dos
+        // liquidaciones simultáneas del mismo dueño —las dos partes de dos
+        // reservas apretando "liquidar", o una de ellas y el cron— tenían
+        // claves distintas y transferían CADA UNA todo lo debido. Con el
+        // saldo y la cantidad de movimientos, las dos ven la misma foto, piden
+        // con la misma clave y el procesador hace una sola transferencia. El
+        // día va adentro para que un rechazo (cuenta todavía sin habilitar) no
+        // quede cacheado más allá de la corrida del cron siguiente.
+        idempotencyKey:
+          `payout_${owner.id}_${debido}_${foto.entries}_` +
+          new Date().toISOString().slice(0, 10),
       });
 
-      await this.prisma.$transaction(async (tx) => {
-        await this.ledger.post(
+      const asentado = await this.prisma.$transaction(async (tx) => {
+        const asiento = await this.ledger.post(
           {
             idempotencyKey: `payout:${transfer.id}`,
             type: "owner.payout",
@@ -1893,6 +1906,8 @@ export class PaymentsService {
           },
           tx,
         );
+        // La misma transferencia ya la asentó otra corrida simultánea.
+        if (asiento.duplicate) return false;
         const bookingId = reference.startsWith("settle:")
           ? reference.slice("settle:".length)
           : null;
@@ -1929,8 +1944,9 @@ export class PaymentsService {
             currency,
           },
         });
+        return true;
       });
-      return { paidMinor: debido, pending: false };
+      return { paidMinor: asentado ? debido : 0, pending: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
