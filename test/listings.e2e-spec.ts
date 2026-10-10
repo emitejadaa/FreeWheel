@@ -542,5 +542,41 @@ describe("Listings", () => {
 
       expect(await fotosDe(listing.id)).toEqual(fotos);
     });
+
+    it("nobody can attach a photo to someone else's vehicle", async () => {
+      // Las fotos se buscan por el id del auto, no por quién las subió: sin el
+      // control del dueño, la foto de un tercero aparecía en la publicación.
+      const owner = await registerUser(app);
+      const other = await registerUser(app);
+      const vehicle = await createVehicle(app, owner.token);
+      const listing = await createListing(app, owner.token, vehicle.id);
+      const propia = await subirFoto(owner.token, vehicle.id, 1);
+
+      for (const entityType of ["vehicle", "Vehicle"]) {
+        await request(app.getHttpServer())
+          .post("/media/assets")
+          .set("Authorization", `Bearer ${other.token}`)
+          .send({
+            kind: "VEHICLE_PHOTO",
+            url: "https://cdn.example.com/intrusa.jpg",
+            entityType,
+            entityId: vehicle.id,
+          })
+          .expect(403);
+      }
+
+      await request(app.getHttpServer())
+        .post("/media/assets")
+        .set("Authorization", `Bearer ${other.token}`)
+        .send({
+          kind: "VEHICLE_PHOTO",
+          url: "https://cdn.example.com/intrusa.jpg",
+          entityType: "vehicle",
+          entityId: "00000000-0000-0000-0000-000000000000",
+        })
+        .expect(404);
+
+      expect(await fotosDe(listing.id)).toEqual([propia]);
+    });
   });
 });

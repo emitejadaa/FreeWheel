@@ -1,12 +1,13 @@
 import {
   BadRequestException,
   Injectable,
-  NotImplementedException,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
+import { assertOwner } from "../common/utils/authorization.util";
+import { assertFound } from "../common/utils/entity.util";
 import { RegisterMediaAssetDto } from "./dto/register-media-asset.dto";
 
 @Injectable()
@@ -15,12 +16,6 @@ export class MediaService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
-
-  createPresignedUpload(): never {
-    throw new NotImplementedException(
-      "Real media storage is not integrated yet",
-    );
-  }
 
   /**
    * Genera una firma para subir a Cloudinary de forma segura: el API secret
@@ -95,6 +90,23 @@ export class MediaService {
    * que ponerse y queda en 0, que es lo que valía antes.
    */
   async registerAsset(ownerId: string, data: RegisterMediaAssetDto) {
+    // Las fotos de un auto se muestran en su publicación (listings, favoritos,
+    // reservas) buscando por entityType "vehicle" + entityId, sin mirar quién
+    // las subió. Sin este control, cualquiera con sesión podía colgarle fotos
+    // a un auto ajeno.
+    if (data.entityType?.toLowerCase() === "vehicle" && data.entityId) {
+      const vehicle = await this.prisma.vehicle.findUnique({
+        where: { id: data.entityId },
+        select: { ownerId: true },
+      });
+      assertFound(vehicle, "Vehicle not found");
+      assertOwner(
+        vehicle.ownerId,
+        ownerId,
+        "You cannot attach media to this vehicle",
+      );
+    }
+
     const position =
       data.entityType && data.entityId
         ? await this.prisma.mediaAsset.count({

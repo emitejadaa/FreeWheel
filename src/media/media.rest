@@ -54,6 +54,8 @@ Authorization: Bearer {{accessToken}}
 
 ### 2. Registra la metadata de un asset ya subido a Cloudinary (con los
 ### parámetros que devolvió el request anterior).
+### Con entityType "vehicle", entityId tiene que ser un auto PROPIO (si no,
+### 404 o 403): las fotos de un auto las sube solo su dueño.
 # @name registerAsset
 POST {{baseUrl}}/media/assets
 Content-Type: {{contentType}}
@@ -62,8 +64,8 @@ Authorization: Bearer {{accessToken}}
 {
   "kind": "VEHICLE_PHOTO",
   "url": "https://res.cloudinary.com/demo/image/upload/v1/vehicles/sample.jpg",
-  "entityType": "Vehicle",
-  "entityId": "00000000-0000-0000-0000-000000000000",
+  "entityType": "vehicle",
+  "entityId": "<id de un auto propio>",
   "storageProvider": "cloudinary",
   "storageKey": "vehicles/sample",
   "mimeType": "image/jpeg",
