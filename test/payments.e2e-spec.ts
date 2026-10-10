@@ -3,6 +3,7 @@ import request from "supertest";
 import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { PaymentsService } from "../src/payments/payments.service";
 import {
   AuthedUser,
   createAdmin,
@@ -456,6 +457,96 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       where: { eventId: "evt_dup_1" },
     });
     expect(events).toHaveLength(1);
+  });
+
+  /**
+   * El evento se anota como visto ANTES de procesarlo (es lo que descarta los
+   * duplicados). Si el procesamiento fallaba, el reintento de Stripe lo
+   * encontraba "visto" y se perdía para siempre: un reembolso o una disputa que
+   * nunca llegaban a la base.
+   */
+  it("si procesar un evento falla, el reintento de Stripe lo procesa", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
+
+    const service = app.get(PaymentsService);
+    const espia = jest
+      .spyOn(
+        service as unknown as { dispatchEvent(): Promise<void> },
+        "dispatchEvent",
+      )
+      .mockRejectedValueOnce(new Error("la base tuvo un hipo"));
+
+    await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_falla_1" },
+    ).expect(500);
+    espia.mockRestore();
+
+    const reintento = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_falla_1" },
+    ).expect(201);
+    expect(reintento.body.duplicate).toBe(false);
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    expect(booking.paymentStatus).toBe("FULLY_PAID");
+  });
+
+  it("un evento que quedó a medias hace rato se puede volver a tomar", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
+
+    // Tomado hace 11 minutos y nunca terminado: el proceso se cortó.
+    await prisma.stripeEvent.create({
+      data: {
+        eventId: "evt_colgado",
+        type: "payment_intent.succeeded",
+        payload: {},
+        createdAt: new Date(Date.now() - 11 * 60 * 1000),
+      },
+    });
+    // Tomado recién: otra entrega lo está procesando ahora mismo.
+    await prisma.stripeEvent.create({
+      data: { eventId: "evt_en_curso", type: "x", payload: {} },
+    });
+
+    const enCurso = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_en_curso" },
+    ).expect(201);
+    expect(enCurso.body.duplicate).toBe(true);
+
+    const colgado = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_colgado" },
+    ).expect(201);
+    expect(colgado.body.duplicate).toBe(false);
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    expect(booking.paymentStatus).toBe("FULLY_PAID");
   });
 
   it("forbids a non-participant from viewing payment status", async () => {
