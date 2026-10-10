@@ -10,10 +10,7 @@ import {
   setIdentityProfile,
   uniqueDni,
 } from "./helpers/factory";
-import {
-  documentUrls,
-  FakeCloudinaryService,
-} from "./helpers/cloudinary.fake";
+import { documentUrls, FakeCloudinaryService } from "./helpers/cloudinary.fake";
 
 /**
  * LA VERIFICACIÓN DOCUMENTAL DE PUNTA A PUNTA — REVISIÓN MANUAL
@@ -237,9 +234,7 @@ describe("Verificación documental (revisión manual)", () => {
 
     const res = await submit(user.token, user.id, "dni").expect(400);
     expect(res.body.code).toBe("PERFIL_INCOMPLETO");
-    expect(res.body.missing).toEqual(
-      expect.arrayContaining(["DNI", "CUIL"]),
-    );
+    expect(res.body.missing).toEqual(expect.arrayContaining(["DNI", "CUIL"]));
   });
 
   it("el diagnóstico dice que este servidor revisa a mano", async () => {

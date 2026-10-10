@@ -37,16 +37,16 @@ describe("Rutas de IA: quién gasta la cuota", () => {
   const IMAGEN = "data:image/png;base64,iVBORw0KGgo=";
 
   it("GET /ai/health es público: se puede mirar sin cuenta", async () => {
-    const res = await request(app.getHttpServer()).get("/ai/health").expect(200);
+    const res = await request(app.getHttpServer())
+      .get("/ai/health")
+      .expect(200);
     // Dice si está configurado, nunca la clave.
     expect(res.body).toHaveProperty("configured");
     expect(JSON.stringify(res.body)).not.toMatch(/gsk_/);
   });
 
   it("GET /ai/health?probe=1 sin cuenta: 403 (probar gasta cuota)", async () => {
-    await request(app.getHttpServer())
-      .get("/ai/health?probe=1")
-      .expect(403);
+    await request(app.getHttpServer()).get("/ai/health?probe=1").expect(403);
   });
 
   it("GET /ai/health?probe=1 con una cuenta común: 403", async () => {

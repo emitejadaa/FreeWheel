@@ -574,9 +574,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       .set("Authorization", auth(owner.token))
       .send({ reason: "owner unavailable" })
       .expect(200);
-    expect(cancelada.body.cancellation.rule).toBe(
-      "OWNER_RETURNS_SENA_DOUBLED",
-    );
+    expect(cancelada.body.cancellation.rule).toBe("OWNER_RETURNS_SENA_DOUBLED");
 
     const status = await http()
       .get(`/payments/bookings/${bookingId}/status`)
@@ -816,8 +814,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     it("una disputa frena la liquidación al dueño", async () => {
       // Transferirle al dueño plata que el banco puede reclamar de vuelta
       // convierte una disputa en una pérdida.
-      const { owner, renter, bookingId, returnToken } =
-        await acceptedBooking();
+      const { owner, renter, bookingId, returnToken } = await acceptedBooking();
       const { checkout } = await hastaElRetiro(owner, renter, bookingId);
 
       await sendWebhook(app, "charge.dispute.created", {

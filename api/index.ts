@@ -1,3 +1,3 @@
-import { createServer } from '../src/app.factory';
+import { createServer } from "../src/app.factory";
 
 export default createServer();

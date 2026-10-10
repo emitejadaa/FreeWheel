@@ -100,9 +100,9 @@ describe("Contracts", () => {
       });
 
       const porDestino = Object.fromEntries(
-        (
-          ticket.distribution as { code: string; amountMinor: number }[]
-        ).map((l) => [l.code, l.amountMinor]),
+        (ticket.distribution as { code: string; amountMinor: number }[]).map(
+          (l) => [l.code, l.amountMinor],
+        ),
       );
       expect(porDestino).toEqual({
         OWNER: 270_000,
@@ -220,10 +220,7 @@ describe("Contracts", () => {
       acceptedAt: string;
     }[];
     expect(aceptaciones).toHaveLength(2);
-    expect(aceptaciones.map((a) => a.role).sort()).toEqual([
-      "OWNER",
-      "RENTER",
-    ]);
+    expect(aceptaciones.map((a) => a.role).sort()).toEqual(["OWNER", "RENTER"]);
     for (const a of aceptaciones) {
       expect(a.contentHash).toBe(res.body.contentHash);
       expect(a.acceptedAt).toEqual(expect.any(String));

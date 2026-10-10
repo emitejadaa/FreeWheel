@@ -44,7 +44,7 @@ describe("GoogleAuthGuard sin credenciales", () => {
     const guard = new GoogleAuthGuard();
     let respuesta: unknown;
     try {
-      guard.canActivate(contexto);
+      void guard.canActivate(contexto);
     } catch (error) {
       respuesta = (error as ServiceUnavailableException).getResponse();
     }

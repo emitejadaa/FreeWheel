@@ -10,10 +10,7 @@ import {
   setIdentityProfile,
   uniqueDni,
 } from "./helpers/factory";
-import {
-  documentUrls,
-  FakeCloudinaryService,
-} from "./helpers/cloudinary.fake";
+import { documentUrls, FakeCloudinaryService } from "./helpers/cloudinary.fake";
 
 /**
  * LA VERIFICACIÓN AUTOMÁTICA, DE PUNTA A PUNTA.
@@ -283,7 +280,10 @@ describe("Verificación automática de documentos", () => {
     const token = await enviarYPrepararAviso(user, "dni");
 
     const adulterado = dniQueCierra(user.dni, user.cuil) as {
-      caras: Record<string, { origenes: Record<string, { campos: Record<string, unknown> }> }>;
+      caras: Record<
+        string,
+        { origenes: Record<string, { campos: Record<string, unknown> }> }
+      >;
     };
     adulterado.caras.frente.origenes.pdf417.campos.fecha_nacimiento =
       campo("2011-04-06");

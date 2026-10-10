@@ -177,9 +177,13 @@ describe("Admin", () => {
       // Ni una sola llamada al storage: los documentos son la prueba de por qué
       // se suspendió la cuenta, y esto se puede revertir.
       expect(cloudinary.destroyed).toEqual([]);
-      expect(await prisma.mediaAsset.count({ where: { ownerId: owner.id } })).toBe(1);
       expect(
-        await prisma.documentVerification.count({ where: { userId: owner.id } }),
+        await prisma.mediaAsset.count({ where: { ownerId: owner.id } }),
+      ).toBe(1);
+      expect(
+        await prisma.documentVerification.count({
+          where: { userId: owner.id },
+        }),
       ).toBe(1);
     });
 
@@ -555,7 +559,9 @@ describe("Admin", () => {
         .set("Authorization", auth(admin.token))
         .expect(200);
 
-      expect(await prisma.user.findUnique({ where: { id: owner.id } })).toBeNull();
+      expect(
+        await prisma.user.findUnique({ where: { id: owner.id } }),
+      ).toBeNull();
       expect(await prisma.contract.count()).toBe(0);
       expect(await prisma.booking.count()).toBe(0);
       expect(await prisma.listing.count()).toBe(0);

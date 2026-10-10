@@ -459,8 +459,9 @@ describe("Listings", () => {
       const busqueda = await request(app.getHttpServer())
         .get("/listings")
         .expect(200);
-      const encontrada = (busqueda.body.data as { id: string; photos: string[] }[])
-        .find((l) => l.id === listing.id);
+      const encontrada = (
+        busqueda.body.data as { id: string; photos: string[] }[]
+      ).find((l) => l.id === listing.id);
       expect(encontrada?.photos[0]).toBe(fotos[1]);
     });
 
