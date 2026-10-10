@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { BookingStatus, ListingStatus } from "@prisma/client";
+import { BookingStatus, ListingStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAvailabilityBlockDto } from "./dto/create-availability-block.dto";
 
@@ -30,6 +30,9 @@ export const sinDevolverStatuses: BookingStatus[] = [
 ];
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Un cliente de Prisma o una transacción abierta. */
+type Db = Prisma.TransactionClient | PrismaService;
 
 /** Fecha (UTC) como YYYY-MM-DD, sin la parte de hora. */
 function toDayKey(date: Date): string {
@@ -299,19 +302,32 @@ export class AvailabilityService {
     return { deleted: true, id: blockId };
   }
 
+  /**
+   * `db` permite hacer el control dentro de una transacción: aceptar una
+   * reserva lo corre con la publicación bloqueada, para que dos aceptaciones
+   * simultáneas no vean las dos el auto libre.
+   */
   async assertListingIsBookable(
     listingId: string,
     startDate: Date,
     endDate: Date,
     excludeBookingId?: string,
+    db: Db = this.prisma,
   ) {
     await this.assertNoBookingOverlap(
       listingId,
       startDate,
       endDate,
       excludeBookingId,
+      db,
     );
-    await this.assertNoManualBlockOverlap(listingId, startDate, endDate);
+    await this.assertNoManualBlockOverlap(
+      listingId,
+      startDate,
+      endDate,
+      undefined,
+      db,
+    );
   }
 
   assertDateRange(
@@ -380,8 +396,9 @@ export class AvailabilityService {
     startDate: Date,
     endDate: Date,
     excludeBlockId?: string,
+    db: Db = this.prisma,
   ) {
-    const overlapping = await this.prisma.listingAvailabilityBlock.findFirst({
+    const overlapping = await db.listingAvailabilityBlock.findFirst({
       where: {
         ...this.overlappingBlocksWhere(listingId, startDate, endDate),
         ...(excludeBlockId ? { id: { not: excludeBlockId } } : {}),
@@ -399,9 +416,10 @@ export class AvailabilityService {
     listingId: string,
     startDate: Date,
     endDate: Date,
-    excludeBookingId?: string,
+    excludeBookingId: string | undefined,
+    db: Db,
   ) {
-    const overlapping = await this.prisma.booking.findFirst({
+    const overlapping = await db.booking.findFirst({
       where: {
         ...this.overlappingBookingsWhere(listingId, startDate, endDate),
         ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),

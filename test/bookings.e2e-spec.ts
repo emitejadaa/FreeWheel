@@ -1,6 +1,6 @@
 import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
-import { createTestApp } from "./helpers/app";
+import { createTestApp, listeningServer } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./helpers/factory";
 import { payBookingFully } from "./helpers/payments";
 import { EmailService } from "../src/email/email.service";
+import { EncryptionService } from "../src/common/crypto/encryption.service";
 import type { FakeEmailService } from "./helpers/email.fake";
 
 describe("Bookings", () => {
@@ -274,6 +275,66 @@ describe("Bookings", () => {
       .set("Authorization", auth(renter2.token))
       .send({ listingId, ...range })
       .expect(400);
+  });
+
+  it("dos pedidos que se pisan, aceptados a la vez: solo uno queda aceptado", async () => {
+    // Los pedidos no ocupan el auto hasta que se aceptan. Aceptados a la vez,
+    // los dos veían el auto libre y quedaba reservado dos veces.
+    const { owner, renter, listingId } = await setup();
+    const renter2 = await registerUser(app);
+    const range = dates(8);
+    const pedidos = [];
+    for (const quien of [renter, renter2]) {
+      const res = await http()
+        .post("/bookings")
+        .set("Authorization", auth(quien.token))
+        .send({ listingId, ...range })
+        .expect(201);
+      pedidos.push(res.body.id as string);
+    }
+
+    const server = await listeningServer(app);
+    const respuestas = await Promise.all(
+      pedidos.map((id) =>
+        request(server)
+          .patch(`/bookings/${id}/accept`)
+          .set("Authorization", auth(owner.token)),
+      ),
+    );
+
+    expect(respuestas.map((r) => r.status).sort()).toEqual([200, 400]);
+    expect(
+      await prisma.booking.count({ where: { listingId, status: "ACCEPTED" } }),
+    ).toBe(1);
+  });
+
+  it("aceptar dos veces a la vez la misma reserva la acepta una sola vez", async () => {
+    // La segunda aceptación regeneraba los códigos: la primera respuesta le
+    // daba al dueño un código de devolución que ya no servía.
+    const { owner, renter, listingId } = await setup();
+    const created = await http()
+      .post("/bookings")
+      .set("Authorization", auth(renter.token))
+      .send({ listingId, ...dates(8) })
+      .expect(201);
+
+    const server = await listeningServer(app);
+    const respuestas = await Promise.all(
+      [1, 2].map(() =>
+        request(server)
+          .patch(`/bookings/${created.body.id}/accept`)
+          .set("Authorization", auth(owner.token)),
+      ),
+    );
+
+    const aceptada = respuestas.filter((r) => r.status === 200);
+    expect(aceptada).toHaveLength(1);
+    const guardada = await prisma.booking.findUniqueOrThrow({
+      where: { id: created.body.id },
+    });
+    expect(
+      app.get(EncryptionService).decrypt(guardada.returnTokenPreview),
+    ).toBe(aceptada[0].body.returnQrToken);
   });
 
   it("enforces participant and owner-only guards", async () => {

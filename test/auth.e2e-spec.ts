@@ -2,7 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import { VerificationStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import request from "supertest";
-import { createTestApp } from "./helpers/app";
+import { createTestApp, listeningServer } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { FakeEmailService } from "./helpers/email.fake";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -32,18 +32,6 @@ describe("Auth", () => {
   beforeEach(async () => {
     await cleanDatabase(prisma);
   });
-
-  /**
-   * Para pedidos SIMULTÁNEOS: supertest levanta el servidor en cada pedido si
-   * no está escuchando, y diez a la vez sobre el mismo servidor se pisan.
-   */
-  async function listeningServer() {
-    const server = app.getHttpServer() as import("http").Server;
-    if (!server.listening) {
-      await new Promise<void>((resolve) => server.listen(0, resolve));
-    }
-    return server;
-  }
 
   /** Runs step 1 and returns the emailed code, ready for step 2. */
   async function startRegistration(addr: string): Promise<string> {
@@ -123,7 +111,7 @@ describe("Auth", () => {
       const code = await startRegistration(addr);
       const wrong = code === "000000" ? "111111" : "000000";
 
-      const server = await listeningServer();
+      const server = await listeningServer(app);
       const results = await Promise.all(
         Array.from({ length: 10 }, () =>
           request(server)
@@ -432,7 +420,7 @@ describe("Auth", () => {
       const code = email.lastCode(newEmail);
       const wrong = code === "000000" ? "111111" : "000000";
 
-      const server = await listeningServer();
+      const server = await listeningServer(app);
       await Promise.all(
         Array.from({ length: 10 }, () =>
           request(server)

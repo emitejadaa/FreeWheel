@@ -67,6 +67,8 @@ describe("BookingsService", () => {
       findUnique: jest.Mock;
       update: jest.Mock;
     };
+    $transaction: jest.Mock;
+    $executeRaw: jest.Mock;
   };
   let availability: {
     assertDateRange: jest.Mock;
@@ -122,6 +124,9 @@ describe("BookingsService", () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      // La transacción corre la función con el mismo doble de la base.
+      $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
+      $executeRaw: jest.fn(),
     };
     availability = {
       assertDateRange: jest.fn(),
@@ -277,6 +282,13 @@ describe("BookingsService", () => {
           ownerPayoutSnapshot: PRICING.ownerPayout,
           transferGroup: `booking_${booking.id}`,
         }),
+      }),
+    );
+    // La escritura solo vale si la reserva sigue pedida: dos aceptaciones a
+    // la vez no pueden pisarse.
+    expect(prisma.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: booking.id, status: { in: [BookingStatus.REQUESTED] } },
       }),
     );
     expect(contracts.ensureForBooking).toHaveBeenCalledWith(booking.id);

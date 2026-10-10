@@ -95,3 +95,18 @@ export async function createTestApp(
     }
   }
 }
+
+/**
+ * El servidor HTTP de la app, ya escuchando, para pedidos SIMULTÁNEOS:
+ * supertest lo levanta en cada pedido si no está escuchando, y varios a la vez
+ * sobre el mismo servidor se pisan (ECONNRESET).
+ */
+export async function listeningServer(
+  app: INestApplication,
+): Promise<import("http").Server> {
+  const server = app.getHttpServer() as import("http").Server;
+  if (!server.listening) {
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+  }
+  return server;
+}
