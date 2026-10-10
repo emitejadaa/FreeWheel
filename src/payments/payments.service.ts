@@ -1872,7 +1872,6 @@ export class PaymentsService {
         amountMinor: debido,
         currency,
         destination: accountId,
-        metadata: { ownerId: owner.id, reference },
         // LA CLAVE SALE DEL ESTADO DEL LIBRO, NO DE QUIÉN PIDE EL PAGO.
         //
         // Con la referencia adentro ("settle:<reserva>", "retry:…"), dos
@@ -1883,6 +1882,12 @@ export class PaymentsService {
         // con la misma clave y el procesador hace una sola transferencia. El
         // día va adentro para que un rechazo (cuenta todavía sin habilitar) no
         // quede cacheado más allá de la corrida del cron siguiente.
+        //
+        // Por lo mismo la referencia no viaja en la metadata: Stripe rechaza
+        // una clave repetida con parámetros distintos, y el pedido duplicado
+        // quedaría anotado como transferencia fallida. La referencia queda en
+        // nuestro registro (PaymentRecord/PaymentEvent).
+        metadata: { ownerId: owner.id },
         idempotencyKey:
           `payout_${owner.id}_${debido}_${foto.entries}_` +
           new Date().toISOString().slice(0, 10),
@@ -1942,6 +1947,7 @@ export class PaymentsService {
             status: PaymentRecordStatus.PAID,
             amountMinor: debido,
             currency,
+            payload: { reference, transferId: transfer.id },
           },
         });
         return true;
