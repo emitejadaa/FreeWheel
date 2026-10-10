@@ -62,17 +62,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw sesionRevocada();
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      verificationStatus: user.verificationStatus,
-      dateOfBirth: user.dateOfBirth,
-      licenseExpiresAt: user.licenseExpiresAt,
-      licenseClass: user.licenseClass,
-      licenseBeginnerUntil: user.licenseBeginnerUntil,
-      dniExpiresAt: user.dniExpiresAt,
-    };
+    return this.usersService.toCurrentUser(user);
   }
 }

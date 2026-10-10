@@ -6,6 +6,7 @@ import {
 import { Prisma, User, VerificationStatus } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { assertFound } from "../common/utils/entity.util";
+import type { CurrentUserPayload } from "../common/types/current-user.type";
 import {
   DrivingEligibility,
   evaluateDrivingEligibility,
@@ -271,6 +272,25 @@ export class UsersService {
       if (conflict) throw conflict;
       throw error;
     }
+  }
+
+  /**
+   * Lo que cada pedido autenticado lleva de la cuenta (req.user). Lo arman las
+   * dos estrategias de JWT a partir de la fila que releen en cada pedido.
+   */
+  toCurrentUser(user: User): CurrentUserPayload {
+    return {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      verificationStatus: user.verificationStatus,
+      dateOfBirth: user.dateOfBirth,
+      licenseExpiresAt: user.licenseExpiresAt,
+      licenseClass: user.licenseClass,
+      licenseBeginnerUntil: user.licenseBeginnerUntil,
+      dniExpiresAt: user.dniExpiresAt,
+    };
   }
 
   toSafeUser(user: User): SafeUser {
