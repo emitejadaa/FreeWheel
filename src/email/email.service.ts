@@ -8,6 +8,34 @@ import * as nodemailer from "nodemailer";
 import { getFrontendUrl } from "../config/public-urls";
 import { PrismaService } from "../prisma/prisma.service";
 
+const ENTIDADES_HTML: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * Los textos que vienen de las personas —nombres, marca y modelo del auto,
+ * motivos— van adentro del HTML del mail. Sin escaparlos, alguien podía ponerse
+ * de nombre un link o un botón y nosotros se lo mandábamos a la otra parte, con
+ * nuestra marca y desde nuestra casilla.
+ */
+function escaparHtml(texto: string): string {
+  return texto.replace(/[&<>"']/g, (c) => ENTIDADES_HTML[c] ?? c);
+}
+
+/** Los mismos parámetros, con cada texto escapado (fechas y números, intactos). */
+function textosEscapados<T extends object>(params: T): T {
+  return Object.fromEntries(
+    Object.entries(params).map(([clave, valor]) => [
+      clave,
+      typeof valor === "string" ? escaparHtml(valor) : valor,
+    ]),
+  ) as T;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -261,7 +289,7 @@ export class EmailService {
         <div style="padding:32px">
           <h2 style="color:#111827;margin:0 0 8px">Verificá tu teléfono</h2>
           <p style="color:#374151;margin:0 0 24px">
-            Código para confirmar el número <strong>${phone}</strong>:
+            Código para confirmar el número <strong>${escaparHtml(phone)}</strong>:
           </p>
           <div style="font-size:42px;font-weight:800;letter-spacing:12px;color:#2563eb;background:#eff6ff;padding:20px;border-radius:10px;text-align:center">
             ${code}
@@ -304,7 +332,7 @@ export class EmailService {
         <div style="padding:32px">
           <h2 style="color:#111827;margin:0 0 8px">Confirmá el cambio de precio</h2>
           <p style="color:#374151;margin:0 0 16px">
-            Se pidió cambiar el precio por día de <strong>${listingTitle}</strong>:
+            Se pidió cambiar el precio por día de <strong>${escaparHtml(listingTitle)}</strong>:
           </p>
           <p style="color:#111827;margin:0 0 24px;font-size:18px">
             <span style="color:#6b7280;text-decoration:line-through">${money(currentPrice)}</span>
@@ -342,7 +370,7 @@ export class EmailService {
         </div>
         <div style="padding:32px">
           <h2 style="color:#111827;margin:0 0 8px">Restablecer contraseña</h2>
-          <p style="color:#374151">Hola ${firstName}, recibimos una solicitud para cambiar tu contraseña.</p>
+          <p style="color:#374151">Hola ${escaparHtml(firstName)}, recibimos una solicitud para cambiar tu contraseña.</p>
           <a href="${resetUrl}"
              style="display:inline-block;background:#2563eb;color:#fff;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;margin:20px 0">
             Cambiar contraseña
@@ -385,6 +413,7 @@ export class EmailService {
       currency: string;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Nueva solicitud de reserva",
       this.p(
@@ -427,6 +456,7 @@ export class EmailService {
       currency: string;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Recibimos tu solicitud",
       this.p(
@@ -466,6 +496,7 @@ export class EmailService {
       endDate: Date;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Tu reserva fue aceptada",
       this.p(
@@ -492,6 +523,7 @@ export class EmailService {
       endDate: Date;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Tu solicitud no fue aceptada",
       this.p(
@@ -532,6 +564,7 @@ export class EmailService {
       currency?: string;
     },
   ) {
+    params = textosEscapados(params);
     const titulo = params.cancelaste
       ? "Cancelaste la reserva"
       : "La reserva fue cancelada";
@@ -624,6 +657,7 @@ export class EmailService {
       bookingId: string;
     },
   ) {
+    params = textosEscapados(params);
     const filas = [
       { etiqueta: "Concepto", valor: params.concepto },
       {
@@ -681,6 +715,7 @@ export class EmailService {
       endDate: Date;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Recibiste un pago",
       this.p(
@@ -720,6 +755,7 @@ export class EmailService {
       esDueño: boolean;
     },
   ) {
+    params = textosEscapados(params);
     const apertura = params.esDueño
       ? `${this.saludo(params.recipientName)} confirmaste la entrega de <strong>${params.vehicleLabel}</strong>. El alquiler ya está en curso.`
       : `${this.saludo(params.recipientName)} quedó confirmado el retiro de <strong>${params.vehicleLabel}</strong>. El alquiler ya está en curso.`;
@@ -761,6 +797,7 @@ export class EmailService {
       horasDeRevision?: number;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Reserva cerrada",
       this.p(
@@ -826,6 +863,7 @@ export class EmailService {
       lockedUntil?: Date | null;
     },
   ) {
+    params = textosEscapados(params);
     const hasta = params.lockedUntil
       ? this.formatDate(params.lockedUntil)
       : null;
@@ -879,6 +917,7 @@ export class EmailService {
       cardLast4?: string | null;
     },
   ) {
+    params = textosEscapados(params);
     const filas = [
       {
         etiqueta: "Importe liberado",
@@ -950,6 +989,7 @@ export class EmailService {
       motivo: string;
     },
   ) {
+    params = textosEscapados(params);
     const filas = [
       {
         etiqueta: "Se cobró del depósito",
@@ -1030,6 +1070,7 @@ export class EmailService {
       nota: string;
     },
   ) {
+    params = textosEscapados(params);
     const html = this.layout(
       "Tu reclamo por daño no prosperó",
       this.p(
@@ -1074,6 +1115,7 @@ export class EmailService {
     email: string,
     params: { recipientName?: string; listingLabel?: string },
   ) {
+    params = textosEscapados(params);
     const dondeEsta = params.listingLabel
       ? ` en la conversación de <strong>${params.listingLabel}</strong>`
       : "";

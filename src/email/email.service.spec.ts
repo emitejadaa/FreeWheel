@@ -252,6 +252,36 @@ describe("EmailService", () => {
     });
   });
 
+  describe("lo que escribe una persona no se vuelve HTML", () => {
+    const LINK = '<a href="https://evil.example">Verificá tu pago</a>';
+
+    it("un nombre con un link llega como texto a la otra parte", async () => {
+      await service.sendBookingCancelled("duenio@test.com", {
+        recipientName: "Ana",
+        otherPartyName: LINK,
+        vehicleLabel: '<img src="x">Corolla',
+        startDate: DESDE,
+        endDate: HASTA,
+        reason: "<script>alert(1)</script>",
+        cancelaste: false,
+      });
+
+      const { html } = ultimo();
+      expect(html).not.toContain('<a href="https://evil.example"');
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("<script>");
+      expect(html).toContain("&lt;a href=&quot;https://evil.example&quot;&gt;");
+    });
+
+    it("tampoco en los mails con datos sueltos (precio, contraseña)", async () => {
+      await service.sendPriceChangeCode("a@test.com", LINK, 100, 120, "123456");
+      expect(ultimo().html).not.toContain('<a href="https://evil.example"');
+
+      await service.sendPasswordReset("a@test.com", LINK, "token", "uid");
+      expect(ultimo().html).not.toContain('<a href="https://evil.example"');
+    });
+  });
+
   describe("el depósito en garantía", () => {
     it("EXPLICA QUE NUNCA SE COBRÓ, que es lo que nadie entiende", async () => {
       /*
