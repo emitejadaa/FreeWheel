@@ -547,7 +547,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // proxy declarado se usa la de la conexión, que no se puede inventar.
       // Si se creyera siempre, el tope de intentos por IP no valdría nada:
       // basta cambiar un texto en cada pedido para tener un contador nuevo.
-      expect(creado.initiatedIp).toBe("::ffff:127.0.0.1");
+      expect(creado.initiatedIp).toBe("127.0.0.1");
       expect(creado.initiatedUserAgent).toBe("FreeWheelApp/1.0");
 
       await sendWebhook(app, "payment_intent.succeeded", {
