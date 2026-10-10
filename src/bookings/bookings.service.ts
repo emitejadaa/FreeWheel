@@ -741,8 +741,9 @@ export class BookingsService {
 
     this.logger.log(`Booking ${id} return confirmed by renter ${renterId}`);
 
-    // La reserva quedó cerrada: las dos partes reciben la constancia y la
-    // invitación a reseñar, que es cuando de verdad tiene sentido pedirla.
+    // El auto volvió: las dos partes reciben la constancia y la invitación a
+    // reseñar, que es cuando de verdad tiene sentido pedirla. Al dueño se le
+    // recuerda la ventana para reportar daños.
     const devueltoEl = updated.returnConfirmedAt ?? new Date();
     for (const persona of [
       { datos: updated.owner, otra: updated.renter, esDueño: true },

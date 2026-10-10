@@ -18,9 +18,10 @@ export const blockingBookingStatuses: BookingStatus[] = [
 /**
  * LAS RESERVAS EN LAS QUE EL AUTO ESTÁ AFUERA Y TODAVÍA NO VOLVIÓ.
  *
- * COMPLETED no está, y eso es lo que hace que devolver antes libere las fechas:
- * quien alquila un mes y devuelve a las dos semanas confirma la devolución, la
- * reserva pasa a COMPLETED, deja de ocupar, y el dueño puede volver a alquilar
+ * Ni INSPECTION ni COMPLETED están, y eso es lo que hace que devolver antes
+ * libere las fechas: quien alquila un mes y devuelve a las dos semanas confirma
+ * la devolución, la reserva pasa a INSPECTION, deja de ocupar, y el dueño puede
+ * volver a alquilar
  * las dos semanas que sobran. Las fechas guardadas en la reserva no cambian
  * —son las que se pagaron— pero ya no ocupan nada.
  */
@@ -136,7 +137,7 @@ export function occupiedBookingWhere(
  *
  * Por eso el fin efectivo de una reserva sin devolver es el más lejano entre su
  * fecha de fin y hoy, y crece un día por día hasta que alguien confirma la
- * devolución. Ahí la reserva pasa a COMPLETED y suelta todo de una.
+ * devolución. Ahí la reserva pasa a INSPECTION y suelta todo de una.
  *
  * Mientras la reserva está en fecha no cambia nada: un alquiler del 1 al 10 no
  * bloquea el 15 por estar en curso, que sería lo contrario de lo que se quiere.

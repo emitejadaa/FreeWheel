@@ -194,7 +194,6 @@ enum ReportAiVerdict {
   UNCLEAR // no alcanza para decidir
 }
 
-/// En qué anda un reclamo por daño del dueño sobre el depósito en garantía.
 /// En qué anda un reclamo por daños sobre un auto devuelto.
 enum DamageClaimStatus {
   /// El dueño lo abrió; espera la respuesta del inquilino.

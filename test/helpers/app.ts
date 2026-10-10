@@ -34,9 +34,10 @@ export interface TestAppOptions {
  * Cloudinary) replaced by in-memory fakes so codes and documents can be driven
  * and asserted without network access.
  *
- * No hay fake de lector de documentos porque ya no hay lector: este backend
- * guarda las fotos y un admin las revisa. La lectura automática vive en
- * docverify-api/, que es un servicio aparte con sus propios tests.
+ * No hay fake del lector de documentos: la suite corre sin DOCVERIFY_URL (ver
+ * setup-env.ts), así que el análisis automático no se pide y los documentos
+ * quedan para la revisión del admin. El cruce de datos se prueba en los specs
+ * unitarios de IdentityMatchService.
  */
 export async function createTestApp(
   options: TestAppOptions = {},
