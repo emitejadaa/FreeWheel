@@ -4,6 +4,7 @@ import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { bearer, registerUser } from "./helpers/factory";
+import { FAKE_CLOUD_NAME } from "./helpers/cloudinary.fake";
 
 /**
  * Quién puede gastar la cuota de la API de IA.
@@ -99,6 +100,50 @@ describe("Rutas de IA: quién gasta la cuota", () => {
       .post("/ai/transcribe")
       .send({ audioUrl: "https://cdn.example.com/audio.webm" })
       .expect(401);
+  });
+
+  /**
+   * El servidor DESCARGA la URL del audio: si aceptara cualquiera, sería una
+   * forma de hacerlo pedir hosts internos o metadatos de la nube (SSRF).
+   */
+  it("POST /ai/transcribe solo descarga audios de nuestro Cloudinary", async () => {
+    const user = await registerUser(app);
+    for (const audioUrl of [
+      "https://cdn.example.com/audio.webm",
+      "http://169.254.169.254/latest/meta-data/",
+      "https://res.cloudinary.com/otra-cuenta/video/upload/v1/nota.webm",
+    ]) {
+      await request(app.getHttpServer())
+        .post("/ai/transcribe")
+        .set("Authorization", bearer(user.token))
+        .send({ audioUrl })
+        .expect(400);
+    }
+
+    // Una de nuestra cuenta pasa el control (y sin clave de Groq, para ahí).
+    const res = await request(app.getHttpServer())
+      .post("/ai/transcribe")
+      .set("Authorization", bearer(user.token))
+      .send({
+        audioUrl: `https://res.cloudinary.com/${FAKE_CLOUD_NAME}/video/upload/v1/chat/nota.webm`,
+      });
+    expect(res.status).not.toBe(400);
+  });
+
+  it("POST /ai/chat rechaza conversaciones desmedidas (gastan nuestra cuota)", async () => {
+    const demasiados = Array.from({ length: 41 }, () => ({
+      role: "user",
+      content: "hola",
+    }));
+    await request(app.getHttpServer())
+      .post("/ai/chat")
+      .send({ messages: demasiados })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post("/ai/chat")
+      .send({ messages: [{ role: "user", content: "x".repeat(60_000) }] })
+      .expect(400);
   });
 
   /**

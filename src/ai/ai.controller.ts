@@ -129,6 +129,7 @@ export class AiController {
 
   // Transcribir consume más que una respuesta de texto: solo usuarios logueados
   // (se usa en las notas de voz del chat, que ya requieren sesión).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("transcribe")
   @UseGuards(JwtAuthGuard)
   transcribe(@Body() dto: AiTranscribeDto) {

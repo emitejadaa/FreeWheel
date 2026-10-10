@@ -1,5 +1,9 @@
 import { ConfigService } from "@nestjs/config";
 import { AiService } from "./ai.service";
+import type { CloudinaryService } from "../media/cloudinary.service";
+
+/** Estas pruebas no transcriben audio: Cloudinary no se usa. */
+const sinCloudinary = {} as CloudinaryService;
 
 /**
  * Lo que se prueba acá es la DECISIÓN que toma el servicio con lo que contesta el
@@ -15,7 +19,7 @@ describe("AiService.vision", () => {
   /** Servicio con la clave cargada y una respuesta de Groq preparada. */
   function conRespuesta(content: string) {
     const config = { get: () => "clave-de-prueba" } as unknown as ConfigService;
-    const service = new AiService(config);
+    const service = new AiService(config, sinCloudinary);
 
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -145,7 +149,7 @@ describe("AiService.vision", () => {
 
   it("reports 'not configured' instead of silently passing when there is no key", async () => {
     const config = { get: () => undefined } as unknown as ConfigService;
-    const service = new AiService(config);
+    const service = new AiService(config, sinCloudinary);
 
     const result = await service.vision(IMAGEN);
 
@@ -252,7 +256,7 @@ describe("AiService.health con prueba de modelos", () => {
           Promise.resolve({ choices: [{ message: { content: "ok" } }] }),
       });
     }) as unknown as typeof fetch;
-    return new AiService(config);
+    return new AiService(config, sinCloudinary);
   }
 
   const SCOUT = "meta-llama/llama-4-scout-17b-16e-instruct";
