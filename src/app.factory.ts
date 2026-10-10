@@ -11,6 +11,7 @@ import { join } from "path";
 import { AppModule } from "./app.module";
 import { createCorsOptions } from "./cors.config";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+import { expressErrorHandler } from "./common/filters/express-error.handler";
 
 const logger = new Logger("Bootstrap");
 
@@ -189,27 +190,10 @@ export function createServer(): Express {
       },
     );
 
-    /*
-      Si Nest no llegó a levantar, el pedido nunca entra al filtro de
-      excepciones de la aplicación: muere acá. Sin esto lo contesta el
-      manejador de express, que devuelve una página HTML de error, y el front
-      —que espera JSON— no tiene nada que mostrar mas que "algo salió mal".
-
-      Devolver el motivo en JSON, con la hora, es lo que permite mirar la
-      consola del navegador y saber si lo que falló fue la base, una variable o
-      el arranque, en vez de adivinar.
-    */
-    cachedServer.use(
-      (err: Error, _req: Request, res: Response, _next: NextFunction) => {
-        const cuando = new Date().toISOString();
-        logger.error(`La API no pudo atender el pedido (${cuando})`, err);
-        res.status(503).json({
-          code: "API_NO_DISPONIBLE",
-          message: err?.message ?? "La API no pudo iniciarse",
-          at: cuando,
-        });
-      },
-    );
+    // Lo que falla antes de Nest (el parser, el arranque) no pasa por el
+    // filtro de excepciones: sin esto lo contestaría Express con una página
+    // HTML, y el front espera JSON.
+    cachedServer.use(expressErrorHandler);
   }
 
   return cachedServer;
