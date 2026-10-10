@@ -19,7 +19,6 @@
     "test:endpoints:local": "ts-node scripts/endpoint-checker/check-local.ts",
     "test:endpoints:deployed": "ts-node scripts/endpoint-checker/check-deployed.ts",
     "test:functional": "ts-node scripts/test-functional.ts",
-    "test:functional:deployed": "ts-node scripts/test-functional.ts",
     "db:migrate:deploy": "prisma migrate deploy",
     "verify:deployed": "ts-node scripts/endpoint-checker/verify-deployed.ts",
     "cloudinary:limpiar": "ts-node scripts/limpiar-cloudinary.ts",
