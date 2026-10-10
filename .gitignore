@@ -50,7 +50,7 @@ ruvector.db
 
 # Local agent/project notes and generated documentation
 .agents/
-docs/
+/docs/*
 AGENTS.md
 ENDPOINTS.md
 *.md
@@ -61,6 +61,8 @@ ENDPOINTS.md
 # la carpeta de uno solo. (Sin esta línea, el `*.md` de arriba lo dejaba afuera y
 # el archivo no entraba en ningún commit.)
 !VARIABLES-VERCEL.md
+# La auditoría de producción sí va al repo: es la lista viva de riesgos.
+!/docs/PRODUCTION_READINESS_AUDIT.md
 
 # External skill repos (local only, not committed)
 .tools/
