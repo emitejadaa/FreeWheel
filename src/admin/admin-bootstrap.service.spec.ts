@@ -166,6 +166,9 @@ describe("AdminBootstrapService", () => {
     await service.sync();
     expect(filtro).toMatchObject({
       status: { in: [UserStatus.ACTIVE, UserStatus.PENDING_VERIFICATION] },
+      // Y que el mail esté confirmado: una cuenta vieja sin confirmar pudo
+      // crearla cualquiera que escribiera esa dirección.
+      emailVerifiedAt: { not: null },
     });
   });
 });
