@@ -2883,7 +2883,10 @@ export class PaymentsService {
    * le sirve ver qué pasó y cuándo, no de qué IP se pagó.
    */
   async getLedger(userId: string, bookingId: string, isAdmin: boolean) {
-    await this.findBookingForParticipant(userId, bookingId);
+    // Un administrador no es parte de la reserva: con el control de
+    // participante primero, la vista completa no le llegaba nunca.
+    if (isAdmin) await this.findBooking(bookingId);
+    else await this.findBookingForParticipant(userId, bookingId);
     const events = await this.prisma.paymentEvent.findMany({
       where: { bookingId },
       orderBy: { createdAt: "asc" },

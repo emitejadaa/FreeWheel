@@ -692,6 +692,24 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       expect(comoDueno.body[0].userAgent).toBeUndefined();
     });
 
+    it("un administrador ve el rastro completo aunque no sea parte de la reserva", async () => {
+      const { renter, bookingId } = await acceptedBooking();
+      await acceptContract(app, bookingId, renter.token);
+      await createIntent(app, "checkout", bookingId, renter.token);
+      const admin = await createAdmin(app, prisma);
+      await prisma.user.update({
+        where: { id: admin.id },
+        data: { verificationStatus: "VERIFIED" },
+      });
+
+      const res = await http()
+        .get(`/payments/bookings/${bookingId}/ledger`)
+        .set("Authorization", auth(admin.token))
+        .expect(200);
+      expect(res.body[0]).toHaveProperty("ip");
+      expect(res.body[0]).toHaveProperty("userAgent");
+    });
+
     it("el estado no devuelve el fingerprint ni la IP de quien pagó", async () => {
       const { owner, renter, bookingId } = await acceptedBooking();
       await payBookingFully(app, bookingId, renter.token);
