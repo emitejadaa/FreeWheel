@@ -1,10 +1,10 @@
 # FreeWheel Backend
 
-Documento maestro del backend de FreeWheel. Describe el contexto del proyecto, arquitectura, estructura de carpetas, modulos NestJS, endpoints, modelos Prisma, flujos de dominio, integraciones, scripts, estado actual, riesgos conocidos y roadmap tecnico.
+Documento maestro del backend de FreeWheel. Describe el contexto del proyecto, arquitectura, estructura de carpetas, modulos NestJS, endpoints, modelos Prisma, flujos de dominio, integraciones, scripts y estado actual. Los riesgos conocidos y lo pendiente para produccion viven en `docs/PRODUCTION_READINESS_AUDIT.md`, que es la fuente de verdad de esa lista.
 
 ## 1. Contexto Del Proyecto
 
-FreeWheel es un backend NestJS para un marketplace de alquiler de autos entre usuarios. El producto permite que un owner publique vehiculos y que un renter solicite reservas en fechas concretas. El sistema ya cubre autenticacion, usuarios, vehiculos, listings, disponibilidad, reservas, pagos mock, conversaciones, verificacion, administracion, media metadata, auditoria y despliegue serverless en Vercel.
+FreeWheel es un backend NestJS para un marketplace de alquiler de autos entre usuarios. El producto permite que un owner publique vehiculos y que un renter solicite reservas en fechas concretas. El sistema ya cubre autenticacion, usuarios, vehiculos, listings, disponibilidad, reservas, pagos con Stripe en modo de prueba y libro contable, reclamos por daños, reseñas, denuncias, conversaciones, verificacion de identidad, administracion, media, auditoria y despliegue serverless en Vercel.
 
 El backend esta pensado para evolucionar hacia produccion con:
 
@@ -361,27 +361,34 @@ Responsabilidades:
 - Confirmar pickup.
 - Confirmar return.
 - Registrar auditoria en eventos importantes.
-- Coordinar pagos mock mediante `PaymentsService`.
+- Coordinar cobros, deposito, cancelacion y liquidacion con `PaymentsService`.
 
 Reglas principales:
 
-- El listing debe estar `ACTIVE` para crear reserva.
+- El listing debe estar `ACTIVE` para crear reserva, y quien la pide tiene que
+  tener la licencia vigente (`@RequireDrivingEligibility`).
 - El renter no puede reservar su propio listing.
 - Fechas invalidas o pasadas se rechazan.
 - Reservas activas y bloqueos manuales impiden crear o aceptar una reserva.
-- Al aceptar, el booking pasa a `ACCEPTED`, se generan tokens y se crea pago mock `PENDING`.
-- No se puede marcar `READY_FOR_PICKUP` sin `paymentStatus = PAID`.
-- Pickup solo puede confirmarlo el owner con token correcto.
-- Return solo puede confirmarlo el renter con token correcto.
-- Al completar return, el booking pasa a `COMPLETED` y se registra release mock.
-- Si se cancela una reserva pagada antes del pickup, se simula refund.
+  Aceptar vuelve a controlarlo con la publicacion bloqueada (advisory lock).
+- Cada transicion escribe con el estado esperado en el `where`: si otro pedido
+  la cambio en el medio, contesta 409 `BOOKING_STATE_CHANGED`.
+- Al aceptar, el booking pasa a `ACCEPTED` con `paymentStatus = PENDING`, se
+  congelan los precios, se generan los tokens y se crea y acepta el contrato.
+- `READY_FOR_PICKUP` exige `paymentStatus = FULLY_PAID` y autoriza el deposito.
+- Pickup solo puede confirmarlo el owner con el token del renter.
+- Return solo puede confirmarlo el renter con el token del owner, y abre la
+  ventana de inspeccion (`INSPECTION`, 48 h por omision).
+- Cerrada la ventana sin reclamo, la reserva se liquida (cron diario o
+  `POST /bookings/:id/settle`) y pasa a `COMPLETED`.
+- Cancelar sigue la politica de `cancellation-policy.ts` (48 h).
 
 Tokens:
 
 - `pickupTokenHash` y `returnTokenHash` guardan hashes con `bcryptjs`.
-- `pickupTokenPreview` y `returnTokenPreview` existen temporalmente para que el frontend muestre QR.
-- Las previews se limpian al consumir el token.
-- Las previews no son el diseno final recomendado para produccion sensible.
+- `pickupTokenPreview` y `returnTokenPreview` guardan el token CIFRADO
+  (`EncryptionService`) para poder volver a mostrar el QR; se limpian al
+  consumirlo y solo salen por `GET /bookings/:id/tokens`, a quien corresponde.
 
 ### PaymentsModule
 
@@ -396,19 +403,19 @@ Archivos:
 
 Responsabilidades:
 
-- Calcular montos del lado del servidor (`PricingService`): seña, saldo, seguro, comisión, depósito, payout del owner (en unidades mínimas/centavos).
-- Crear PaymentIntents de seña y saldo, y el hold de garantía (captura manual).
-- Procesar webhooks de Stripe firmados, idempotentes por `event.id` (tabla `StripeEvent`).
-- Liquidar al check-out: liberar (o capturar) el hold y transferir el payout al owner (Connect).
-- Reembolsar seña/saldo y liberar el hold en cancelaciones.
+- Calcular montos del lado del servidor (`PricingService`): alquiler, cobertura, comisión, seña (la porción sujeta a la política de cancelación), depósito y payout del owner (en unidades mínimas/centavos).
+- Crear el cobro único (`checkout`: alquiler + cobertura) y el hold del depósito (captura manual, autorizado al marcar la reserva lista para retirar). `sena-intent` y `balance-intent` quedan como alias para reservas viejas.
+- Procesar webhooks de Stripe firmados, idempotentes por `event.id` (tabla `StripeEvent`; si el procesamiento falla, el reintento de Stripe lo vuelve a procesar) y conciliar con Stripe al consultar el estado.
+- Liquidar al cerrar la ventana de inspección: soltar o capturar el depósito, repartir la plata en el libro (`LedgerService`) y transferir al owner todo lo que se le debe (Connect). La clave de idempotencia de la transferencia sale del estado del libro, así dos liquidaciones simultáneas pagan una sola vez.
+- Reembolsar según la política de cancelación y soltar el hold.
 - Onboarding del owner como cuenta conectada (Connect).
-- Actualizar `PaymentRecord` (ledger) y `Booking.paymentStatus`, `paidAt`, `refundedAt`, `ownerTransferId`.
+- Actualizar `PaymentRecord`/`PaymentEvent` y `Booking.paymentStatus`, `paidAt`, `refundedAt`, `settledAt`, `ownerTransferId`.
 
 Diseno reemplazable:
 
 - `PaymentProvider` define la frontera interna (intents, hold/capture/release, refund, transfer, connect, webhook).
 - `StripePaymentsProvider` (real, solo claves `sk_test_…`) y `MockPaymentsProvider` (determinista/offline) la implementan; se elige por `PAYMENTS_PROVIDER`.
-- Modelo Stripe Connect con *separate charges & transfers*: el payout al owner se transfiere al completar la reserva.
+- Modelo Stripe Connect con *separate charges & transfers*: el payout al owner se transfiere al liquidar la reserva.
 
 Seguridad:
 
@@ -1541,23 +1548,22 @@ Implementado:
 - ValidationPipe global con whitelist.
 - Filtro global de errores (`AllExceptionsFilter`) con logging de contexto sin filtrar secretos.
 - Rate limiting global (`ThrottlerGuard`, 120 req/min/IP) con limites mas bajos por ruta en lo que llama a servicios externos pagos: firma de documentos (10/5min), submit de identidad (5/15min), reintento de revision (3/15min) y proxy de IA (chat 20/min, vision 10/min).
-- Proxy de IA (`/ai/chat`, `/ai/vision`) detras de `JwtAuthGuard`: cada request consume cuota de una API key nuestra.
+- Proxy de IA: `/ai/vision` y `/ai/transcribe` piden sesion; `/ai/chat` es publico con tope por IP y por tamaño de la conversacion. `/ai/transcribe` solo descarga audios de nuestro Cloudinary.
 - Documentos de identidad privados en Cloudinary (`type=authenticated`): la URL persistida no sirve para verlos y las URLs firmadas se generan al momento, solo para admins y con auditoria.
 - Documentos ligados estructuralmente a su dueno y a su slot: el `public_id` lo arma el servidor desde el JWT y el submit rechaza URLs ajenas, de otro slot o inexistentes. La carpeta `identity/` esta vedada en el endpoint de media generico.
 - Antifraude de identidad: `User.dni` y `User.cuil` unicos, revalidacion del documento dentro de la transaccion de aprobacion, e inmutabilidad de los campos de identidad una vez `VERIFIED`.
 - Minimizacion de datos personales (Ley 25.326) en la verificacion: el usuario solo recibe codigos de motivo; la extraccion y el reporte de cruces quedan para admins y nunca entran en `AuditLog` ni en los logs.
 
-Riesgos conocidos:
+Riesgos conocidos: ver `docs/PRODUCTION_READINESS_AUDIT.md` (Parte A,
+seguridad; Parte B, correccion y produccion). Los que siguen abiertos al momento
+de escribir esto:
 
-- `pickupTokenPreview` y `returnTokenPreview` guardan token plano temporal para compatibilidad con QR de frontend.
-- `POST /payments/mock/webhook` es simulacion de desarrollo; en produccion real deberia validar firma del provider.
-- `MediaAsset` necesita validacion mas estricta de ownership por `entityType/entityId`.
-- CORS esta abierto con `origin: true`.
-- `JWT_SECRET` cae a un valor por defecto interno si no esta seteado (deuda de seguridad); configurar la variable en cada entorno y luego pasar a fail-fast.
-- Falta rate limiting especifico para auth y confirmacion de tokens de booking.
-- La verificacion documental no prueba que quien sube los documentos sea su titular: falta la verificacion facial con prueba de vida (ver Pendientes).
-- El JSON `extracted` guarda datos personales sin politica de retencion/purga.
-- Falta observabilidad avanzada y tracing.
+- El token de Google OAuth vuelve al front en la query string del redirect.
+- `nodemailer` sigue en 8.x (los avisos de seguridad se arreglan en 10.x).
+- `GET /health/env` es publico y dice que protecciones estan configuradas.
+- CORS en produccion queda en report-only hasta cargar `CORS_STRICT=true`.
+- La verificacion documental no prueba que quien sube los documentos sea su
+  titular: falta la verificacion facial con prueba de vida (ver Pendientes).
 
 ## 11. Integraciones
 
@@ -1832,131 +1838,49 @@ con `PATCH /admin/verifications/:id/review` (ver `admin.rest`).
 
 ## 15. Estado Actual Implementado
 
-Implementado:
-
-- Auth local con email/password.
-- JWT configurable.
-- Password hashing con `bcryptjs`.
-- Verificacion de email con codigos hasheados.
-- Recuperacion de password con tokens hasheados.
-- Cambio de email por codigo.
-- Google OAuth opcional.
-- Perfil propio y actualizacion.
-- CRUD de vehiculos con ownership.
-- CRUD/listado de listings.
-- Soft delete de listings.
-- Filtros, paginacion y sorting en listings.
-- Disponibilidad por listing.
-- Bloqueos manuales por owner.
-- Reservas con estados, snapshots y tokens.
-- Pago mock requerido antes de pickup.
-- Confirmacion de pickup/return por token.
-- Refund mock en cancelaciones pagadas.
-- Release mock al completar return.
-- Conversaciones y mensajes renter/owner por listing.
-- Admin para usuarios, verificaciones, listings y bookings.
-- Delete permanente de listings desde admin.
-- Registro de media por URL/metadata.
-- Audit logs.
-- CORS permisivo.
-- Deploy serverless en Vercel.
-- Scripts de validacion y pruebas.
+- Registro en dos pasos (el email se verifica antes de crear la cuenta), login
+  con bloqueo por cuenta, sesiones revocadas al cambiar la contraseña, Google
+  OAuth opcional, recuperacion de contraseña y cambio de email por codigo.
+- Verificacion de email, telefono (SMS o mail) y documentos (DNI y licencia),
+  con lectura automatica opcional (`docverify-api`) y revision manual.
+- Vehiculos con verificacion de titularidad; publicaciones con fotos
+  ordenables, calendario, bloqueos y cambio de precio confirmado por mail.
+- Reservas con estados atomicos, contrato digital (PDF), codigos QR cifrados,
+  politica de cancelacion y ventana de inspeccion.
+- Cobro unico con Stripe (modo de prueba), deposito en garantia autorizado al
+  retirar, webhook firmado e idempotente, conciliacion al consultar el estado,
+  liquidacion y transferencia al dueño, libro de partida doble.
+- Reclamos por daños, reseñas, denuncias con revision por IA, favoritos, chat.
+- Panel de administracion, auditoria, cifrado de campos, limite de pedidos
+  persistente, retencion y purga de datos personales, cron diario.
+- Deploy serverless en Vercel con migracion automatica.
 
 ## 16. Pendientes Tecnicos Prioritarios
 
-Alta prioridad:
+La lista viva esta en `docs/PRODUCTION_READINESS_AUDIT.md` ("Remaining risks
+and recommended next steps"). Ademas de esa lista:
 
 - **Verificacion facial con prueba de vida (liveness).** La verificacion
   documental prueba que los documentos son validos, coherentes entre si y
   consistentes con la cuenta, pero no que quien los subio sea su titular
-  (alguien podria usar fotos de documentos ajenos). Diseno previsto: captura
-  por camara con una serie de tareas guiadas (girar la cabeza, parpadear,
-  repetir una frase) al crear la cuenta, guardando el descriptor facial; y
-  re-chequeo al iniciar sesion desde un dispositivo nuevo o antes de una
-  accion de alta sensibilidad. La columna `DocumentVerification` no guarda selfie: esa pieza esta
-  reservada para esto y el cruce documental ya deja el hueco donde
-  engancharlo.
-- Politica de retencion/purga del JSON `extracted` (datos personales) pasados
-  N dias de la decision.
-- Reemplazar previews de tokens QR por emision efimera o canal seguro.
-- Agregar expiracion, regeneracion e intentos fallidos para tokens pickup/return.
-- Validar ownership de `MediaAsset.entityType/entityId`.
-- Agregar rate limiting en auth y confirmaciones de token de booking.
-- Agregar healthcheck dedicado.
-- Crear tests E2E reales con DB aislada.
-- Corregir mocks antiguos para que `tsc --noEmit` pase completo.
-
-Media prioridad:
-
-- Provider real de pagos.
-- Webhooks reales con firma.
-- Modelo de fees, deposits, payouts y conciliacion.
-- Politicas de cancelacion y penalidades.
-- Availability avanzada por calendario recurrente.
-- Estados o tabla de disputes.
-- Notificaciones por email/eventos.
-- Observabilidad: logs estructurados, tracing y metricas.
-
-Baja prioridad:
-
-- Politicas finas de CORS por ambiente.
-- Busqueda geografica avanzada.
-- Reviews/rating.
-- Favoritos.
-- Promociones o descuentos.
-- Backoffice admin mas completo.
+  (alguien podria usar fotos de documentos ajenos). Diseño previsto: captura
+  por camara con tareas guiadas al crear la cuenta, guardando el descriptor
+  facial, y re-chequeo antes de una accion de alta sensibilidad.
+- Paginacion en las listas de administracion y en los mensajes de una
+  conversacion.
+- Logs estructurados, trazas por pedido y metricas de reservas y pagos.
 
 ## 17. Roadmap De Produccion
 
-### Fase 1 - Robustez Backend
+Lo que el roadmap original listaba como fases 1 a 3 (healthcheck, rate
+limiting, typecheck en CI, e2e con base de test, ownership de media, Stripe con
+webhooks firmados e idempotentes, reembolsos, payouts, conciliacion, deposito,
+penalidades de cancelacion, reseñas y disputas) ya esta implementado. Queda:
 
-- Healthcheck real.
-- Rate limiting.
-- Typecheck completo en CI.
-- E2E con base de datos de test.
-- Hardening de media ownership.
-- Mejor manejo de errores y codigos HTTP.
-- Seed controlado para desarrollo.
-
-### Fase 2 - Pagos Reales
-
-- Provider: Stripe (modo de prueba).
-- Implementar provider concreto bajo la interfaz actual.
-- Webhooks firmados.
-- Idempotencia por provider event id.
-- Refunds reales.
-- Payout/release real al owner.
-- Conciliacion de `PaymentRecord`.
-- Campos adicionales para fees, deposits y provider metadata.
-
-### Fase 3 - Seguridad Operativa
-
-- Rotacion de secretos.
-- Auditoria mas detallada.
-- Alertas para eventos sensibles.
-- Proteccion anti abuso.
-- Caducidad y regeneracion de QR tokens.
-- CORS por ambiente si se decide restringir origenes.
-
-### Fase 4 - Producto Marketplace
-
-- Reviews.
-- Mejoras de mensajeria: adjuntos, moderacion y notificaciones.
-- Disputas.
-- Penalidades de cancelacion.
-- Depositos de garantia.
-- Verificacion de identidad con proveedor externo.
-- Verificacion SMS real.
-- Calendario publico/privado para owners.
-
-### Fase 5 - Observabilidad Y Escala
-
-- Logs estructurados.
-- Traces por request.
-- Metricas de reservas, pagos y errores.
-- Dashboards.
-- Indices revisados con datos reales.
-- Jobs para limpieza de codigos expirados, tokens y records antiguos.
+- Cobro en modo real: claves `live`, revision legal de contrato y politica.
+- Verificacion facial (ver Pendientes).
+- Observabilidad (logs estructurados, trazas, metricas, alertas).
+- Calendario recurrente, promociones y busqueda geografica avanzada.
 
 ## 18. Notas Operativas
 

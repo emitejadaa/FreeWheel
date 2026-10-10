@@ -22,8 +22,9 @@ import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { ConfirmTokenDto } from "./dto/confirm-token.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
-// Booking mutations are sensitive: only fully verified accounts (phone + DNI +
-// license) may move money or vehicles. Read-only routes stay open to any
+// Booking mutations are sensitive: only verified accounts may move money or
+// vehicles, and requesting a booking also needs a valid driving license
+// (@RequireDrivingEligibility). Read-only routes stay open to any
 // authenticated user.
 @Controller("bookings")
 @UseGuards(JwtAuthGuard, VerifiedAccountGuard)
