@@ -10,8 +10,6 @@ import {
   Booking,
   BookingStatus,
   ListingStatus,
-  MediaAssetKind,
-  MediaAssetStatus,
   PaymentStatus,
   Prisma,
 } from "@prisma/client";
@@ -23,6 +21,7 @@ import { ContractsService } from "../contracts/contracts.service";
 import type { AcceptanceContext } from "../contracts/contracts.service";
 import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import { EmailService } from "../email/email.service";
+import { ListingsService } from "../listings/listings.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -52,6 +51,7 @@ export class BookingsService {
     private readonly encryption: EncryptionService,
     private readonly config: ConfigService,
     private readonly vehicleVerification: VehicleVerificationService,
+    private readonly listings: ListingsService,
   ) {}
 
   async create(renterId: string, data: CreateBookingDto) {
@@ -173,34 +173,20 @@ export class BookingsService {
   /**
    * Agrega a cada reserva las fotos del vehículo (`listing.photos`), que viven
    * en MediaAsset y no en la relación. Sin esto las tarjetas de "Mis reservas"
-   * se ven siempre como "Sin foto".
+   * se ven siempre como "Sin foto". Salen de ListingsService para que la
+   * portada sea la misma que eligió el dueño para la publicación.
    */
   private async withVehiclePhotos<T extends { vehicleId: string }>(
     bookings: T[],
   ): Promise<(T & { photos: string[] })[]> {
     if (bookings.length === 0) return [];
 
-    const assets = await this.prisma.mediaAsset.findMany({
-      where: {
-        entityType: "vehicle",
-        entityId: { in: bookings.map((booking) => booking.vehicleId) },
-        kind: MediaAssetKind.VEHICLE_PHOTO,
-        status: MediaAssetStatus.ACTIVE,
-      },
-      select: { entityId: true, url: true },
-      orderBy: { createdAt: "asc" },
-    });
-
-    const byVehicle = new Map<string, string[]>();
-    for (const asset of assets) {
-      if (!asset.entityId) continue;
-      const urls = byVehicle.get(asset.entityId) ?? [];
-      urls.push(asset.url);
-      byVehicle.set(asset.entityId, urls);
-    }
+    const byVehicle = await this.listings.getPhotosByVehicleIds(
+      bookings.map((booking) => booking.vehicleId),
+    );
 
     return bookings.map((booking) => {
-      const photos = byVehicle.get(booking.vehicleId) ?? [];
+      const photos = byVehicle[booking.vehicleId] ?? [];
       const listing = (booking as { listing?: object }).listing;
       return {
         ...booking,

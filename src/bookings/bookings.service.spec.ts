@@ -9,6 +9,7 @@ import { EmailService } from "../email/email.service";
 import { ConfigService } from "@nestjs/config";
 import { EncryptionService } from "../common/crypto/encryption.service";
 import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
+import { ListingsService } from "../listings/listings.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -183,6 +184,10 @@ describe("BookingsService", () => {
         {
           provide: VehicleVerificationService,
           useValue: { assertVehicleVerified: jest.fn() },
+        },
+        {
+          provide: ListingsService,
+          useValue: { getPhotosByVehicleIds: jest.fn().mockResolvedValue({}) },
         },
       ],
     }).compile();

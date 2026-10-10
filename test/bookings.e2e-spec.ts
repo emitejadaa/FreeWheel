@@ -337,6 +337,45 @@ describe("Bookings", () => {
     ).toBe(aceptada[0].body.returnQrToken);
   });
 
+  it("la reserva muestra las fotos del auto en el orden que eligió el dueño", async () => {
+    // La portada de "Mis reservas" tiene que ser la misma que la de la
+    // publicación: antes salían en el orden en que se subieron.
+    const owner = await registerUser(app);
+    const vehicle = await createVehicle(app, owner.token);
+    const listing = await createListing(app, owner.token, vehicle.id);
+    const fotos: string[] = [];
+    for (const n of [1, 2]) {
+      const res = await http()
+        .post("/media/assets")
+        .set("Authorization", auth(owner.token))
+        .send({
+          kind: "VEHICLE_PHOTO",
+          url: `https://cdn.example.com/auto-${n}.jpg`,
+          entityType: "vehicle",
+          entityId: vehicle.id,
+        })
+        .expect(201);
+      fotos.push(res.body.url as string);
+    }
+    await http()
+      .patch(`/listings/${listing.id}/photos`)
+      .set("Authorization", auth(owner.token))
+      .send({ photos: [fotos[1], fotos[0]] })
+      .expect(200);
+
+    const renter = await registerUser(app);
+    const created = await http()
+      .post("/bookings")
+      .set("Authorization", auth(renter.token))
+      .send({ listingId: listing.id, ...dates(8) })
+      .expect(201);
+    const reserva = await http()
+      .get(`/bookings/${created.body.id}`)
+      .set("Authorization", auth(renter.token))
+      .expect(200);
+    expect(reserva.body.photos).toEqual([fotos[1], fotos[0]]);
+  });
+
   it("enforces participant and owner-only guards", async () => {
     const { renter, listingId } = await setup();
     const created = await http()
