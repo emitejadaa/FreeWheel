@@ -10,7 +10,6 @@ import { RetentionModule } from "./retention/retention.module";
 import { JobsModule } from "./jobs/jobs.module";
 import { PhotoVisibilityInterceptor } from "./common/interceptors/photo-visibility.interceptor";
 import { AppController } from "./app.controller";
-import { AppService } from "./app.service";
 import { AiModule } from "./ai/ai.module";
 import { AuthModule } from "./auth/auth.module";
 import { UsersModule } from "./users/users.module";
@@ -33,7 +32,6 @@ import { ReportsModule } from "./reports/reports.module";
 @Module({
   controllers: [AppController],
   providers: [
-    AppService,
     // El limitador general cuenta por la IP REAL del cliente (ver
     // ClientIpThrottlerGuard): detrás de Vercel, req.ip es la del proxy.
     { provide: APP_GUARD, useClass: ClientIpThrottlerGuard },

@@ -2534,18 +2534,6 @@ export class PaymentsService {
     return outcome;
   }
 
-  /** Mantiene el nombre viejo: cancelar con reembolso total. */
-  async refundOnCancel(actorId: string, bookingId: string) {
-    const booking = await this.findBooking(bookingId);
-    const cancelledBy: CancelledBy =
-      actorId === booking.ownerId
-        ? "OWNER"
-        : actorId === booking.renterId
-          ? "RENTER"
-          : "PLATFORM";
-    return this.cancelAndSettle(bookingId, cancelledBy, actorId);
-  }
-
   /**
    * Devuelve a la tarjeta de quien alquiló, repartiendo entre los cobros de la
    * reserva (el único nuevo, o la seña y el saldo de una reserva vieja). Nunca

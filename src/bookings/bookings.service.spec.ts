@@ -82,7 +82,6 @@ describe("BookingsService", () => {
     cancelAndSettle: jest.Mock;
     previewCancellation: jest.Mock;
     settleBooking: jest.Mock;
-    refundOnCancel: jest.Mock;
   };
   let pricing: { computeBooking: jest.Mock };
   let contracts: {
@@ -142,7 +141,6 @@ describe("BookingsService", () => {
       cancelAndSettle: jest.fn().mockResolvedValue(null),
       previewCancellation: jest.fn(),
       settleBooking: jest.fn().mockResolvedValue({ settled: true }),
-      refundOnCancel: jest.fn(),
     };
     pricing = { computeBooking: jest.fn().mockReturnValue(PRICING) };
     contracts = {

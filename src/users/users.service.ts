@@ -59,12 +59,6 @@ export class UsersService {
     return this.prisma.user.findUnique({ where: { id } });
   }
 
-  async create(data: Prisma.UserCreateInput): Promise<SafeUser> {
-    const user = await this.prisma.user.create({ data });
-
-    return this.toSafeUser(user);
-  }
-
   /**
    * Perfil PÚBLICO de una persona: lo que se puede mostrar a otro usuario.
    *

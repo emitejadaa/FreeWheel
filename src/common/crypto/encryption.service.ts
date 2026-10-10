@@ -8,7 +8,6 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
-  createHmac,
   randomBytes,
 } from "crypto";
 
@@ -53,7 +52,6 @@ export class EncryptionService {
   private readonly key: Buffer | null;
   /** Clave anterior, solo para descifrar durante una rotación. */
   private readonly previousKey: Buffer | null;
-  private readonly indexKey: Buffer | null;
 
   constructor(config: ConfigService) {
     this.key = this.parseKey(config.get<string>("DATA_ENCRYPTION_KEY"));
@@ -80,13 +78,6 @@ export class EncryptionService {
           "guardarse cifrado va a fallar con 503.",
       );
     }
-
-    // La clave de los índices ciegos se deriva de la de cifrado pero es otra:
-    // usar la misma clave para dos cosas distintas es la forma clásica de que
-    // una debilidad en una se contagie a la otra.
-    this.indexKey = this.key
-      ? createHmac("sha256", this.key).update("blind-index").digest()
-      : null;
   }
 
   /** Si hay una clave real (o de desarrollo) con la que cifrar. */
@@ -154,23 +145,6 @@ export class EncryptionService {
     } catch {
       return null;
     }
-  }
-
-  isEncrypted(value: string | null | undefined): boolean {
-    return typeof value === "string" && value.startsWith(PREFIJO);
-  }
-
-  /**
-   * Un ÍNDICE CIEGO: un hash con clave, determinístico, para poder buscar o
-   * detectar repetidos sobre un dato cifrado sin descifrarlo (por ejemplo, el
-   * mismo chasis en dos autos). Con clave y no un hash pelado porque un dato
-   * de pocos valores posibles —un DNI— se revierte probando todos.
-   */
-  blindIndex(value: string): string {
-    if (!this.indexKey) this.requireKey();
-    return createHmac("sha256", this.indexKey as Buffer)
-      .update(value.trim().toUpperCase())
-      .digest("hex");
   }
 
   private requireKey(): Buffer {
