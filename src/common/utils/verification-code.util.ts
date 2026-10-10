@@ -42,10 +42,14 @@ export interface ConsumeVerificationCodeOptions {
 /**
  * Validate and consume a single-use verification code/token. Centralizes the
  * find → expiry → attempts → compare → consume sequence that the auth and
- * verification flows previously duplicated. On a wrong code the attempt counter
- * is incremented before throwing; on success the record is marked consumed and
- * returned. Only one unconsumed code exists per (user, purpose) at a time, so
- * fetching the latest unconsumed record is unambiguous.
+ * verification flows previously duplicated. Only one unconsumed code exists per
+ * (user, purpose) at a time, so fetching the latest unconsumed record is
+ * unambiguous.
+ *
+ * The attempt is reserved with a conditional increment BEFORE comparing: with
+ * a separate check and increment, N parallel guesses all saw `attempts < max`
+ * and the per-code limit did not hold. Consumption is conditional too, so the
+ * same code cannot be consumed twice.
  */
 export async function consumeVerificationCode(
   prisma: PrismaService,
@@ -58,21 +62,32 @@ export async function consumeVerificationCode(
 
   if (!record) throw errors.missing();
   if (record.expiresAt <= new Date()) throw errors.expired();
-  if (record.attempts >= record.maxAttempts) throw errors.tooManyAttempts();
 
-  const matches = await bcrypt.compare(plaintext, record.codeHash);
-  if (!matches) {
-    await prisma.verificationCode.update({
+  const reserved = await prisma.verificationCode.updateMany({
+    where: {
+      id: record.id,
+      consumedAt: null,
+      attempts: { lt: record.maxAttempts },
+    },
+    data: { attempts: { increment: 1 } },
+  });
+  if (reserved.count === 0) {
+    const current = await prisma.verificationCode.findUnique({
       where: { id: record.id },
-      data: { attempts: { increment: 1 } },
+      select: { consumedAt: true },
     });
+    throw current?.consumedAt ? errors.missing() : errors.tooManyAttempts();
+  }
+
+  if (!(await bcrypt.compare(plaintext, record.codeHash))) {
     throw errors.invalid();
   }
 
-  await prisma.verificationCode.update({
-    where: { id: record.id },
+  const consumed = await prisma.verificationCode.updateMany({
+    where: { id: record.id, consumedAt: null },
     data: { consumedAt: new Date() },
   });
+  if (consumed.count === 0) throw errors.missing();
 
   return record;
 }
