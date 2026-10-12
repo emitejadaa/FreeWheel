@@ -15,7 +15,12 @@ import { PrismaService } from "../prisma/prisma.service";
 jest.mock("nodemailer");
 
 describe("EmailService", () => {
-  let enviados: { to: string; subject: string; html: string }[];
+  let enviados: {
+    to: string;
+    subject: string;
+    html: string;
+    attachments?: { cid: string; filename: string; content: Buffer }[];
+  }[];
   let service: EmailService;
   // Con qué preferencia contesta la base para cada dirección. Por defecto no hay
   // ninguna cuenta cargada, y eso ya es un caso real: el mail de cambio de email
@@ -26,7 +31,12 @@ describe("EmailService", () => {
     enviados = [];
     cuentas = {};
     (nodemailer.createTransport as jest.Mock).mockReturnValue({
-      sendMail: (mail: { to: string; subject: string; html: string }) => {
+      sendMail: (mail: {
+        to: string;
+        subject: string;
+        html: string;
+        attachments?: { cid: string; filename: string; content: Buffer }[];
+      }) => {
         enviados.push(mail);
         return Promise.resolve();
       },
@@ -540,6 +550,139 @@ describe("EmailService", () => {
           bookingId: "abcdef12-0000-0000-0000-000000000000",
         }),
       ).resolves.toBeUndefined();
+      expect(enviados).toHaveLength(0);
+    });
+  });
+
+  /*
+    EL COMPROBANTE CON EL QR DEL RETIRO
+
+    Este mail existe para un momento concreto: la persona parada al lado del
+    auto, a veces sin señal. Todo lo que se prueba acá sale de ahí.
+
+    Y hay una propiedad que no es de presentación sino de seguridad: el código
+    del retiro es lo que confirma la entrega del auto. No puede terminar en una
+    dirección web, ni nuestra ni de un generador de QR ajeno, porque una
+    dirección es algo que alguien puede abrir.
+  */
+  describe("el comprobante con el QR del retiro", () => {
+    const CODIGO = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4";
+
+    const comprobante = (extra = {}) =>
+      service.sendBookingReceipt("inquilino@test.com", {
+        renterName: "Ignacio",
+        bookingId: "abcdef12-0000-0000-0000-000000000000",
+        vehicleLabel: "Volkswagen Taos 2022",
+        ownerName: "Emiliano",
+        locationText: "Villa Crespo, CABA",
+        startDate: DESDE,
+        endDate: HASTA,
+        days: 4,
+        currency: "ARS",
+        rentalSubtotal: 160000,
+        insurance: 12000,
+        platformFee: 17200,
+        total: 189200,
+        deposit: 80000,
+        pickupToken: CODIGO,
+        ...extra,
+      });
+
+    it("EL CÓDIGO VA ESCRITO, no solo adentro de la imagen", async () => {
+      // Los clientes de correo no muestran las imágenes hasta que uno lo pide.
+      // Si el código estuviera solo en el QR, el mail llegaría vacío justo en
+      // lo único que importa, y el dueño no tendría qué escribir a mano.
+      await comprobante();
+      expect(ultimo().html).toContain(CODIGO);
+    });
+
+    it("el QR viaja ADENTRO del mail, no enlazado", async () => {
+      await comprobante();
+      const adjuntos = ultimo().attachments ?? [];
+      expect(adjuntos).toHaveLength(1);
+      expect(adjuntos[0].cid).toBe("qr-retiro");
+      expect(adjuntos[0].content.length).toBeGreaterThan(100);
+      // Un PNG empieza con estos cuatro bytes.
+      expect(adjuntos[0].content.subarray(1, 4).toString()).toBe("PNG");
+      expect(ultimo().html).toContain('src="cid:qr-retiro"');
+    });
+
+    it("EL CÓDIGO DEL RETIRO NO APARECE EN NINGUNA DIRECCIÓN WEB", async () => {
+      /*
+        La prueba que cuida lo importante. Si el QR se generara pidiéndoselo a
+        un servicio de afuera, o si la imagen se sirviera desde una URL nuestra,
+        el código quedaría en una dirección: algo que viaja por el camino, queda
+        en registros y cualquiera que la tenga puede abrir.
+      */
+      await comprobante();
+      const direcciones =
+        ultimo().html.match(/(?:https?:)?\/\/[^"'\s)]+/g) ?? [];
+      for (const url of direcciones) {
+        expect(url).not.toContain(CODIGO);
+      }
+      // Y ningún generador de QR de afuera.
+      expect(ultimo().html).not.toMatch(
+        /qrserver|chart\.googleapis|quickchart/i,
+      );
+    });
+
+    it("lleva la cuenta entera, no solo el total", async () => {
+      await comprobante();
+      const html = ultimo().html;
+      expect(html).toContain("Alquiler (4 días)");
+      expect(html).toContain("Seguro");
+      expect(html).toContain("Total pagado");
+      // El auto, las fechas, dónde y quién lo entrega.
+      expect(html).toContain("Volkswagen Taos 2022");
+      expect(html).toContain("Villa Crespo, CABA");
+      expect(html).toContain("Emiliano");
+      expect(html).toContain("ABCDEF12");
+    });
+
+    it("EL DEPÓSITO SE EXPLICA COMO RETENIDO, NO COMO COBRADO", async () => {
+      // Es el número que más confunde: aparece en el resumen de la tarjeta como
+      // si fuera un consumo. Verlo explicado en el comprobante es la diferencia
+      // entre una duda y un reclamo.
+      await comprobante();
+      const html = ultimo().html;
+      expect(html).toContain("No es un cobro");
+      expect(html).toMatch(/retenido/i);
+    });
+
+    it("un dia solo se dice en singular", async () => {
+      await comprobante({ days: 1 });
+      expect(ultimo().html).toContain("Alquiler (1 día)");
+    });
+
+    it("sin seguro ni comision no se escriben renglones en cero", async () => {
+      await comprobante({ insurance: 0, platformFee: 0, deposit: 0 });
+      const html = ultimo().html;
+      expect(html).not.toContain("Seguro");
+      expect(html).not.toContain("Servicio de Freewheel");
+      expect(html).not.toContain("No es un cobro");
+      // El total sí, siempre.
+      expect(html).toContain("Total pagado");
+    });
+
+    it("SIN CÓDIGO EL MAIL SALE IGUAL, con el resto de los datos", async () => {
+      // Si el código no se pudiera descifrar, quedarse sin mandar el
+      // comprobante sería perder también el detalle de lo que se pagó.
+      await comprobante({ pickupToken: null });
+      expect(enviados).toHaveLength(1);
+      expect(ultimo().attachments).toBeUndefined();
+      expect(ultimo().html).toContain("Total pagado");
+      expect(ultimo().html).not.toContain("Mostrale este código");
+    });
+
+    it("el asunto lleva el numero de reserva, para poder buscarlo despues", async () => {
+      await comprobante();
+      expect(ultimo().subject).toContain("ABCDEF12");
+      expect(ultimo().subject).not.toContain(CODIGO);
+    });
+
+    it("es un aviso: quien los apago no lo recibe", async () => {
+      cuentas["inquilino@test.com"] = { emailNotifications: false };
+      await comprobante();
       expect(enviados).toHaveLength(0);
     });
   });

@@ -576,6 +576,42 @@ export class BookingsService {
       `Booking ${id} marked ready for pickup by owner ${ownerId}`,
     );
 
+    /*
+      EL COMPROBANTE COMPLETO, CON EL QR ADENTRO.
+
+      Este paso no mandaba ningún mail, y es el único que la persona necesita
+      tener a mano LEJOS de la aplicación: parada al lado del auto, a veces sin
+      señal. Un mail ya está descargado; abrir la reserva en la web necesita
+      datos, sesión abierta y el sitio arriba.
+
+      El código viaja descifrado hasta acá y no se guarda en ningún lado: se
+      dibuja el QR, se manda y se olvida. Va por safeNotify como todos los
+      demás: que el mail no salga no puede deshacer que el auto esté listo.
+    */
+    await this.safeNotify(() => {
+      if (!updated.renter?.email) return;
+      return this.email.sendBookingReceipt(updated.renter.email, {
+        renterName: this.personName(updated.renter),
+        bookingId: updated.id,
+        vehicleLabel: this.vehicleLabel(updated),
+        ownerName: this.personName(updated.owner),
+        locationText: updated.listing?.locationText ?? null,
+        startDate: updated.startDate,
+        endDate: updated.endDate,
+        days: this.availability.calculateDays(
+          updated.startDate,
+          updated.endDate,
+        ),
+        currency: updated.currency,
+        rentalSubtotal: updated.rentalSubtotalSnapshot,
+        insurance: updated.insuranceSnapshot,
+        platformFee: updated.platformFeeSnapshot,
+        total: updated.totalPriceSnapshot ?? 0,
+        deposit: updated.depositSnapshot,
+        pickupToken: this.encryption.tryDecrypt(updated.pickupTokenPreview),
+      });
+    });
+
     // ¿La retención llega viva al final de la ventana de inspección? Si no,
     // un daño reclamado tarde ya no se puede cobrar del depósito, y el dueño
     // tiene que saberlo antes de entregar el auto.
