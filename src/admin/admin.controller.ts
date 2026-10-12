@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from "@nestjs/common";
@@ -17,6 +18,7 @@ import type { CurrentUserPayload } from "../common/types/current-user.type";
 import { AdminService } from "./admin.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
 import { ReviewVerificationDto } from "./dto/review-verification.dto";
+import { CancelBookingAdminDto } from "./dto/cancel-booking-admin.dto";
 import { UpdateListingStatusDto } from "./dto/update-listing-status.dto";
 import { UpdateUserRoleDto } from "./dto/update-user-role.dto";
 import { UpdateUserStatusDto } from "./dto/update-user-status.dto";
@@ -135,6 +137,27 @@ export class AdminController {
   @Get("bookings")
   listBookings() {
     return this.adminService.listBookings();
+  }
+
+  /**
+   * Cancelar una reserva devolviendo todo. La válvula de último recurso.
+   *
+   * No es como se resuelven los casos normales: el que no aparece ya no cobra
+   * sin que nadie intervenga, y el dueño que sí fue tiene su propio reporte
+   * (ver bookings/cancellation-policy.ts). Esto queda para lo que ninguna regla
+   * puede prever.
+   */
+  @Post("bookings/:id/cancel")
+  cancelBooking(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: CancelBookingAdminDto,
+  ) {
+    return this.adminService.cancelBookingWithFullRefund(
+      user.id,
+      id,
+      dto.reason,
+    );
   }
 
   @Get("bookings/:id")
