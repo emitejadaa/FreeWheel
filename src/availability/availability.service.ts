@@ -258,6 +258,26 @@ export class AvailabilityService {
       data.endDate,
     );
 
+    /*
+      NO SE PUEDEN BLOQUEAR FECHAS QUE YA ESTÁN RESERVADAS.
+
+      Faltaba, y dejaba crear un estado que se contradice: el calendario
+      diciendo que esos días están bloqueados mientras hay una reserva aceptada
+      y paga encima.
+
+      La reserva no se caía por eso —vive por su cuenta, y la entrega con el
+      código no mira el calendario ni el estado de la publicación—, así que
+      nadie perdía plata. El problema es otro y es peor de explicar: el dueño
+      bloqueaba los días CREYENDO que así se bajaba de la reserva, y después no
+      aparecía. La persona del otro lado seguía teniendo su reserva, su auto
+      reservado y nadie esperándola.
+
+      Bajarse de una reserva tiene UN solo camino, que es cancelarla, y ese
+      camino devuelve todo lo pagado (ver bookings/cancellation-policy.ts). El
+      calendario no es una puerta de atrás para lo mismo.
+    */
+    await this.assertNoBookingOverlap(listingId, data.startDate, data.endDate);
+
     return this.prisma.listingAvailabilityBlock.create({
       data: {
         listingId,
@@ -409,9 +429,14 @@ export class AvailabilityService {
     });
 
     if (overlapping) {
-      throw new BadRequestException(
-        "Booking dates overlap with another active booking",
-      );
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "DATES_OVERLAP_BOOKING",
+        message:
+          "Esas fechas ya tienen una reserva. Bloquearlas no la cancela: si " +
+          "no vas a poder entregar el auto, cancelá la reserva desde la " +
+          "reserva misma, que devuelve todo lo que la persona pagó.",
+      });
     }
   }
 
