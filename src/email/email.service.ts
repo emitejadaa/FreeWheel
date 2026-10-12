@@ -832,6 +832,7 @@ export class EmailService {
       pickupToken?: string | null;
     },
   ) {
+    params = textosEscapados(params);
     const plata = [
       params.rentalSubtotal != null
         ? this.renglon(

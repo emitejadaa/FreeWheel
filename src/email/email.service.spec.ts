@@ -283,6 +283,24 @@ describe("EmailService", () => {
       expect(html).toContain("&lt;a href=&quot;https://evil.example&quot;&gt;");
     });
 
+    it("tampoco en el comprobante de la reserva (dirección, nombres, auto)", async () => {
+      await service.sendBookingReceipt("inquilino@test.com", {
+        renterName: LINK,
+        ownerName: LINK,
+        bookingId: "reserva-1",
+        vehicleLabel: '<img src="x">Corolla',
+        locationText: LINK,
+        startDate: DESDE,
+        endDate: HASTA,
+        days: 4,
+        currency: "usd",
+        total: 100,
+      });
+      const { html } = ultimo();
+      expect(html).not.toContain('<a href="https://evil.example"');
+      expect(html).not.toContain('<img src="x">');
+    });
+
     it("tampoco en los mails con datos sueltos (precio, contraseña)", async () => {
       await service.sendPriceChangeCode("a@test.com", LINK, 100, 120, "123456");
       expect(ultimo().html).not.toContain('<a href="https://evil.example"');

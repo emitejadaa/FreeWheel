@@ -76,7 +76,7 @@ remained.
 | --- | --- | --- | --- | --- |
 | A1 | High | `POST /ai/transcribe` | **SSRF.** Any logged-in user could make the server `fetch()` an arbitrary `http(s)` URL (internal hosts, metadata endpoints) and the whole body was buffered before the 20 MB size check. | Fixed |
 | A2 | High | `POST /media/assets` | **Broken object-level authorization.** Any logged-in user could register a `VEHICLE_PHOTO` with `entityType: "vehicle"` and *another user's* `entityId`; listings, favorites and bookings then showed the attacker's (arbitrary-URL) image on the victim's public listing. | Fixed |
-| A3 | Medium | `EmailService` | **HTML injection in transactional email.** Display names, vehicle brand/model, cancellation reasons and admin notes were interpolated into email HTML unescaped, so a user could inject links/markup into mail sent by FreeWheel to the counterparty (phishing from a trusted sender). | Fixed |
+| A3 | Medium | `EmailService` | **HTML injection in transactional email.** Display names, vehicle brand/model, cancellation reasons and admin notes were interpolated into email HTML unescaped, so a user could inject links/markup into mail sent by FreeWheel to the counterparty (phishing from a trusted sender). | Fixed — every template escapes its text parameters, including the booking receipt that arrived later from `main`. |
 | A4 | Medium | `consumeVerificationCode`, pending registration | **Attempt limit bypass by concurrency.** The `attempts < maxAttempts` check and the increment were separate statements, so N parallel guesses all passed the check. Bounded by route rate limits, but the per-code limit was not a real limit. | Fixed |
 | A5 | Medium | `VerificationService` | `VERIFICATION_CODE_IN_RESPONSE=true` (with the default mock SMS provider) returned the phone code in the HTTP response in any environment, including production — phone verification without owning the phone. | Fixed (refused when `NODE_ENV=production`) |
 | A6 | Medium | `POST /ai/chat` (public) | No bound on the `messages` array or its size: an anonymous caller could push very large prompts through our Groq key (cost abuse). | Fixed (max 40 messages, 48 000 serialized chars) |
@@ -122,7 +122,7 @@ forbidden on money and verification decisions; Prisma queries are parameterized
 | B11 | Low | Scalability | Admin lists (`/admin/users`, `/admin/listings`, `/admin/bookings`) and conversation messages are unpaginated. | Documented |
 | B12 | Low | `onChargeRefunded` | A full refund of *any* record (e.g. a captured deposit) marks the whole booking `REFUNDED`. | Documented |
 | B13 | Low | Rate limiting | The in-memory throttler keyed on the raw IP while the persistent limiter groups IPv6 by /64. | Fixed — both use `ipRateLimitKey()` (moved to `client-ip.util.ts`, now unit-tested). |
-| B14 | Low | `BookingsService.cancel` | Still read-check-write: money is distributed first, then the status is written. A concurrent double cancel is money-safe (Stripe idempotency keys and ledger keys dedupe the refund and the postings) but can write a duplicate `REFUND` record row and send the emails twice. Making it conditional needs the claim-before-refund ordering decided together with B7. | Documented |
+| B14 | Low | `BookingsService.cancel` | Still read-check-write: money is distributed first, then the status is written. A concurrent double cancel is money-safe (Stripe idempotency keys and ledger keys dedupe the refund and the postings) but can write a duplicate `REFUND` record row and send the emails twice. Making it conditional needs the claim-before-refund ordering decided together with B7. Since `main` added the daily close of no-show pickups (which calls `cancel()`), the cron can now race an owner confirming the pickup at the same moment; `confirm-pickup` is conditional, `cancel` is not. | Documented |
 
 ---
 
@@ -272,7 +272,7 @@ Run on the final tree of this branch, against a disposable Postgres 16:
 | `npm run build` | clean |
 | `eslint "{src,apps,libs,scripts}/**/*.ts" api/index.ts` | 0 errors, 0 warnings |
 | `prettier --check` src, test, scripts, api | clean |
-| `npm test` (unit + e2e, `--runInBand`) | **57 suites, 728 tests, all passing** (baseline: 702, one failing) |
+| `npm test` (unit + e2e, `--runInBand`) | **57 suites, 756 tests, all passing** after merging `main` (728 on the branch alone; baseline: 702, one failing) |
 | `prisma validate` | valid |
 | `npm run check:env` | no variables reported missing (baseline reported 2 obsolete ones) |
 | `npm audit --omit=dev` | 4 high left: `nodemailer` (A10) and `deepmerge-ts` via the Prisma CLI |

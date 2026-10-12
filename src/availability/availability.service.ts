@@ -437,8 +437,8 @@ export class AvailabilityService {
     listingId: string,
     startDate: Date,
     endDate: Date,
-    excludeBookingId: string | undefined,
-    db: Db,
+    excludeBookingId?: string,
+    db: Db = this.prisma,
   ) {
     const overlapping = await db.booking.findFirst({
       where: {
