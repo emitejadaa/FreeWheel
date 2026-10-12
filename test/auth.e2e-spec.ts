@@ -2,7 +2,7 @@ import type { INestApplication } from "@nestjs/common";
 import { VerificationStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import request from "supertest";
-import { createTestApp } from "./helpers/app";
+import { createTestApp, listeningServer } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { FakeEmailService } from "./helpers/email.fake";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -98,6 +98,38 @@ describe("Auth", () => {
       await http()
         .post("/auth/register/complete")
         .send({ ...completeBody(addr, "000000") })
+        .expect(400);
+      expect(
+        await prisma.user.findUnique({ where: { email: addr } }),
+      ).toBeNull();
+    });
+
+    it("parallel wrong codes cannot spend more than the code's attempts", async () => {
+      // Comprobar y sumar en dos pasos dejaba que N intentos simultáneos vieran
+      // todos "quedan intentos": el tope por código no era un tope.
+      const addr = uniqueEmail();
+      const code = await startRegistration(addr);
+      const wrong = code === "000000" ? "111111" : "000000";
+
+      const server = await listeningServer(app);
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          request(server)
+            .post("/auth/register/complete")
+            .send(completeBody(addr, wrong)),
+        ),
+      );
+      expect(results.map((r) => r.status)).toEqual(Array(10).fill(400));
+
+      const pending = await prisma.pendingRegistration.findUnique({
+        where: { email: addr },
+      });
+      expect(pending?.attempts).toBe(pending?.maxAttempts);
+
+      // Agotado el código, ni el correcto entra.
+      await http()
+        .post("/auth/register/complete")
+        .send(completeBody(addr, code))
         .expect(400);
       expect(
         await prisma.user.findUnique({ where: { email: addr } }),
@@ -375,6 +407,38 @@ describe("Auth", () => {
       // La dirección nueva queda verificada: se acaba de comprobar que recibe
       // el correo ahí. Antes se quedaba con la marca de la dirección anterior.
       expect(me.body.emailVerifiedAt).toBeTruthy();
+    });
+
+    it("parallel wrong codes cannot spend more than the code's attempts", async () => {
+      const user = await registerUser(app);
+      const newEmail = uniqueEmail("paralelo");
+      await http()
+        .post("/auth/request-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ newEmail })
+        .expect(201);
+      const code = email.lastCode(newEmail);
+      const wrong = code === "000000" ? "111111" : "000000";
+
+      const server = await listeningServer(app);
+      await Promise.all(
+        Array.from({ length: 10 }, () =>
+          request(server)
+            .post("/auth/confirm-email-change")
+            .set("Authorization", `Bearer ${user.token}`)
+            .send({ code: wrong }),
+        ),
+      );
+
+      const row = await prisma.verificationCode.findFirst({
+        where: { userId: user.id, purpose: "EMAIL_CHANGE" },
+      });
+      expect(row?.attempts).toBe(row?.maxAttempts);
+      await http()
+        .post("/auth/confirm-email-change")
+        .set("Authorization", `Bearer ${user.token}`)
+        .send({ code })
+        .expect(400);
     });
 
     it("does not touch the email until the code is confirmed", async () => {

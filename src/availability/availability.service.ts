@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { BookingStatus, ListingStatus } from "@prisma/client";
+import { BookingStatus, ListingStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAvailabilityBlockDto } from "./dto/create-availability-block.dto";
 
@@ -18,9 +18,10 @@ export const blockingBookingStatuses: BookingStatus[] = [
 /**
  * LAS RESERVAS EN LAS QUE EL AUTO ESTÁ AFUERA Y TODAVÍA NO VOLVIÓ.
  *
- * COMPLETED no está, y eso es lo que hace que devolver antes libere las fechas:
- * quien alquila un mes y devuelve a las dos semanas confirma la devolución, la
- * reserva pasa a COMPLETED, deja de ocupar, y el dueño puede volver a alquilar
+ * Ni INSPECTION ni COMPLETED están, y eso es lo que hace que devolver antes
+ * libere las fechas: quien alquila un mes y devuelve a las dos semanas confirma
+ * la devolución, la reserva pasa a INSPECTION, deja de ocupar, y el dueño puede
+ * volver a alquilar
  * las dos semanas que sobran. Las fechas guardadas en la reserva no cambian
  * —son las que se pagaron— pero ya no ocupan nada.
  */
@@ -30,6 +31,9 @@ export const sinDevolverStatuses: BookingStatus[] = [
 ];
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Un cliente de Prisma o una transacción abierta. */
+type Db = Prisma.TransactionClient | PrismaService;
 
 /** Fecha (UTC) como YYYY-MM-DD, sin la parte de hora. */
 function toDayKey(date: Date): string {
@@ -133,7 +137,7 @@ export function occupiedBookingWhere(
  *
  * Por eso el fin efectivo de una reserva sin devolver es el más lejano entre su
  * fecha de fin y hoy, y crece un día por día hasta que alguien confirma la
- * devolución. Ahí la reserva pasa a COMPLETED y suelta todo de una.
+ * devolución. Ahí la reserva pasa a INSPECTION y suelta todo de una.
  *
  * Mientras la reserva está en fecha no cambia nada: un alquiler del 1 al 10 no
  * bloquea el 15 por estar en curso, que sería lo contrario de lo que se quiere.
@@ -319,19 +323,32 @@ export class AvailabilityService {
     return { deleted: true, id: blockId };
   }
 
+  /**
+   * `db` permite hacer el control dentro de una transacción: aceptar una
+   * reserva lo corre con la publicación bloqueada, para que dos aceptaciones
+   * simultáneas no vean las dos el auto libre.
+   */
   async assertListingIsBookable(
     listingId: string,
     startDate: Date,
     endDate: Date,
     excludeBookingId?: string,
+    db: Db = this.prisma,
   ) {
     await this.assertNoBookingOverlap(
       listingId,
       startDate,
       endDate,
       excludeBookingId,
+      db,
     );
-    await this.assertNoManualBlockOverlap(listingId, startDate, endDate);
+    await this.assertNoManualBlockOverlap(
+      listingId,
+      startDate,
+      endDate,
+      undefined,
+      db,
+    );
   }
 
   assertDateRange(
@@ -400,8 +417,9 @@ export class AvailabilityService {
     startDate: Date,
     endDate: Date,
     excludeBlockId?: string,
+    db: Db = this.prisma,
   ) {
-    const overlapping = await this.prisma.listingAvailabilityBlock.findFirst({
+    const overlapping = await db.listingAvailabilityBlock.findFirst({
       where: {
         ...this.overlappingBlocksWhere(listingId, startDate, endDate),
         ...(excludeBlockId ? { id: { not: excludeBlockId } } : {}),
@@ -420,8 +438,9 @@ export class AvailabilityService {
     startDate: Date,
     endDate: Date,
     excludeBookingId?: string,
+    db: Db = this.prisma,
   ) {
-    const overlapping = await this.prisma.booking.findFirst({
+    const overlapping = await db.booking.findFirst({
       where: {
         ...this.overlappingBookingsWhere(listingId, startDate, endDate),
         ...(excludeBookingId ? { id: { not: excludeBookingId } } : {}),

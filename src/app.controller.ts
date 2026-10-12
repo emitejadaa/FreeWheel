@@ -1,12 +1,13 @@
 import { Controller, Get } from "@nestjs/common";
-import { AppService } from "./app.service";
 
+/**
+ * `GET /` es la prueba de vida que usan los checkers de deploy
+ * (scripts/endpoint-checker) y la suite: solo importa que conteste 200.
+ */
 @Controller()
 export class AppController {
-  constructor(private readonly appService: AppService) {}
-
   @Get()
-  getHello(): string {
-    return this.appService.getHello();
+  root() {
+    return { name: "FreeWheel API", status: "ok" };
   }
 }

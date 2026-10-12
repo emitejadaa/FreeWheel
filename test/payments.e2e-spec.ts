@@ -3,6 +3,9 @@ import request from "supertest";
 import { createTestApp } from "./helpers/app";
 import { cleanDatabase } from "./helpers/db";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { PaymentsService } from "../src/payments/payments.service";
+import { LedgerService } from "../src/ledger/ledger.service";
+import { Accounts } from "../src/ledger/accounts";
 import {
   AuthedUser,
   createAdmin,
@@ -458,6 +461,96 @@ describe("Payments (Stripe flow, mocked provider)", () => {
     expect(events).toHaveLength(1);
   });
 
+  /**
+   * El evento se anota como visto ANTES de procesarlo (es lo que descarta los
+   * duplicados). Si el procesamiento fallaba, el reintento de Stripe lo
+   * encontraba "visto" y se perdía para siempre: un reembolso o una disputa que
+   * nunca llegaban a la base.
+   */
+  it("si procesar un evento falla, el reintento de Stripe lo procesa", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
+
+    const service = app.get(PaymentsService);
+    const espia = jest
+      .spyOn(
+        service as unknown as { dispatchEvent(): Promise<void> },
+        "dispatchEvent",
+      )
+      .mockRejectedValueOnce(new Error("la base tuvo un hipo"));
+
+    await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_falla_1" },
+    ).expect(500);
+    espia.mockRestore();
+
+    const reintento = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_falla_1" },
+    ).expect(201);
+    expect(reintento.body.duplicate).toBe(false);
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    expect(booking.paymentStatus).toBe("FULLY_PAID");
+  });
+
+  it("un evento que quedó a medias hace rato se puede volver a tomar", async () => {
+    const { renter, bookingId } = await acceptedBooking();
+    await acceptContract(app, bookingId, renter.token);
+    const checkout = await createIntent(
+      app,
+      "checkout",
+      bookingId,
+      renter.token,
+    );
+
+    // Tomado hace 11 minutos y nunca terminado: el proceso se cortó.
+    await prisma.stripeEvent.create({
+      data: {
+        eventId: "evt_colgado",
+        type: "payment_intent.succeeded",
+        payload: {},
+        createdAt: new Date(Date.now() - 11 * 60 * 1000),
+      },
+    });
+    // Tomado recién: otra entrega lo está procesando ahora mismo.
+    await prisma.stripeEvent.create({
+      data: { eventId: "evt_en_curso", type: "x", payload: {} },
+    });
+
+    const enCurso = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_en_curso" },
+    ).expect(201);
+    expect(enCurso.body.duplicate).toBe(true);
+
+    const colgado = await sendWebhook(
+      app,
+      "payment_intent.succeeded",
+      { id: checkout.paymentIntentId },
+      { id: "evt_colgado" },
+    ).expect(201);
+    expect(colgado.body.duplicate).toBe(false);
+    const booking = await prisma.booking.findUniqueOrThrow({
+      where: { id: bookingId },
+    });
+    expect(booking.paymentStatus).toBe("FULLY_PAID");
+  });
+
   it("forbids a non-participant from viewing payment status", async () => {
     const { bookingId } = await acceptedBooking();
     const stranger = await registerUser(app);
@@ -481,9 +574,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       .set("Authorization", auth(owner.token))
       .send({ reason: "owner unavailable" })
       .expect(200);
-    expect(cancelada.body.cancellation.rule).toBe(
-      "OWNER_RETURNS_SENA_DOUBLED",
-    );
+    expect(cancelada.body.cancellation.rule).toBe("OWNER_RETURNS_SENA_DOUBLED");
 
     const status = await http()
       .get(`/payments/bookings/${bookingId}/status`)
@@ -547,7 +638,7 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       // proxy declarado se usa la de la conexión, que no se puede inventar.
       // Si se creyera siempre, el tope de intentos por IP no valdría nada:
       // basta cambiar un texto en cada pedido para tener un contador nuevo.
-      expect(creado.initiatedIp).toBe("::ffff:127.0.0.1");
+      expect(creado.initiatedIp).toBe("127.0.0.1");
       expect(creado.initiatedUserAgent).toBe("FreeWheelApp/1.0");
 
       await sendWebhook(app, "payment_intent.succeeded", {
@@ -597,6 +688,24 @@ describe("Payments (Stripe flow, mocked provider)", () => {
         .expect(200);
       expect(comoDueno.body[0].ip).toBeUndefined();
       expect(comoDueno.body[0].userAgent).toBeUndefined();
+    });
+
+    it("un administrador ve el rastro completo aunque no sea parte de la reserva", async () => {
+      const { renter, bookingId } = await acceptedBooking();
+      await acceptContract(app, bookingId, renter.token);
+      await createIntent(app, "checkout", bookingId, renter.token);
+      const admin = await createAdmin(app, prisma);
+      await prisma.user.update({
+        where: { id: admin.id },
+        data: { verificationStatus: "VERIFIED" },
+      });
+
+      const res = await http()
+        .get(`/payments/bookings/${bookingId}/ledger`)
+        .set("Authorization", auth(admin.token))
+        .expect(200);
+      expect(res.body[0]).toHaveProperty("ip");
+      expect(res.body[0]).toHaveProperty("userAgent");
     });
 
     it("el estado no devuelve el fingerprint ni la IP de quien pagó", async () => {
@@ -666,11 +775,46 @@ describe("Payments (Stripe flow, mocked provider)", () => {
       expect(segundo.amountMinor).toBe(430_000);
     });
 
+    it("dos liquidaciones simultáneas del mismo dueño le pagan una sola vez", async () => {
+      // Cada pago al dueño transfiere TODO lo que se le debe. Con la clave de
+      // idempotencia armada con la referencia de quien lo pedía, dos pedidos a
+      // la vez transferían el saldo entero cada uno.
+      const owner = await registerUser(app);
+      const cuenta = await prisma.user.update({
+        where: { id: owner.id },
+        data: { stripeAccountId: "acct_mock_dueno" },
+      });
+      const ledger = app.get(LedgerService);
+      await ledger.post({
+        idempotencyKey: "test:debido",
+        type: "test",
+        description: "Lo que se le debe al dueño",
+        currency: "usd",
+        lines: [
+          { account: Accounts.ownerPayable(owner.id), amountMinor: 270_000 },
+          { account: Accounts.processorClearing(), amountMinor: -270_000 },
+        ],
+      });
+
+      const payments = app.get(PaymentsService);
+      await Promise.all([
+        payments.payOwner(cuenta, "cancel:reserva-a", null),
+        payments.payOwner(cuenta, "cancel:reserva-b", null),
+        payments.payOwner(cuenta, `retry:${owner.id}:270000`, null),
+      ]);
+
+      expect(await ledger.balance(Accounts.ownerPayable(owner.id))).toBe(0);
+      const transferencias = await prisma.paymentRecord.findMany({
+        where: { userId: owner.id, kind: "OWNER_TRANSFER" },
+      });
+      expect(transferencias).toHaveLength(1);
+      expect(transferencias[0].amountMinor).toBe(270_000);
+    });
+
     it("una disputa frena la liquidación al dueño", async () => {
       // Transferirle al dueño plata que el banco puede reclamar de vuelta
       // convierte una disputa en una pérdida.
-      const { owner, renter, bookingId, returnToken } =
-        await acceptedBooking();
+      const { owner, renter, bookingId, returnToken } = await acceptedBooking();
       const { checkout } = await hastaElRetiro(owner, renter, bookingId);
 
       await sendWebhook(app, "charge.dispute.created", {

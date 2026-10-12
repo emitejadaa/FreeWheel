@@ -25,12 +25,13 @@ import { normalizeEmail } from "../common/utils/email.util";
  * estado por omisión, y abrirlo es un acto explícito en un panel.
  *
  * ── Qué hace y qué NO hace ──────────────────────────────────────────────────
- * Promueve a ADMIN las cuentas que ya existen y están activas. No crea cuentas
- * —una cuenta administradora sin dueño real sería una puerta abierta sin nadie
- * que la vigile—, así que la persona se registra normalmente y en el próximo
- * arranque queda promovida. Y NO DEGRADA a nadie: sacar el rol es una decisión
- * que se toma en el panel, con su registro de auditoría, y no algo que pase
- * solo porque alguien editó una variable de entorno.
+ * Promueve a ADMIN las cuentas que ya existen, están activas y confirmaron el
+ * email. No crea cuentas —una cuenta administradora sin dueño real sería una
+ * puerta abierta sin nadie que la vigile—, así que la persona se registra
+ * normalmente y en el próximo arranque queda promovida. Y NO DEGRADA a nadie:
+ * sacar el rol es una decisión que se toma en el panel, con su registro de
+ * auditoría, y no algo que pase solo porque alguien editó una variable de
+ * entorno.
  *
  * Todo queda en AuditLog: un cambio de rol que no deja rastro es un cambio de
  * rol que nadie puede revisar después.
@@ -79,6 +80,10 @@ export class AdminBootstrapService implements OnModuleInit {
         email: { in: emails },
         role: { not: UserRole.ADMIN },
         status: { in: [UserStatus.ACTIVE, UserStatus.PENDING_VERIFICATION] },
+        // Una cuenta vieja con el mail sin confirmar pudo haberla creado
+        // cualquiera que escribiera esa dirección: no se la promueve hasta que
+        // demuestre que la casilla es suya.
+        emailVerifiedAt: { not: null },
       },
       select: { id: true, email: true },
     });

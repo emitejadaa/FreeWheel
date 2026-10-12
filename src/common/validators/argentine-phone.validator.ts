@@ -1,5 +1,3 @@
-import { registerDecorator, ValidationOptions } from "class-validator";
-
 /**
  * Teléfono argentino en formato internacional completo.
  *
@@ -76,23 +74,4 @@ export function formatArgentinePhone(value: unknown): string {
   // +54 | 9 | resto (10 dígitos, se parte 2 + 4 + 4 para que se lea cómodo)
   const rest = normalized.slice(4);
   return `+54 9 ${rest.slice(0, 2)} ${rest.slice(2, 6)} ${rest.slice(6)}`;
-}
-
-/** class-validator decorator para los campos de teléfono de los DTO. */
-export function IsArgentinePhone(validationOptions?: ValidationOptions) {
-  return function (object: object, propertyName: string) {
-    registerDecorator({
-      name: "isArgentinePhone",
-      target: object.constructor,
-      propertyName,
-      options: {
-        message:
-          "El teléfono debe ser argentino y estar completo, con el código de país: 54 9 11 3289 5416",
-        ...validationOptions,
-      },
-      validator: {
-        validate: (value: unknown) => isArgentinePhone(value),
-      },
-    });
-  };
 }

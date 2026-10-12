@@ -45,6 +45,7 @@ export class MockPaymentsProvider implements PaymentProvider {
   private readonly webhookSecret: string;
   private readonly stripe: Stripe;
   private readonly enProduccion: boolean;
+  private readonly transferencias = new Map<string, TransferResult>();
 
   constructor(config: ConfigService) {
     this.webhookSecret = config.get<string>("STRIPE_WEBHOOK_SECRET") ?? "";
@@ -118,11 +119,18 @@ export class MockPaymentsProvider implements PaymentProvider {
     });
   }
 
+  /**
+   * Como Stripe: la misma clave de idempotencia devuelve la MISMA
+   * transferencia. Es de lo que depende que dos liquidaciones simultáneas del
+   * mismo dueño no le paguen dos veces, y sin esto los tests no lo verían.
+   */
   transferToOwner(input: TransferInput): Promise<TransferResult> {
-    return Promise.resolve({
-      id: this.id("tr_mock"),
-      amountMinor: input.amountMinor,
-    });
+    const clave = input.idempotencyKey;
+    const previa = clave ? this.transferencias.get(clave) : undefined;
+    if (previa) return Promise.resolve(previa);
+    const nueva = { id: this.id("tr_mock"), amountMinor: input.amountMinor };
+    if (clave) this.transferencias.set(clave, nueva);
+    return Promise.resolve(nueva);
   }
 
   /**

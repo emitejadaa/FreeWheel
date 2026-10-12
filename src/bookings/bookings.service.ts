@@ -10,9 +10,8 @@ import {
   Booking,
   BookingStatus,
   ListingStatus,
-  MediaAssetKind,
-  MediaAssetStatus,
   PaymentStatus,
+  Prisma,
 } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import { AvailabilityService } from "../availability/availability.service";
@@ -22,6 +21,7 @@ import { ContractsService } from "../contracts/contracts.service";
 import type { AcceptanceContext } from "../contracts/contracts.service";
 import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
 import { EmailService } from "../email/email.service";
+import { ListingsService } from "../listings/listings.service";
 import { PaymentsService } from "../payments/payments.service";
 import { PricingService } from "../payments/pricing.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -56,6 +56,7 @@ export class BookingsService {
     private readonly encryption: EncryptionService,
     private readonly config: ConfigService,
     private readonly vehicleVerification: VehicleVerificationService,
+    private readonly listings: ListingsService,
   ) {}
 
   async create(renterId: string, data: CreateBookingDto) {
@@ -177,34 +178,20 @@ export class BookingsService {
   /**
    * Agrega a cada reserva las fotos del vehículo (`listing.photos`), que viven
    * en MediaAsset y no en la relación. Sin esto las tarjetas de "Mis reservas"
-   * se ven siempre como "Sin foto".
+   * se ven siempre como "Sin foto". Salen de ListingsService para que la
+   * portada sea la misma que eligió el dueño para la publicación.
    */
   private async withVehiclePhotos<T extends { vehicleId: string }>(
     bookings: T[],
   ): Promise<(T & { photos: string[] })[]> {
     if (bookings.length === 0) return [];
 
-    const assets = await this.prisma.mediaAsset.findMany({
-      where: {
-        entityType: "vehicle",
-        entityId: { in: bookings.map((booking) => booking.vehicleId) },
-        kind: MediaAssetKind.VEHICLE_PHOTO,
-        status: MediaAssetStatus.ACTIVE,
-      },
-      select: { entityId: true, url: true },
-      orderBy: { createdAt: "asc" },
-    });
-
-    const byVehicle = new Map<string, string[]>();
-    for (const asset of assets) {
-      if (!asset.entityId) continue;
-      const urls = byVehicle.get(asset.entityId) ?? [];
-      urls.push(asset.url);
-      byVehicle.set(asset.entityId, urls);
-    }
+    const byVehicle = await this.listings.getPhotosByVehicleIds(
+      bookings.map((booking) => booking.vehicleId),
+    );
 
     return bookings.map((booking) => {
-      const photos = byVehicle.get(booking.vehicleId) ?? [];
+      const photos = byVehicle[booking.vehicleId] ?? [];
       const listing = (booking as { listing?: object }).listing;
       return {
         ...booking,
@@ -222,13 +209,6 @@ export class BookingsService {
       throw new BadRequestException("Only requested bookings can be accepted");
     }
 
-    await this.availability.assertListingIsBookable(
-      booking.listingId,
-      booking.startDate,
-      booking.endDate,
-      id,
-    );
-
     const days = this.availability.calculateDays(
       booking.startDate,
       booking.endDate,
@@ -240,33 +220,49 @@ export class BookingsService {
 
     const pickupToken = generateOpaqueToken(24);
     const returnToken = generateOpaqueToken(24);
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: {
-        status: BookingStatus.ACCEPTED,
-        paymentStatus: PaymentStatus.PENDING,
-        pickupTokenHash: await bcrypt.hash(pickupToken, 10),
-        returnTokenHash: await bcrypt.hash(returnToken, 10),
-        // Los códigos se guardan CIFRADOS. Hace falta poder volver a
-        // mostrarlos (el QR se pierde si la persona cierra la app), así que no
-        // alcanza con el hash; pero en claro, cualquiera con acceso a la base
-        // podía confirmar una entrega o una devolución que no pasó.
-        pickupTokenPreview: this.encryption.encrypt(pickupToken),
-        returnTokenPreview: this.encryption.encrypt(returnToken),
-        currency: pricing.currency,
-        totalPriceSnapshot: pricing.total,
-        rentalSubtotalSnapshot: pricing.rentalSubtotal,
-        insuranceSnapshot: pricing.insurance,
-        platformFeeSnapshot: pricing.commission,
-        senaAmountSnapshot: pricing.sena,
-        // Ya no hay saldo aparte: el pago es uno solo. Queda en null para las
-        // reservas nuevas (el ticket muestra el detalle).
-        balanceAmountSnapshot: null,
-        depositSnapshot: pricing.deposit,
-        ownerPayoutSnapshot: pricing.ownerPayout,
-        transferGroup: `booking_${id}`,
-      },
-      include: BOOKING_PARTICIPANT_INCLUDE,
+    const pickupTokenHash = await bcrypt.hash(pickupToken, 10);
+    const returnTokenHash = await bcrypt.hash(returnToken, 10);
+
+    // Con la publicación bloqueada: dos pedidos que se pisan, aceptados a la
+    // vez, veían los dos el auto libre y quedaba reservado dos veces.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`listing-bookings:${booking.listingId}`}))`;
+      await this.availability.assertListingIsBookable(
+        booking.listingId,
+        booking.startDate,
+        booking.endDate,
+        id,
+        tx,
+      );
+      return this.transicionar(
+        id,
+        [BookingStatus.REQUESTED],
+        {
+          status: BookingStatus.ACCEPTED,
+          paymentStatus: PaymentStatus.PENDING,
+          pickupTokenHash,
+          returnTokenHash,
+          // Los códigos se guardan CIFRADOS. Hace falta poder volver a
+          // mostrarlos (el QR se pierde si la persona cierra la app), así que no
+          // alcanza con el hash; pero en claro, cualquiera con acceso a la base
+          // podía confirmar una entrega o una devolución que no pasó.
+          pickupTokenPreview: this.encryption.encrypt(pickupToken),
+          returnTokenPreview: this.encryption.encrypt(returnToken),
+          currency: pricing.currency,
+          totalPriceSnapshot: pricing.total,
+          rentalSubtotalSnapshot: pricing.rentalSubtotal,
+          insuranceSnapshot: pricing.insurance,
+          platformFeeSnapshot: pricing.commission,
+          senaAmountSnapshot: pricing.sena,
+          // Ya no hay saldo aparte: el pago es uno solo. Queda en null para las
+          // reservas nuevas (el ticket muestra el detalle).
+          balanceAmountSnapshot: null,
+          depositSnapshot: pricing.deposit,
+          ownerPayoutSnapshot: pricing.ownerPayout,
+          transferGroup: `booking_${id}`,
+        },
+        tx,
+      );
     });
 
     // El contrato se genera con los precios recién congelados, y ACEPTAR LA
@@ -313,10 +309,8 @@ export class BookingsService {
       throw new BadRequestException("Only requested bookings can be rejected");
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: { status: BookingStatus.REJECTED },
-      include: BOOKING_PARTICIPANT_INCLUDE,
+    const updated = await this.transicionar(id, [BookingStatus.REQUESTED], {
+      status: BookingStatus.REJECTED,
     });
 
     await this.auditLog.create({
@@ -568,10 +562,8 @@ export class BookingsService {
     }
     await this.payments.assertReadyForPickup(id);
 
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: { status: BookingStatus.READY_FOR_PICKUP },
-      include: BOOKING_PARTICIPANT_INCLUDE,
+    const updated = await this.transicionar(id, [BookingStatus.ACCEPTED], {
+      status: BookingStatus.READY_FOR_PICKUP,
     });
 
     await this.auditLog.create({
@@ -817,16 +809,16 @@ export class BookingsService {
       throw new ForbiddenException("Invalid pickup token");
     }
 
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: {
+    const updated = await this.transicionar(
+      id,
+      [BookingStatus.READY_FOR_PICKUP],
+      {
         status: BookingStatus.IN_PROGRESS,
         pickupConfirmedAt: new Date(),
         pickupTokenHash: null,
         pickupTokenPreview: null,
       },
-      include: BOOKING_PARTICIPANT_INCLUDE,
-    });
+    );
 
     await this.auditLog.create({
       actorId: ownerId,
@@ -897,9 +889,10 @@ export class BookingsService {
     // liquidaba todo en el acto, y el dueño que encontraba un golpe al revisar
     // el auto una hora después ya no tenía de dónde cobrarlo.
     const ahora = new Date();
-    const updated = await this.prisma.booking.update({
-      where: { id },
-      data: {
+    const updated = await this.transicionar(
+      id,
+      [BookingStatus.IN_PROGRESS, BookingStatus.RETURN_PENDING],
+      {
         status: BookingStatus.INSPECTION,
         returnConfirmedAt: ahora,
         inspectionEndsAt: new Date(
@@ -908,8 +901,7 @@ export class BookingsService {
         returnTokenHash: null,
         returnTokenPreview: null,
       },
-      include: BOOKING_PARTICIPANT_INCLUDE,
-    });
+    );
 
     await this.auditLog.create({
       actorId: renterId,
@@ -925,8 +917,9 @@ export class BookingsService {
 
     this.logger.log(`Booking ${id} return confirmed by renter ${renterId}`);
 
-    // La reserva quedó cerrada: las dos partes reciben la constancia y la
-    // invitación a reseñar, que es cuando de verdad tiene sentido pedirla.
+    // El auto volvió: las dos partes reciben la constancia y la invitación a
+    // reseñar, que es cuando de verdad tiene sentido pedirla. Al dueño se le
+    // recuerda la ventana para reportar daños.
     const devueltoEl = updated.returnConfirmedAt ?? new Date();
     for (const persona of [
       { datos: updated.owner, otra: updated.renter, esDueño: true },
@@ -1008,6 +1001,43 @@ export class BookingsService {
       }
     }
     return null;
+  }
+
+  /**
+   * Escribe un cambio de estado SOLO si la reserva sigue en el estado que se
+   * miró al validarlo: el `where` lleva el estado, así que es una sola
+   * sentencia y la base serializa los pedidos simultáneos. Sin esto, dos
+   * aceptaciones a la vez regeneraban los códigos (y la primera respuesta
+   * devolvía uno que ya no servía), y un retiro podía confirmarse sobre una
+   * reserva que se estaba cancelando.
+   */
+  private async transicionar(
+    id: string,
+    desde: BookingStatus[],
+    data: Prisma.BookingUpdateInput,
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ) {
+    try {
+      return await db.booking.update({
+        where: { id, status: { in: desde } },
+        data,
+        include: BOOKING_PARTICIPANT_INCLUDE,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2025"
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          code: "BOOKING_STATE_CHANGED",
+          message:
+            "La reserva cambió mientras se procesaba el pedido. Volvé a " +
+            "cargarla.",
+        });
+      }
+      throw error;
+    }
   }
 
   private async findById(id: string) {

@@ -29,10 +29,7 @@ export class FakeEmailService {
   /** Avisos de seguridad (bloqueo de la cuenta). Se guardan para poder mirarlos. */
   readonly securityAlerts: { email: string; kind: string }[] = [];
 
-  sendSecurityAlert(
-    email: string,
-    params: { kind: string },
-  ): Promise<void> {
+  sendSecurityAlert(email: string, params: { kind: string }): Promise<void> {
     this.securityAlerts.push({
       email: FakeEmailService.casilla(email),
       kind: params.kind,

@@ -79,6 +79,13 @@ const SUCCESS_APPLICABLE_STATUSES: PaymentRecordStatus[] = [
   PaymentRecordStatus.AUTHORIZED,
 ];
 
+/**
+ * Pasado este tiempo, un evento de Stripe tomado y sin terminar se considera
+ * abandonado (el proceso se cortó) y otra entrega lo puede volver a tomar. Es
+ * mucho más que el máximo de una función de Vercel (60 s).
+ */
+const EVENTO_ABANDONADO_MS = 10 * 60 * 1000;
+
 /** Cobros que el procesador todavía no nos confirmó ni rechazó. */
 const AWAITING_PROVIDER_STATUSES: PaymentRecordStatus[] = [
   PaymentRecordStatus.REQUIRES_ACTION,
@@ -922,10 +929,45 @@ export class PaymentsService {
       return { received: true, ignored: "livemode_mismatch" as const };
     }
 
-    // La unicidad de `eventId` es lo que hace el descarte de duplicados, y se
-    // apoya en la base y no en un `findUnique` previo: dos entregas del mismo
-    // evento llegando a la vez pasaban las dos por el chequeo y se procesaban
-    // dos veces (Stripe reintenta, y reintenta en paralelo).
+    if (!(await this.reclamarEvento(event))) {
+      return { received: true, duplicate: true as const, type: event.type };
+    }
+
+    try {
+      await this.dispatchEvent(event.id, event.type, event.data.object);
+    } catch (error) {
+      // Se suelta el reclamo antes de contestar el error: Stripe reintenta
+      // este evento, y el reintento tiene que poder procesarlo en vez de
+      // encontrarlo "ya visto" y descartarlo para siempre.
+      await this.prisma.stripeEvent
+        .deleteMany({ where: { eventId: event.id, processedAt: null } })
+        .catch(() => undefined);
+      throw error;
+    }
+
+    await this.prisma.stripeEvent.update({
+      where: { eventId: event.id },
+      data: { processedAt: new Date() },
+    });
+
+    return { received: true, duplicate: false as const, type: event.type };
+  }
+
+  /**
+   * Toma un evento para procesarlo. Devuelve false si es un duplicado.
+   *
+   * La unicidad de `eventId` es lo que hace el descarte, y se apoya en la base
+   * y no en un `findUnique` previo: dos entregas del mismo evento llegando a la
+   * vez pasaban las dos por el chequeo (Stripe reintenta, y en paralelo).
+   *
+   * Un evento tomado y nunca terminado —el proceso se cortó a la mitad— se
+   * puede volver a tomar pasado EVENTO_ABANDONADO_MS, que es bastante más que
+   * lo que dura una función. `createdAt` hace de hora del reclamo.
+   */
+  private async reclamarEvento(event: {
+    id: string;
+    type: string;
+  }): Promise<boolean> {
     try {
       await this.prisma.stripeEvent.create({
         data: {
@@ -934,28 +976,24 @@ export class PaymentsService {
           payload: event as unknown as Prisma.InputJsonValue,
         },
       });
+      return true;
     } catch (error) {
       if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== "P2002"
       ) {
-        // Ya procesado, o todavía procesándose por otra entrega: en los dos
-        // casos se descarta. El que lo está procesando va a terminar, y si no
-        // termina Stripe vuelve a mandarlo (la fila queda sin processedAt, así
-        // que se ve cuál quedó a medias).
-        return { received: true, duplicate: true as const, type: event.type };
+        throw error;
       }
-      throw error;
+      const retomado = await this.prisma.stripeEvent.updateMany({
+        where: {
+          eventId: event.id,
+          processedAt: null,
+          createdAt: { lt: new Date(Date.now() - EVENTO_ABANDONADO_MS) },
+        },
+        data: { createdAt: new Date() },
+      });
+      return retomado.count === 1;
     }
-
-    await this.dispatchEvent(event.id, event.type, event.data.object);
-
-    await this.prisma.stripeEvent.update({
-      where: { eventId: event.id },
-      data: { processedAt: new Date() },
-    });
-
-    return { received: true, duplicate: false as const, type: event.type };
   }
 
   private async dispatchEvent(
@@ -1558,19 +1596,16 @@ export class PaymentsService {
       data: { stripeAccountStatus: status },
     });
 
-    await this.prisma.paymentEvent.create({
-      data: {
-        actorId: null,
-        source: "webhook",
-        type: "connect.account.updated",
-        providerEventId: eventId ?? null,
-        payload: {
-          accountId,
-          chargesEnabled,
-          payoutsEnabled,
-          detailsSubmitted,
-          status,
-        } as Prisma.InputJsonValue,
+    await this.recordEvent({
+      source: "webhook",
+      type: "connect.account.updated",
+      providerEventId: eventId,
+      payload: {
+        accountId,
+        chargesEnabled,
+        payoutsEnabled,
+        detailsSubmitted,
+        status,
       },
     });
   }
@@ -1819,7 +1854,8 @@ export class PaymentsService {
     reference: string,
     actorId: string | null,
   ): Promise<{ paidMinor: number; pending: boolean }> {
-    const debido = await this.ledger.balance(Accounts.ownerPayable(owner.id));
+    const foto = await this.ledger.snapshot(Accounts.ownerPayable(owner.id));
+    const debido = foto.balanceMinor;
     if (debido <= 0) return { paidMinor: 0, pending: false };
 
     try {
@@ -1836,12 +1872,29 @@ export class PaymentsService {
         amountMinor: debido,
         currency,
         destination: accountId,
-        metadata: { ownerId: owner.id, reference },
-        idempotencyKey: `payout_${owner.id}_${reference}_${debido}`,
+        // LA CLAVE SALE DEL ESTADO DEL LIBRO, NO DE QUIÉN PIDE EL PAGO.
+        //
+        // Con la referencia adentro ("settle:<reserva>", "retry:…"), dos
+        // liquidaciones simultáneas del mismo dueño —las dos partes de dos
+        // reservas apretando "liquidar", o una de ellas y el cron— tenían
+        // claves distintas y transferían CADA UNA todo lo debido. Con el
+        // saldo y la cantidad de movimientos, las dos ven la misma foto, piden
+        // con la misma clave y el procesador hace una sola transferencia. El
+        // día va adentro para que un rechazo (cuenta todavía sin habilitar) no
+        // quede cacheado más allá de la corrida del cron siguiente.
+        //
+        // Por lo mismo la referencia no viaja en la metadata: Stripe rechaza
+        // una clave repetida con parámetros distintos, y el pedido duplicado
+        // quedaría anotado como transferencia fallida. La referencia queda en
+        // nuestro registro (PaymentRecord/PaymentEvent).
+        metadata: { ownerId: owner.id },
+        idempotencyKey:
+          `payout_${owner.id}_${debido}_${foto.entries}_` +
+          new Date().toISOString().slice(0, 10),
       });
 
-      await this.prisma.$transaction(async (tx) => {
-        await this.ledger.post(
+      const asentado = await this.prisma.$transaction(async (tx) => {
+        const asiento = await this.ledger.post(
           {
             idempotencyKey: `payout:${transfer.id}`,
             type: "owner.payout",
@@ -1858,6 +1911,8 @@ export class PaymentsService {
           },
           tx,
         );
+        // La misma transferencia ya la asentó otra corrida simultánea.
+        if (asiento.duplicate) return false;
         const bookingId = reference.startsWith("settle:")
           ? reference.slice("settle:".length)
           : null;
@@ -1892,10 +1947,12 @@ export class PaymentsService {
             status: PaymentRecordStatus.PAID,
             amountMinor: debido,
             currency,
+            payload: { reference, transferId: transfer.id },
           },
         });
+        return true;
       });
-      return { paidMinor: debido, pending: false };
+      return { paidMinor: asentado ? debido : 0, pending: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
@@ -2483,18 +2540,6 @@ export class PaymentsService {
     return outcome;
   }
 
-  /** Mantiene el nombre viejo: cancelar con reembolso total. */
-  async refundOnCancel(actorId: string, bookingId: string) {
-    const booking = await this.findBooking(bookingId);
-    const cancelledBy: CancelledBy =
-      actorId === booking.ownerId
-        ? "OWNER"
-        : actorId === booking.renterId
-          ? "RENTER"
-          : "PLATFORM";
-    return this.cancelAndSettle(bookingId, cancelledBy, actorId);
-  }
-
   /**
    * Devuelve a la tarjeta de quien alquiló, repartiendo entre los cobros de la
    * reserva (el único nuevo, o la seña y el saldo de una reserva vieja). Nunca
@@ -2832,7 +2877,10 @@ export class PaymentsService {
    * le sirve ver qué pasó y cuándo, no de qué IP se pagó.
    */
   async getLedger(userId: string, bookingId: string, isAdmin: boolean) {
-    await this.findBookingForParticipant(userId, bookingId);
+    // Un administrador no es parte de la reserva: con el control de
+    // participante primero, la vista completa no le llegaba nunca.
+    if (isAdmin) await this.findBooking(bookingId);
+    else await this.findBookingForParticipant(userId, bookingId);
     const events = await this.prisma.paymentEvent.findMany({
       where: { bookingId },
       orderBy: { createdAt: "asc" },

@@ -116,11 +116,6 @@ export function corsMode(): CorsMode {
   return pedido;
 }
 
-/** Sigue existiendo para el reporte de entorno y los tests viejos. */
-export function corsEstricto(): boolean {
-  return corsMode() === "strict";
-}
-
 /**
  * Quién puede llamar a esta API desde un navegador.
  *

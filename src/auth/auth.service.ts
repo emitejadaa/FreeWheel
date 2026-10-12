@@ -876,10 +876,11 @@ export class AuthService {
 
   /**
    * Same find → expiry → attempts → compare sequence as consumeVerificationCode
-   * (src/common/utils/verification-code.util.ts), but against the
-   * PendingRegistration table, which has no userId. The row is not marked
-   * consumed here — registerComplete deletes it in the user-creation
-   * transaction, so a failure after this point still allows a retry.
+   * (src/common/utils/verification-code.util.ts), including the atomic attempt
+   * reservation, but against the PendingRegistration table, which has no
+   * userId. The row is not marked consumed here — registerComplete deletes it
+   * in the user-creation transaction, so a failure after this point still
+   * allows a retry.
    */
   private async consumePendingRegistrationCode(email: string, code: string) {
     const pending = await this.prisma.pendingRegistration.findUnique({
@@ -892,16 +893,16 @@ export class AuthService {
     if (pending.expiresAt <= new Date()) {
       throw new BadRequestException("Code expired. Request a new one.");
     }
-    if (pending.attempts >= pending.maxAttempts) {
+
+    const reserved = await this.prisma.pendingRegistration.updateMany({
+      where: { id: pending.id, attempts: { lt: pending.maxAttempts } },
+      data: { attempts: { increment: 1 } },
+    });
+    if (reserved.count === 0) {
       throw new BadRequestException("Too many attempts. Request a new code.");
     }
 
-    const matches = await bcrypt.compare(code, pending.codeHash);
-    if (!matches) {
-      await this.prisma.pendingRegistration.update({
-        where: { id: pending.id },
-        data: { attempts: { increment: 1 } },
-      });
+    if (!(await bcrypt.compare(code, pending.codeHash))) {
       throw new BadRequestException("Incorrect code");
     }
   }

@@ -5,8 +5,8 @@ import { UsersController } from "./users.controller";
 import { VerificationModule } from "../verification/verification.module";
 
 @Module({
-  // VerificationModule aporta IdentityReviewService: completar dni/cuil/
-  // address desde el perfil puede destrabar la verificación automática.
+  // VerificationModule aporta DocumentVerificationService: con un documento
+  // aprobado, los datos de identidad del perfil quedan bloqueados.
   imports: [PrismaModule, VerificationModule],
   providers: [UsersService],
   controllers: [UsersController],

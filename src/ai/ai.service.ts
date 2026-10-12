@@ -10,6 +10,7 @@ import {
   findJsonObject,
   stripReasoning,
 } from "../common/utils/json-from-text.util";
+import { CloudinaryService } from "../media/cloudinary.service";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -90,6 +91,15 @@ const DOCUMENT_MAX_TOKENS = 1200;
 
 // Tope del audio a transcribir (los mensajes de voz del chat son cortos).
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Topes del chat público. Cada pedido gasta cuota de NUESTRA clave y la ruta no
+ * pide sesión, así que sin tope un anónimo podía mandar conversaciones de megas.
+ * Holgados para el asistente real, que manda un prompt de sistema y unos pocos
+ * turnos.
+ */
+export const MAX_CHAT_MESSAGES = 40;
+const MAX_CHAT_CHARS = 48_000;
 
 /**
  * IDIOMA DE LAS RESPUESTAS DE LA IA
@@ -264,7 +274,10 @@ function sampleOf(texto: string): string {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly cloudinary: CloudinaryService,
+  ) {}
 
   private apiKey(): string {
     const key = this.config.get<string>("GROQ_API_KEY");
@@ -715,6 +728,12 @@ export class AiService {
     messages: unknown[],
     temperature = 0.7,
   ): Promise<{ content: string }> {
+    if (JSON.stringify(messages).length > MAX_CHAT_CHARS) {
+      throw new BadRequestException(
+        "La conversación es demasiado larga para el asistente.",
+      );
+    }
+
     const res = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
@@ -752,11 +771,25 @@ export class AiService {
    * vista en el bundle: la clave vive solo en el servidor.
    */
   async transcribe(audioUrl: string): Promise<{ text: string }> {
+    // Solo audios de NUESTRO Cloudinary: el servidor descarga esta URL, y sin
+    // este control cualquiera con sesión podía hacerlo pedir cualquier cosa
+    // (hosts internos, metadatos de la nube).
+    if (!this.cloudinary.parseAssetUrl(audioUrl)) {
+      throw new BadRequestException(
+        "El audio tiene que ser un archivo subido a nuestro almacenamiento.",
+      );
+    }
     const apiKey = this.apiKey();
 
     const audioResponse = await fetch(audioUrl);
     if (!audioResponse.ok) {
       throw new BadRequestException("No se pudo descargar el audio");
+    }
+    const declarado = Number(audioResponse.headers.get("content-length"));
+    if (Number.isFinite(declarado) && declarado > MAX_AUDIO_BYTES) {
+      throw new BadRequestException(
+        "El audio es demasiado grande para transcribir",
+      );
     }
 
     const audio = await audioResponse.blob();

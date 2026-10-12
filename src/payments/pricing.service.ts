@@ -42,9 +42,11 @@ export class PricingService {
    * Computes every amount server-side so the client can never influence pricing.
    *
    * Money model: the renter pays `rentalSubtotal + insurance`. The platform
-   * keeps the commission (taken out of the owner's payout) plus the insurance.
-   * The owner receives `rentalSubtotal - commission`, transferred on check-out.
-   * The deposit is a separate authorization hold, not part of the total.
+   * keeps the commission (taken out of the owner's payout); the insurance is
+   * collected on behalf of the insurer (ledger account `insurance:payable`).
+   * The owner receives `rentalSubtotal - commission` when the booking is
+   * settled, after the inspection window. The deposit is a separate
+   * authorization hold, not part of the total.
    */
   computeBooking(input: ComputeBookingInput): BookingPricing {
     const { pricePerDay, days } = input;

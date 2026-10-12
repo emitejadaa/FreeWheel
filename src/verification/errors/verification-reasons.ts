@@ -335,15 +335,6 @@ export function verificationReason(
   };
 }
 
-export const VERIFICATION_REASON_CODES = Object.keys(
-  CATALOG,
-) as VerificationReasonCode[];
-
-/** La acción que le corresponde a un código, sin armar el motivo entero. */
-export function reasonAction(code: VerificationReasonCode): ReasonAction {
-  return CATALOG[code].action;
-}
-
 /**
  * Motivos que se anotan pero NO impiden aprobar el documento.
  *
@@ -362,18 +353,6 @@ export const NO_IMPIDEN_APROBAR = new Set<VerificationReasonCode>([
   "LICENCIA_CLASE_NO_HABILITA",
   "LICENCIA_PRINCIPIANTE",
   "DNI_VENCIDO",
-]);
-
-/**
- * Motivos que son un problema NUESTRO y no del documento.
- *
- * No cuentan como documento fallado: la fila queda PENDING esperando a un
- * admin, con el motivo guardado aparte. Que nuestro servicio de lectura esté
- * caído no puede aparecerle a una persona como "tu documento falló".
- */
-export const PROBLEMAS_NUESTROS = new Set<VerificationReasonCode>([
-  "LECTURA_NO_DISPONIBLE",
-  "LECTURA_FALLIDA",
 ]);
 
 /**

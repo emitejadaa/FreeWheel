@@ -6,8 +6,7 @@ import {
   Injectable,
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import { isIPv4, isIPv6 } from "net";
-import { clientIp } from "../utils/client-ip.util";
+import { clientIp, ipRateLimitKey } from "../utils/client-ip.util";
 import { RateLimitResult, RateLimitService } from "./rate-limit.service";
 // El decorador importa este guard y este guard importa la clave del
 // decorador. El ciclo es inofensivo: cada lado usa lo del otro recién cuando
@@ -103,67 +102,13 @@ export function sensitiveRateLimitKeys(
   pedido: PedidoConUsuario,
 ): string[] {
   const por = opciones.by ?? "ip";
-  const ip = `${opciones.name}:ip:${claveDeIp(clientIp(pedido))}`;
+  const ip = `${opciones.name}:ip:${ipRateLimitKey(clientIp(pedido))}`;
   const userId = pedido.user?.id;
   const usuario = userId ? `${opciones.name}:user:${userId}` : null;
 
   if (por === "user") return [usuario ?? ip];
   if (por === "ip+user") return usuario ? [ip, usuario] : [ip];
   return [ip];
-}
-
-/**
- * La IP como clave de contador.
- *
- * Una IPv6 se cuenta por su /64 y no entera. A una conexión hogareña o a un
- * servidor alquilado le dan un /64 completo —dieciocho trillones de
- * direcciones— y cambiar de una a otra es gratis: contar la dirección exacta
- * sería darle un contador nuevo a cada intento. El /64 es lo que identifica a
- * la conexión, igual que una IPv4.
- *
- * Una IPv4 escrita como IPv6 ("::ffff:1.2.3.4", que es como Node la muestra en
- * un socket dual) se cuenta como la IPv4 que es: si no, la misma persona
- * tendría dos contadores según por dónde entró el pedido.
- */
-export function claveDeIp(ip: string | null): string {
-  if (!ip) return "unknown";
-  const limpia = ip.trim().toLowerCase();
-
-  const mapeada = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(limpia)?.[1];
-  if (mapeada && isIPv4(mapeada)) return mapeada;
-  if (!isIPv6(limpia.split("%")[0])) return limpia;
-
-  const grupos = expandirIpv6(limpia.split("%")[0]);
-  return grupos
-    ? `${grupos
-        .slice(0, 4)
-        .map((g) => parseInt(g, 16).toString(16))
-        .join(":")}::/64`
-    : limpia;
-}
-
-/** "2001:db8::1" → los ocho grupos, con los ceros que "::" esconde. */
-function expandirIpv6(ip: string): string[] | null {
-  const partes = ip.split("::");
-  if (partes.length > 2) return null;
-
-  const aGrupos = (texto: string): string[] => {
-    if (!texto) return [];
-    // Una IPv4 embebida al final ocupa los dos últimos grupos.
-    return texto.split(":").flatMap((grupo) => {
-      if (!grupo.includes(".")) return [grupo];
-      const [a, b, c, d] = grupo.split(".").map(Number);
-      return [((a << 8) | b).toString(16), ((c << 8) | d).toString(16)];
-    });
-  };
-
-  const cabeza = aGrupos(partes[0]);
-  if (partes.length === 1) return cabeza.length === 8 ? cabeza : null;
-
-  const cola = aGrupos(partes[1]);
-  const ceros = 8 - cabeza.length - cola.length;
-  if (ceros < 0) return null;
-  return [...cabeza, ...Array<string>(ceros).fill("0"), ...cola];
 }
 
 /** "Esperá 15 minutos", en castellano y redondeado para arriba. */

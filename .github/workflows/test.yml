@@ -41,7 +41,6 @@ jobs:
       INSURANCE_PCT: "0.10"
       SENA_PCT: "0.30"
       DEPOSIT_DEFAULT_USD: "200"
-      STRIPE_CONNECT_ENABLED: "true"
 
     steps:
       - uses: actions/checkout@v4
