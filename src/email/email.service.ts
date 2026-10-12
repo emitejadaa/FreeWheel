@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
+import * as QRCode from "qrcode";
 import { getFrontendUrl } from "../config/public-urls";
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -142,14 +143,19 @@ export class EmailService {
    * y no pasan por acá: apagar los avisos no puede dejar a nadie afuera de su
    * propia cuenta.
    */
-  private async send(to: string, subject: string, html: string) {
+  private async send(
+    to: string,
+    subject: string,
+    html: string,
+    adjuntos?: { cid: string; filename: string; content: Buffer }[],
+  ) {
     if (!(await this.quiereAvisos(to))) {
       this.logger.log(
         `Aviso "${subject}" no enviado a ${to}: los tiene apagados.`,
       );
       return;
     }
-    await this.entregar(to, subject, html);
+    await this.entregar(to, subject, html, adjuntos);
   }
 
   /**
@@ -161,7 +167,27 @@ export class EmailService {
    * preferencia de avisos, apagar los avisos apagaba también el código para
    * entrar a la cuenta.
    */
-  private async entregar(to: string, subject: string, html: string) {
+  /**
+   * Una imagen metida DENTRO del mail, no enlazada.
+   *
+   * `cid` es el nombre con el que el HTML la referencia: <img src="cid:qr">. Va
+   * así y no como un enlace a una imagen nuestra por dos motivos, y el segundo
+   * es el que manda:
+   *
+   *  1. Una imagen enlazada necesita internet para verse, y el QR del retiro se
+   *     mira justamente parado al lado del auto, que es donde puede no haber.
+   *  2. Un enlace a una imagen es una dirección pública. El QR del retiro lleva
+   *     el código que confirma la entrega: publicarlo en una URL que cualquiera
+   *     que la adivine puede abrir sería regalar el código.
+   *
+   * Adentro del mail, la imagen viaja con el mail y no se pide a nadie.
+   */
+  private async entregar(
+    to: string,
+    subject: string,
+    html: string,
+    adjuntos?: { cid: string; filename: string; content: Buffer }[],
+  ) {
     const transporter = this.createTransporter();
     if (!transporter) return;
     const from = this.configService.get<string>("GMAIL_USER");
@@ -171,12 +197,60 @@ export class EmailService {
         to,
         subject,
         html,
+        ...(adjuntos?.length
+          ? {
+              attachments: adjuntos.map((a) => ({
+                filename: a.filename,
+                content: a.content,
+                cid: a.cid,
+                contentDisposition: "inline" as const,
+              })),
+            }
+          : {}),
       });
       this.logger.log(`Email sent to ${to}: ${subject}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to send email to ${to}: ${message}`);
     }
+  }
+
+  /**
+   * El QR del retiro, como imagen PNG lista para meter adentro del mail.
+   *
+   * Se dibuja acá y no se pide a ningún servicio de afuera: el código que va
+   * adentro del QR es el que confirma la entrega del auto, y mandárselo a un
+   * generador ajeno para que nos devuelva la figurita sería regalarlo.
+   *
+   * Corrección de errores "M": aguanta que la pantalla esté manchada o que la
+   * foto salga movida, que es como se escanea un QR en la calle. Y margen 2,
+   * porque un QR sin borde blanco alrededor no lo lee ningún teléfono.
+   *
+   * Si fallara, devuelve null: el mail sale igual con el código escrito, que es
+   * lo que de verdad no puede faltar.
+   */
+  private async qrDelRetiro(token: string): Promise<Buffer | null> {
+    try {
+      return await QRCode.toBuffer(token, {
+        type: "png",
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 320,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`No se pudo dibujar el QR del retiro: ${message}`);
+      return null;
+    }
+  }
+
+  /** Un renglón de la cuenta: etiqueta a la izquierda, importe a la derecha. */
+  private renglon(etiqueta: string, valor: string, destacar = false): string {
+    return `
+      <tr>
+        <td style="padding:5px 0;font-size:14px;color:${destacar ? "#111827" : "#6b7280"};${destacar ? "font-weight:700" : ""}">${etiqueta}</td>
+        <td style="padding:5px 0;font-size:${destacar ? "16px" : "14px"};text-align:right;font-weight:700;color:${destacar ? "#2563eb" : "#111827"}">${valor}</td>
+      </tr>`;
   }
 
   /**
@@ -558,7 +632,7 @@ export class EmailService {
       cancelaste: boolean;
       refunded?: boolean;
       /** Qué tramo de la política se aplicó (bookings/cancellation-policy.ts). */
-      tier?: "libre" | "tardia" | "delDueno" | "cerrada";
+      tier?: "libre" | "tardia" | "delDueno" | "nadieAparecio" | "cerrada";
       /** Lo que NO se devuelve, cuando se canceló sobre la fecha. */
       senaRetenida?: number | null;
       currency?: string;
@@ -618,7 +692,12 @@ export class EmailService {
           params.tier === "delDueno"
             ? "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
                 "cancelación la hizo el dueño del auto."
-            : "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
+            : params.tier === "nadieAparecio"
+              ? "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: " +
+                "pasó el horario acordado y la entrega del auto nunca se " +
+                "confirmó. La seña paga que el auto esté reservado y se " +
+                "entregue; si la entrega no pasó, no hay nada que cobrar."
+              : "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
                 "cancelación entró con más de 48 horas de anticipación.",
         ) +
         this.p(
@@ -698,6 +777,158 @@ export class EmailService {
       email,
       `Comprobante de pago - ${params.concepto} - Freewheel`,
       html,
+    );
+  }
+
+  /**
+   * EL COMPROBANTE COMPLETO, CON EL QR DEL RETIRO ADENTRO.
+   *
+   * Sale cuando el dueño marca el auto listo, que es el momento en que todo
+   * está cerrado: el pago completo, el depósito autorizado y el código de
+   * retiro andando. Hasta ahora ese paso no mandaba ningún mail, y es
+   * justamente el único que la persona necesita tener a mano LEJOS de la
+   * aplicación: parada al lado del auto, en la calle, a veces sin señal.
+   *
+   * ── POR QUÉ UN MAIL Y NO "entrá a la app" ─────────────────────────────────
+   *
+   * Porque un mail ya está descargado. Abrir la reserva en la web necesita
+   * datos, que la sesión no se haya cerrado y que el sitio esté arriba; y las
+   * tres cosas fallan justo cuando hacen falta. Con el comprobante en la
+   * bandeja de entrada, el retiro no depende de nada de eso.
+   *
+   * Por eso también el QR va ADENTRO del mail como imagen y no enlazado, y por
+   * eso el código va ADEMÁS escrito en letras: muchos clientes de correo no
+   * muestran las imágenes hasta que uno lo pide, y el dueño puede escribir el
+   * código a mano en la app si el QR no se ve.
+   *
+   * ── QUÉ LLEVA, Y POR QUÉ TODO ────────────────────────────────────────────
+   *
+   * La cuenta entera, incluido lo que NO se cobró. El depósito en garantía es
+   * el número que más confunde —aparece retenido en el resumen de la tarjeta—
+   * y verlo escrito, con la palabra "retenido" al lado y la aclaración de que
+   * no es un cobro, es la diferencia entre una duda y un reclamo.
+   */
+  async sendBookingReceipt(
+    email: string,
+    params: {
+      renterName?: string;
+      bookingId: string;
+      vehicleLabel: string;
+      ownerName?: string;
+      locationText?: string | null;
+      startDate: Date;
+      endDate: Date;
+      days: number;
+      currency: string;
+      /** El alquiler sin seguro ni comisión. */
+      rentalSubtotal?: number | null;
+      insurance?: number | null;
+      platformFee?: number | null;
+      /** Lo que se cobró en total. */
+      total: number;
+      /** Lo que queda RETENIDO en la tarjeta, que no es un cobro. */
+      deposit?: number | null;
+      /** El código del retiro. Sin él, el mail sale igual pero sin QR. */
+      pickupToken?: string | null;
+    },
+  ) {
+    const plata = [
+      params.rentalSubtotal != null
+        ? this.renglon(
+            `Alquiler (${params.days} ${params.days === 1 ? "día" : "días"})`,
+            this.formatMoney(params.rentalSubtotal, params.currency),
+          )
+        : "",
+      params.insurance != null && params.insurance > 0
+        ? this.renglon(
+            "Seguro",
+            this.formatMoney(params.insurance, params.currency),
+          )
+        : "",
+      params.platformFee != null && params.platformFee > 0
+        ? this.renglon(
+            "Servicio de Freewheel",
+            this.formatMoney(params.platformFee, params.currency),
+          )
+        : "",
+      this.renglon(
+        "Total pagado",
+        this.formatMoney(params.total, params.currency),
+        true,
+      ),
+    ].join("");
+
+    const codigo = params.pickupToken ?? null;
+    const qr = codigo ? await this.qrDelRetiro(codigo) : null;
+
+    /*
+      EL BLOQUE DEL QR.
+
+      `alt` no es un detalle de accesibilidad acá: con las imágenes bloqueadas
+      —que es como llega un mail a una bandeja por primera vez— es lo único que
+      se ve en ese lugar, y tiene que decir que el código está escrito abajo.
+    */
+    const bloqueDelQr = codigo
+      ? `
+      <div style="text-align:center;background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:20px;margin:0 0 20px">
+        <div style="font-size:13px;color:#6b7280;margin:0 0 12px">Mostrale este código a quien te entrega el auto</div>
+        ${qr ? `<img src="cid:qr-retiro" width="200" height="200" alt="Código de retiro: ${codigo}" style="display:block;margin:0 auto 12px;border-radius:8px" />` : ""}
+        <div style="font-size:11px;color:#6b7280;margin:0 0 4px">O que lo escriba a mano:</div>
+        <div style="font-family:monospace;font-size:13px;color:#111827;word-break:break-all;line-height:1.5">${codigo}</div>
+      </div>`
+      : "";
+
+    const datos = [
+      {
+        etiqueta: "Reserva",
+        valor: params.bookingId.slice(0, 8).toUpperCase(),
+      },
+      { etiqueta: "Auto", valor: params.vehicleLabel },
+      {
+        etiqueta: "Desde",
+        valor: this.formatDate(params.startDate),
+      },
+      { etiqueta: "Hasta", valor: this.formatDate(params.endDate) },
+    ];
+    if (params.locationText) {
+      datos.push({ etiqueta: "Dónde", valor: params.locationText });
+    }
+    if (params.ownerName) {
+      datos.push({ etiqueta: "Te lo entrega", valor: params.ownerName });
+    }
+
+    const html = this.layout(
+      "Tu auto está listo para retirar",
+      this.p(
+        `${this.saludo(params.renterName)} ya está todo listo. Guardá este mail: ` +
+          "tiene el código para retirar el auto y el detalle de lo que pagaste, " +
+          "así no dependés de tener señal cuando llegues.",
+      ) +
+        bloqueDelQr +
+        this.cuadro(datos) +
+        `<table role="presentation" width="100%" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;padding:14px 16px;margin:0 0 20px;border-collapse:separate">${plata}</table>` +
+        (params.deposit != null && params.deposit > 0
+          ? this.p(
+              `<strong>Depósito en garantía: ${this.formatMoney(params.deposit, params.currency)}.</strong> ` +
+                "No es un cobro: queda retenido en tu tarjeta y se libera cuando " +
+                "devolvés el auto. Puede aparecer en el resumen como un consumo " +
+                "hasta que se suelte.",
+            )
+          : "") +
+        this.boton(this.misReservas, "Ver la reserva") +
+        this.nota(
+          "El código sirve una sola vez, en el momento de la entrega. Si algo no " +
+            "coincide con lo que esperabas, respondé este mail y lo revisamos.",
+        ),
+    );
+
+    await this.send(
+      email,
+      `Tu auto está listo - Reserva ${params.bookingId.slice(0, 8).toUpperCase()} - Freewheel`,
+      html,
+      qr
+        ? [{ cid: "qr-retiro", filename: "codigo-de-retiro.png", content: qr }]
+        : undefined,
     );
   }
 

@@ -120,6 +120,23 @@ export class BookingsController {
     return this.bookingsService.readyForPickup(user.id, id);
   }
 
+  /**
+   * "Vine, esperé y no apareció."
+   *
+   * Lo pide el DUEÑO, y solo dentro de una ventana: desde media hora después
+   * del horario acordado y hasta 24 horas. Es lo único que hace que una
+   * cancelación después de la hora retenga la seña; sin este reporte, vuelve
+   * todo. Ver bookings/cancellation-policy.ts, que explica por qué.
+   */
+  @Post(":id/renter-no-show")
+  @RequireVerifiedAccount()
+  reportRenterNoShow(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.bookingsService.reportRenterNoShow(user.id, id);
+  }
+
   @Get(":id/tokens")
   getTokens(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.bookingsService.getTokens(user.id, id);

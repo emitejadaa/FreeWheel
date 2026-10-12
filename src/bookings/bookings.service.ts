@@ -32,7 +32,12 @@ import {
 } from "../common/utils/authorization.util";
 import { generateOpaqueToken } from "../common/utils/verification-code.util";
 import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
-import { decidirCancelacion } from "./cancellation-policy";
+import {
+  decidirCancelacion,
+  puedeReportarNoShow,
+  HORAS_PARA_RECLAMAR_NO_SHOW,
+  MINUTOS_DE_GRACIA_EN_EL_RETIRO,
+} from "./cancellation-policy";
 import { CancelBookingDto } from "./dto/cancel-booking.dto";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 
@@ -352,6 +357,10 @@ export class BookingsService {
       startDate: booking.startDate,
       ahora: new Date(),
       laCancelaElDueno,
+      // Las dos constancias que existen: el escaneo del código y el reporte
+      // del dueño. Sin ninguna de las dos, pasada la hora, vuelve todo.
+      entregaConfirmada: booking.pickupConfirmedAt != null,
+      noAparecioElInquilino: booking.renterNoShowAt != null,
     });
     if (!decision.puede) {
       throw new BadRequestException({
@@ -406,6 +415,8 @@ export class BookingsService {
           // "delDueno" y "cerrada" no llegan acá: el primero devuelve todo
           // igual por ser el dueño quien cancela, y el segundo ya rebotó
           // arriba. Se mapean a "libre" para no inventar un tramo.
+          // "delDueno", "nadieAparecio" y "cerrada" no necesitan un tramo
+          // propio en el reparto: los tres devuelven todo, igual que "libre".
           { tier: decision.tier === "tardia" ? "tardia" : "libre" },
         );
       } catch (error) {
@@ -568,6 +579,42 @@ export class BookingsService {
       `Booking ${id} marked ready for pickup by owner ${ownerId}`,
     );
 
+    /*
+      EL COMPROBANTE COMPLETO, CON EL QR ADENTRO.
+
+      Este paso no mandaba ningún mail, y es el único que la persona necesita
+      tener a mano LEJOS de la aplicación: parada al lado del auto, a veces sin
+      señal. Un mail ya está descargado; abrir la reserva en la web necesita
+      datos, sesión abierta y el sitio arriba.
+
+      El código viaja descifrado hasta acá y no se guarda en ningún lado: se
+      dibuja el QR, se manda y se olvida. Va por safeNotify como todos los
+      demás: que el mail no salga no puede deshacer que el auto esté listo.
+    */
+    await this.safeNotify(() => {
+      if (!updated.renter?.email) return;
+      return this.email.sendBookingReceipt(updated.renter.email, {
+        renterName: this.personName(updated.renter),
+        bookingId: updated.id,
+        vehicleLabel: this.vehicleLabel(updated),
+        ownerName: this.personName(updated.owner),
+        locationText: updated.listing?.locationText ?? null,
+        startDate: updated.startDate,
+        endDate: updated.endDate,
+        days: this.availability.calculateDays(
+          updated.startDate,
+          updated.endDate,
+        ),
+        currency: updated.currency,
+        rentalSubtotal: updated.rentalSubtotalSnapshot,
+        insurance: updated.insuranceSnapshot,
+        platformFee: updated.platformFeeSnapshot,
+        total: updated.totalPriceSnapshot ?? 0,
+        deposit: updated.depositSnapshot,
+        pickupToken: this.encryption.tryDecrypt(updated.pickupTokenPreview),
+      });
+    });
+
     // ¿La retención llega viva al final de la ventana de inspección? Si no,
     // un daño reclamado tarde ya no se puede cobrar del depósito, y el dueño
     // tiene que saberlo antes de entregar el auto.
@@ -609,6 +656,135 @@ export class BookingsService {
             undefined)
           : undefined,
     };
+  }
+
+  /**
+   * EL DUEÑO DEJA CONSTANCIA DE QUE LA PERSONA NO APARECIÓ.
+   *
+   * Es la otra mitad de la regla del no-show. Por omisión, pasada la hora sin
+   * entrega confirmada, cancelar devuelve TODO: el que no aparece no cobra.
+   * Esto es lo único que lo cambia, y por eso tiene que ser un acto con nombre
+   * y hora y no una casilla cualquiera.
+   *
+   * Tres candados, y cada uno tapa una forma distinta de usarlo mal:
+   *
+   *  · Solo el dueño, y solo en una reserva suya.
+   *  · Solo dentro de la ventana. Antes de la media hora de gracia sería
+   *    reportar a alguien que todavía está llegando; pasadas las 24 horas
+   *    sería decidir con la billetera en la mano si conviene reclamar.
+   *  · Nunca si la entrega ya se confirmó: ahí el auto se entregó y no hay
+   *    nada que reportar.
+   *
+   * Queda en el registro de auditoría. No alcanza para impedir que alguien
+   * mienta sobre lo que pasó en la vereda —ningún programa puede—, pero
+   * convierte la mentira en un acto firmado en vez de un silencio que paga.
+   */
+  async reportRenterNoShow(ownerId: string, id: string) {
+    const booking = await this.findById(id);
+    this.assertBookingOwner(booking, ownerId);
+
+    if (booking.renterNoShowAt) {
+      return publicBooking(booking);
+    }
+
+    const permiso = puedeReportarNoShow({
+      startDate: booking.startDate,
+      ahora: new Date(),
+      entregaConfirmada: booking.pickupConfirmedAt != null,
+    });
+    if (!permiso.puede) {
+      const mensajes: Record<string, string> = {
+        PICKUP_ALREADY_CONFIRMED:
+          "La entrega de este auto ya está confirmada: no hay nada que reportar.",
+        TOO_EARLY_FOR_NO_SHOW:
+          `Todavía es temprano. Se puede reportar desde ${MINUTOS_DE_GRACIA_EN_EL_RETIRO} ` +
+          "minutos después del horario acordado: un atraso no es un plantón.",
+        NO_SHOW_WINDOW_CLOSED:
+          `El plazo para reportarlo era de ${HORAS_PARA_RECLAMAR_NO_SHOW} horas ` +
+          "desde el horario de inicio y ya pasó.",
+      };
+      throw new BadRequestException({
+        statusCode: 400,
+        code: permiso.motivo,
+        message: permiso.motivo
+          ? mensajes[permiso.motivo]
+          : "No se puede reportar.",
+      });
+    }
+
+    const updated = await this.prisma.booking.update({
+      where: { id },
+      data: { renterNoShowAt: new Date() },
+      include: BOOKING_PARTICIPANT_INCLUDE,
+    });
+
+    await this.auditLog.create({
+      actorId: ownerId,
+      targetUserId: booking.renterId,
+      action: "booking.renter_no_show_reported",
+      entityType: "Booking",
+      entityId: id,
+      metadata: { startDate: booking.startDate.toISOString() },
+    });
+
+    this.logger.log(`Booking ${id}: owner ${ownerId} reported renter no-show`);
+    return publicBooking(updated);
+  }
+
+  /**
+   * LAS RESERVAS QUE SE QUEDARON SIN ENTREGAR, CERRADAS SOLAS.
+   *
+   * Corre en la tarea diaria. Sin esto, la regla del no-show dependería de que
+   * la persona perjudicada se acuerde de cancelar, y el caso que esto resuelve
+   * es justamente el de alguien que se quedó esperando en la calle y no tiene
+   * por qué además hacer un trámite para recuperar su plata.
+   *
+   * Qué se toma: reservas listas para retirar cuya hora de inicio pasó hace más
+   * de HORAS_PARA_RECLAMAR_NO_SHOW. Se espera a que cierre esa ventana a
+   * propósito: hasta entonces el dueño todavía puede dejar su constancia, y
+   * cerrar antes sería decidir sin escuchar.
+   *
+   * Lo que NO se toca: las que ya están en curso. Si alguien escaneó el código,
+   * el auto se entregó y esto no tiene nada que hacer ahí.
+   *
+   * La cancelación va como si la hubiera pedido quien alquiló, porque el
+   * resultado es el mismo que si la hubiera pedido: la decisión de la política
+   * mira las constancias, no quién apretó el botón.
+   */
+  async cerrarRetirosQueNoPasaron(ahora: Date = new Date()): Promise<number> {
+    const limite = new Date(
+      ahora.getTime() - HORAS_PARA_RECLAMAR_NO_SHOW * 60 * 60 * 1000,
+    );
+    const pendientes = await this.prisma.booking.findMany({
+      where: {
+        status: BookingStatus.READY_FOR_PICKUP,
+        pickupConfirmedAt: null,
+        startDate: { lt: limite },
+      },
+      select: { id: true, renterId: true },
+      take: 100,
+    });
+
+    let cerradas = 0;
+    for (const reserva of pendientes) {
+      try {
+        await this.cancel(reserva.renterId, reserva.id, {
+          reason:
+            "El horario de retiro pasó y la entrega del auto nunca se confirmó.",
+        });
+        cerradas += 1;
+      } catch (error) {
+        // Una que no se pueda cerrar no puede frenar a las demás.
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `no se pudo cerrar el retiro vencido ${reserva.id}: ${message}`,
+        );
+      }
+    }
+    if (cerradas > 0) {
+      this.logger.log(`retiros vencidos cerrados: ${cerradas}`);
+    }
+    return cerradas;
   }
 
   async confirmPickup(ownerId: string, id: string, token: string) {

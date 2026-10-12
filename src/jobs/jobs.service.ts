@@ -4,9 +4,11 @@ import { PrismaService } from "../prisma/prisma.service";
 import { PaymentsService } from "../payments/payments.service";
 import { ClaimsService } from "../claims/claims.service";
 import { RetentionService } from "../retention/retention.service";
+import { BookingsService } from "../bookings/bookings.service";
 
 export interface JobRunResult {
   claimsExpired: number;
+  retirosVencidos: number;
   bookingsSettled: number;
   settlementsFailed: number;
   payoutsRetried: number;
@@ -40,10 +42,20 @@ export class JobsService {
     private readonly payments: PaymentsService,
     private readonly claims: ClaimsService,
     private readonly retention: RetentionService,
+    private readonly bookings: BookingsService,
   ) {}
 
   async runDaily(now: Date = new Date()): Promise<JobRunResult> {
     const claimsExpired = await this.claims.expireUnanswered(now);
+
+    /*
+      Las reservas que se quedaron sin entregar, cerradas solas.
+
+      Sin esto, recuperar la plata dependería de que la persona que se quedó
+      esperando en la calle se acuerde de entrar a cancelar. Ver
+      bookings.service.ts: cerrarRetirosQueNoPasaron().
+    */
+    const retirosVencidos = await this.bookings.cerrarRetirosQueNoPasaron(now);
 
     // Reservas para liquidar: las que cerraron la inspección sin reclamo, y
     // las que tienen un reclamo ya resuelto pero cuya liquidación no llegó a
@@ -94,6 +106,7 @@ export class JobsService {
 
     const resumen = {
       claimsExpired,
+      retirosVencidos,
       bookingsSettled,
       settlementsFailed,
       payoutsRetried,

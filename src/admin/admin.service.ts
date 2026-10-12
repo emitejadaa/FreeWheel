@@ -12,6 +12,7 @@ import { assertFound } from "../common/utils/entity.util";
 import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 import { CloudinaryService } from "../media/cloudinary.service";
 import { MediaCleanupService } from "../media/media-cleanup.service";
+import { BookingsService } from "../bookings/bookings.service";
 import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
@@ -28,6 +29,7 @@ export class AdminService {
     private readonly deletionPolicy: AccountDeletionPolicy,
     private readonly reviews: ReviewsService,
     private readonly mediaCleanup: MediaCleanupService,
+    private readonly bookings: BookingsService,
   ) {}
 
   listUsers() {
@@ -376,6 +378,55 @@ export class AdminService {
       },
       orderBy: { createdAt: "desc" },
     });
+  }
+
+  /**
+   * CANCELAR UNA RESERVA DEVOLVIENDO TODO, DESDE EL PANEL.
+   *
+   * Es la válvula de último recurso, y conviene decir qué NO es: no es cómo se
+   * resuelven los casos normales. El que no aparece ya no cobra sin que nadie
+   * intervenga, y el dueño que sí fue tiene su propio reporte; los dos caminos
+   * están en bookings/cancellation-policy.ts y no pasan por acá.
+   *
+   * Esto queda para lo que ninguna regla puede prever: el auto que se rompió
+   * camino a la entrega, el reclamo que llegó por otro lado, el caso raro. Sin
+   * una salida así, un caso raro no tiene arreglo posible y termina en una
+   * transferencia por fuera del sistema, que es peor para todos.
+   *
+   * Se cancela EN NOMBRE DE QUIEN ALQUILA y no del dueño, a propósito: la
+   * cancelación del dueño existe para que él se pueda bajar, y usarla desde el
+   * panel registraría que se bajó alguien que no fue. El resultado para la
+   * plata es el mismo —vuelve todo—, pero el registro dice la verdad.
+   *
+   * Queda en el registro de auditoría con el nombre del administrador y el
+   * motivo, que es obligatorio: una devolución total sin motivo escrito es
+   * justo lo que nadie va a poder explicar después.
+   */
+  async cancelBookingWithFullRefund(
+    adminId: string,
+    bookingId: string,
+    reason: string,
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { id: true, renterId: true },
+    });
+    assertFound(booking, "Booking not found");
+
+    const resultado = await this.bookings.cancel(booking.renterId, bookingId, {
+      reason: `Cancelada por un administrador: ${reason}`,
+    });
+
+    await this.auditLog.create({
+      actorId: adminId,
+      targetUserId: booking.renterId,
+      action: "admin.booking_cancelled_full_refund",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: { reason },
+    });
+
+    return resultado;
   }
 
   async getBooking(id: string) {

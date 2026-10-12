@@ -4,6 +4,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { MediaModule } from "../media/media.module";
 import { VerificationModule } from "../verification/verification.module";
 import { ReviewsModule } from "../reviews/reviews.module";
+import { BookingsModule } from "../bookings/bookings.module";
 import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
@@ -20,6 +21,9 @@ import { AdminBootstrapService } from "./admin-bootstrap.service";
     MediaModule,
     VerificationModule,
     ReviewsModule,
+    // Para la cancelación con devolución total del panel: la hace el mismo
+    // servicio que todas las demás, así la política vive en un solo lugar.
+    BookingsModule,
   ],
   controllers: [AdminController],
   providers: [AdminService, AccountDeletionPolicy, AdminBootstrapService],

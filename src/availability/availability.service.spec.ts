@@ -328,3 +328,82 @@ describe("calculateDays", () => {
     ).toBeLessThanOrEqual(0);
   });
 });
+
+/*
+  BLOQUEAR FECHAS NO ES UNA PUERTA DE ATRÁS PARA BAJARSE DE UNA RESERVA
+
+  El dueño puede marcar días como no disponibles en su calendario. Faltaba
+  impedir que lo hiciera sobre días que YA tienen una reserva aceptada.
+
+  No era un agujero por donde se escapara plata: la reserva vive por su cuenta y
+  la entrega con el código no mira el calendario, así que la reserva seguía en
+  pie. El problema es que el dueño podía bloquear los días creyendo que así se
+  bajaba, y después no aparecer, con la otra persona esperando un auto que tenía
+  reservado y pago.
+
+  Bajarse tiene un solo camino: cancelar, que devuelve todo (ver
+  bookings/cancellation-policy.ts).
+*/
+describe("createBlock — bloquear fechas con una reserva encima", () => {
+  const LISTING = { id: "l1", ownerId: "duenio" };
+  /*
+    Las fechas se calculan desde HOY y no se escriben a mano: createBlock exige
+    que el primer día sea de mañana en adelante, así que unas fechas fijas
+    pasarían hoy y empezarían a fallar solas dentro de unos meses.
+  */
+  const enDias = (dias: number) =>
+    new Date(Date.now() + dias * 24 * 60 * 60 * 1000);
+  const FECHAS = { startDate: enDias(10), endDate: enDias(14) };
+
+  /** Prisma de juguete: `reservaEncima` decide si hay una reserva en el medio. */
+  const prismaFalso = (reservaEncima: boolean) =>
+    ({
+      listing: { findUnique: () => Promise.resolve(LISTING) },
+      listingAvailabilityBlock: {
+        findFirst: () => Promise.resolve(null),
+        create: ({ data }: { data: unknown }) =>
+          Promise.resolve({ id: "b1", ...(data as object) }),
+      },
+      booking: {
+        findFirst: () =>
+          Promise.resolve(
+            reservaEncima ? { id: "r1", status: BookingStatus.ACCEPTED } : null,
+          ),
+      },
+    }) as unknown as PrismaService;
+
+  it("NO DEJA bloquear fechas que ya tienen una reserva", async () => {
+    const service = new AvailabilityService(prismaFalso(true));
+    await expect(
+      service.createBlock("duenio", "l1", { ...FECHAS }),
+    ).rejects.toMatchObject({
+      response: { code: "DATES_OVERLAP_BOOKING" },
+    });
+  });
+
+  it("y el mensaje dice que para bajarse hay que cancelar", async () => {
+    // Un "no se puede" sin la salida al lado manda a escribirle a soporte por
+    // algo que el dueño puede resolver solo.
+    const service = new AvailabilityService(prismaFalso(true));
+    await service.createBlock("duenio", "l1", { ...FECHAS }).catch((error) => {
+      const mensaje = (error as { response: { message: string } }).response
+        .message;
+      expect(mensaje).toMatch(/cancel/i);
+      expect(mensaje).toMatch(/devuelve todo/i);
+    });
+  });
+
+  it("sin reserva encima, el bloqueo se crea normalmente", async () => {
+    const service = new AvailabilityService(prismaFalso(false));
+    await expect(
+      service.createBlock("duenio", "l1", { ...FECHAS }),
+    ).resolves.toMatchObject({ id: "b1", listingId: "l1" });
+  });
+
+  it("y sigue sin dejar que alguien bloquee fechas de un auto ajeno", async () => {
+    const service = new AvailabilityService(prismaFalso(false));
+    await expect(
+      service.createBlock("otro", "l1", { ...FECHAS }),
+    ).rejects.toThrow();
+  });
+});
