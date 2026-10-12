@@ -21,5 +21,9 @@ import { BookingsService } from "./bookings.service";
   ],
   controllers: [BookingsController],
   providers: [BookingsService],
+  // Lo usa JobsModule para cerrar los retiros que no pasaron. Sin exportarlo,
+  // Nest no lo puede inyectar y la aplicación no arranca: es un error de
+  // tiempo de ejecución que el compilador no ve.
+  exports: [BookingsService],
 })
 export class BookingsModule {}

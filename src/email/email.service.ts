@@ -600,7 +600,7 @@ export class EmailService {
       cancelaste: boolean;
       refunded?: boolean;
       /** Qué tramo de la política se aplicó (bookings/cancellation-policy.ts). */
-      tier?: "libre" | "tardia" | "delDueno" | "cerrada";
+      tier?: "libre" | "tardia" | "delDueno" | "nadieAparecio" | "cerrada";
       /** Lo que NO se devuelve, cuando se canceló sobre la fecha. */
       senaRetenida?: number | null;
       currency?: string;
@@ -659,7 +659,12 @@ export class EmailService {
           params.tier === "delDueno"
             ? "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
                 "cancelación la hizo el dueño del auto."
-            : "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
+            : params.tier === "nadieAparecio"
+              ? "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: " +
+                "pasó el horario acordado y la entrega del auto nunca se " +
+                "confirmó. La seña paga que el auto esté reservado y se " +
+                "entregue; si la entrega no pasó, no hay nada que cobrar."
+              : "<strong>Se devuelve todo lo pagado</strong>, incluida la seña: la " +
                 "cancelación entró con más de 48 horas de anticipación.",
         ) +
         this.p(

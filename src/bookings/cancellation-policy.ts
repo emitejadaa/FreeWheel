@@ -22,6 +22,8 @@ import { BookingStatus } from "@prisma/client";
  *   · Si cancela el DUEÑO             → vuelve todo, siempre y en cualquier
  *                                       momento. El que incumple no se queda
  *                                       con nada.
+ *   · Si pasó la hora y NADIE          → vuelve todo. Ver abajo: es la regla
+ *     confirmó la entrega                que hace que no aparecer no pague.
  *
  * El depósito en garantía se suelta en todos los casos: nunca fue un cobro.
  *
@@ -35,6 +37,52 @@ import { BookingStatus } from "@prisma/client";
  * eso: el 30% que se paga por adelantado justamente para reservar las fechas.
  * Perder la reserva es perder la seña, que es lo que cualquiera entiende sin
  * que se lo expliquen.
+ *
+ * ── EL QUE NO APARECE NO COBRA ────────────────────────────────────────────
+ *
+ * El agujero que esto tapa: el dueño aceptaba, cobraba y simplemente NO IBA.
+ * La persona se quedaba sin auto, y si cancelaba después de la hora de inicio
+ * la regla de arriba la trataba como una cancelación tardía cualquiera: perdía
+ * la seña, y esa seña iba al dueño. O sea que no aparecer PAGABA el 30%.
+ *
+ * Así lo resuelven las plataformas que ya pasaron por esto. Turo da media hora
+ * de gracia desde el horario acordado: si el dueño no canceló ni apareció, la
+ * persona recibe todo de vuelta. Airbnb hace lo mismo cuando el anfitrión se
+ * cae: devolución total y el anfitrión no cobra nada.
+ *
+ * LA REGLA, Y POR QUÉ NO NECESITA QUE NADIE DECIDA:
+ *
+ * Pasada la hora de inicio más la gracia, si NADIE confirmó la entrega, la
+ * cancelación devuelve todo. No hace falta saber quién faltó, y es a propósito
+ * que no se intente adivinarlo: el servidor no puede ver la vereda.
+ *
+ * Lo que sí sabe, y alcanza, es QUIÉN PODÍA DEJAR CONSTANCIA. La entrega la
+ * confirma el dueño escaneando el código. Si no hay constancia de que el auto
+ * se entregó, quien tenía el aparato para registrarlo y no lo usó no puede
+ * cobrar por una entrega que nadie puede demostrar. Es la misma idea que en
+ * cualquier reclamo: la carga la lleva el que estaba en condiciones de probar.
+ *
+ * Y el efecto es el que importa: NO APARECER NUNCA PAGA. Sin premio, la estafa
+ * deja de tener sentido, que es lo más cerca de "no se puede estafar" a lo que
+ * se puede llegar sin poner a alguien a mirar.
+ *
+ * ── ENTONCES, ¿EL INQUILINO QUE NO VA SE LLEVA TODO GRATIS? ───────────────
+ *
+ * No, y acá está la otra mitad. El dueño que SÍ fue puede dejar su propia
+ * constancia: reportar que la persona no apareció. Es un acto con nombre,
+ * fecha y hora, que queda en el registro de auditoría, y solo se puede hacer
+ * en una ventana —desde la gracia y hasta HORAS_PARA_RECLAMAR después del
+ * inicio—. Con ese reporte, la cancelación vuelve a ser tardía y la seña queda
+ * para el dueño, que es lo que corresponde: tuvo el auto guardado y fue.
+ *
+ * Es exactamente lo que pide Turo: el dueño reporta el no-show dentro de un
+ * plazo y recién entonces se le reconoce.
+ *
+ * LO QUE ESTO NO RESUELVE, Y HAY QUE DECIRLO: un dueño que va, no entrega el
+ * auto y reporta que la persona no apareció. Eso es mentir sobre algo que pasó
+ * en la calle, y ningún programa lo puede ver. Lo que sí hace este diseño es
+ * que mentir sea un acto registrado, con su nombre, su hora y su reserva, en
+ * vez de un silencio que paga solo.
  *
  * ── POR QUÉ ESTÁ SOLO EN UN ARCHIVO ───────────────────────────────────────
  * Porque la decisión tiene que poder probarse con fechas elegidas a mano, sin
@@ -59,6 +107,26 @@ export const cancellableStatuses: BookingStatus[] = [
  */
 export const HORAS_DE_GRACIA = 48;
 
+/**
+ * Cuántos minutos después del horario acordado se da por no aparecido.
+ *
+ * Media hora, igual que Turo. No es un número elegido por gusto: es el tiempo
+ * que hay que dar para que un atraso normal —el tránsito, el colectivo, no
+ * encontrar la esquina— no se trate como un plantón.
+ */
+export const MINUTOS_DE_GRACIA_EN_EL_RETIRO = 30;
+
+/**
+ * Hasta cuándo el dueño puede dejar constancia de que la persona no apareció.
+ *
+ * Una ventana y no "siempre", por dos motivos. Un reporte hecho tres días
+ * después no lo puede discutir nadie, porque ya nadie se acuerda; y sobre todo,
+ * sin plazo el dueño podría esperar a ver si le conviene y recién entonces
+ * reclamar la seña. Veinticuatro horas desde el inicio es tiempo de sobra para
+ * alguien que estuvo ahí esperando, y poco para pensarlo.
+ */
+export const HORAS_PARA_RECLAMAR_NO_SHOW = 24;
+
 export type CancellationTier =
   /** Con tiempo: vuelve todo. */
   | "libre"
@@ -66,6 +134,8 @@ export type CancellationTier =
   | "tardia"
   /** La canceló el dueño: vuelve todo, sin importar cuándo. */
   | "delDueno"
+  /** Pasó la hora y nadie confirmó la entrega: vuelve todo. */
+  | "nadieAparecio"
   /** No se puede cancelar. */
   | "cerrada";
 
@@ -93,11 +163,17 @@ export function decidirCancelacion({
   startDate,
   ahora,
   laCancelaElDueno,
+  entregaConfirmada = false,
+  noAparecioElInquilino = false,
 }: {
   status: BookingStatus;
   startDate: Date;
   ahora: Date;
   laCancelaElDueno: boolean;
+  /** Si alguien escaneó el código: entonces el auto se entregó de verdad. */
+  entregaConfirmada?: boolean;
+  /** Si el dueño dejó constancia de que la persona no apareció. */
+  noAparecioElInquilino?: boolean;
 }): CancellationDecision {
   const horasParaElInicio =
     (startDate.getTime() - ahora.getTime()) / MS_POR_HORA;
@@ -145,6 +221,35 @@ export function decidirCancelacion({
     };
   }
 
+  /*
+    NADIE APARECIÓ: VUELVE TODO.
+
+    Pasó la hora acordada más la gracia y nadie confirmó la entrega. La seña
+    paga tener el auto reservado y entregarlo; si no hay constancia de que se
+    entregó, no hay nada que cobrar.
+
+    Se mira `entregaConfirmada` y no el estado, porque son dos cosas distintas:
+    el estado puede haber avanzado por otro camino, y lo que decide acá es si
+    existe la constancia del escaneo.
+
+    La excepción es el dueño que dejó su propia constancia de que la persona no
+    fue. Ahí sí fue él el que cumplió, y la regla tardía vuelve a aplicar.
+  */
+  const graciaEnHoras = MINUTOS_DE_GRACIA_EN_EL_RETIRO / 60;
+  if (
+    !entregaConfirmada &&
+    !noAparecioElInquilino &&
+    horasParaElInicio <= -graciaEnHoras
+  ) {
+    return {
+      puede: true,
+      motivo: null,
+      tier: "nadieAparecio",
+      retieneSena: false,
+      horasParaElInicio,
+    };
+  }
+
   return {
     puede: true,
     motivo: null,
@@ -152,4 +257,35 @@ export function decidirCancelacion({
     retieneSena: true,
     horasParaElInicio,
   };
+}
+
+/**
+ * SI EL DUEÑO PUEDE DEJAR CONSTANCIA DE QUE LA PERSONA NO APARECIÓ.
+ *
+ * Solo dentro de la ventana, y solo si no hay entrega confirmada. Los dos
+ * extremos importan: antes de la gracia sería reportar a alguien que todavía
+ * está llegando, y pasada la ventana sería decidir con la billetera en la mano
+ * si conviene reclamar.
+ */
+export function puedeReportarNoShow({
+  startDate,
+  ahora,
+  entregaConfirmada,
+}: {
+  startDate: Date;
+  ahora: Date;
+  entregaConfirmada: boolean;
+}): { puede: boolean; motivo: string | null } {
+  if (entregaConfirmada) {
+    return { puede: false, motivo: "PICKUP_ALREADY_CONFIRMED" };
+  }
+  const minutosDesdeElInicio =
+    (ahora.getTime() - startDate.getTime()) / (60 * 1000);
+  if (minutosDesdeElInicio < MINUTOS_DE_GRACIA_EN_EL_RETIRO) {
+    return { puede: false, motivo: "TOO_EARLY_FOR_NO_SHOW" };
+  }
+  if (minutosDesdeElInicio > HORAS_PARA_RECLAMAR_NO_SHOW * 60) {
+    return { puede: false, motivo: "NO_SHOW_WINDOW_CLOSED" };
+  }
+  return { puede: true, motivo: null };
 }

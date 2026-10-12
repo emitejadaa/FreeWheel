@@ -761,6 +761,17 @@ model Booking {
   pickupTokenPreview      String?
   returnTokenPreview      String?
   pickupConfirmedAt       DateTime?
+
+  /// Cuándo el dueño dejó constancia de que la persona no apareció a retirar.
+  ///
+  /// Es la otra mitad de la regla del no-show. Pasada la hora acordada sin
+  /// entrega confirmada, cancelar devuelve TODO: el que no aparece no cobra.
+  /// Esta marca es lo único que lo cambia, porque dice que el dueño sí fue.
+  ///
+  /// Se guarda la hora y no un booleano a propósito: el reporte solo vale
+  /// dentro de una ventana (ver bookings/cancellation-policy.ts), así que hace
+  /// falta saber CUÁNDO se hizo, no solo que se hizo.
+  renterNoShowAt          DateTime?
   returnConfirmedAt       DateTime?
   cancelledAt             DateTime?
   cancellationReason      String?
