@@ -35,6 +35,13 @@ import {
   CancelledBy,
   computeCancellation,
 } from "./money/cancellation-policy";
+import {
+  cuentaSimuladaDe,
+  esIdentificadorSimulado,
+  estadoSimulado,
+  hayQueSimularLosCobros,
+  transferenciaSimulada,
+} from "./cobros-simulados";
 import { PAYMENT_PROVIDER } from "./providers/payment-provider.interface";
 import type {
   PaymentIntentResult,
@@ -103,6 +110,16 @@ export interface PaymentContext {
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
 
+  /**
+   * Si la plata que va DEL sistema AL dueño se simula.
+   *
+   * Se lee una sola vez, al levantar el servidor, y no en cada llamada: es una
+   * decisión del deploy, no de la reserva, y leerla en cada pago dejaría la
+   * puerta abierta a que dos reservas de la misma tanda se comporten distinto.
+   * Ver cobros-simulados.ts.
+   */
+  private readonly cobrosSimulados: boolean;
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
@@ -111,7 +128,16 @@ export class PaymentsService {
     private readonly email: EmailService,
     private readonly ledger: LedgerService,
     private readonly contracts: ContractsService,
-  ) {}
+  ) {
+    this.cobrosSimulados = hayQueSimularLosCobros(config);
+    if (this.cobrosSimulados) {
+      this.logger.log(
+        "Las transferencias al dueño se SIMULAN (Stripe Connect no está " +
+          "habilitado en esta plataforma). El cobro con tarjeta sigue yendo a " +
+          "Stripe. Para pasar al camino real: STRIPE_CONNECT_ENABLED=true.",
+      );
+    }
+  }
 
   // ── El cobro único (lo pide quien alquila) ─────────────────────────────
 
@@ -1832,13 +1858,28 @@ export class PaymentsService {
             select: { currency: true },
           })
         )?.currency ?? "usd";
-      const transfer = await this.provider.transferToOwner({
-        amountMinor: debido,
-        currency,
-        destination: accountId,
-        metadata: { ownerId: owner.id, reference },
-        idempotencyKey: `payout_${owner.id}_${reference}_${debido}`,
-      });
+      /*
+        LA ÚNICA LÍNEA QUE CAMBIA CUANDO LOS COBROS SE SIMULAN.
+
+        Todo lo que viene después —el asiento en el libro, el comprobante, el
+        evento, la reserva marcada como liquidada— corre exactamente igual. Lo
+        que no corre es la llamada a Stripe, que sin Connect habilitado vuelve
+        con un error y deja la plata del dueño trabada en su bolsillo para
+        siempre, reintento tras reintento.
+
+        El identificador es determinístico, así que un segundo intento con el
+        mismo monto y la misma referencia choca contra la clave del asiento y
+        no paga dos veces (ver cobros-simulados.ts).
+      */
+      const transfer = this.cobrosSimulados
+        ? { id: transferenciaSimulada(owner.id, reference, debido) }
+        : await this.provider.transferToOwner({
+            amountMinor: debido,
+            currency,
+            destination: accountId,
+            metadata: { ownerId: owner.id, reference },
+            idempotencyKey: `payout_${owner.id}_${reference}_${debido}`,
+          });
 
       await this.prisma.$transaction(async (tx) => {
         await this.ledger.post(
@@ -1867,7 +1908,10 @@ export class PaymentsService {
             userId: owner.id,
             kind: PaymentRecordKind.OWNER_TRANSFER,
             status: PaymentRecordStatus.PAID,
-            provider: this.provider.name,
+            // Queda escrito en el comprobante quién movió esta plata. Un
+            // registro que dijera "stripe" sobre una transferencia que Stripe
+            // nunca vio sería el peor dato de toda la tabla.
+            provider: this.cobrosSimulados ? "simulado" : this.provider.name,
             providerId: transfer.id,
             stripeTransferId: transfer.id,
             amount: debido / 100,
@@ -2686,6 +2730,21 @@ export class PaymentsService {
     const owner = await this.prisma.user.findUnique({ where: { id: ownerId } });
     assertFound(owner, "User not found");
 
+    /*
+      Con los cobros simulados no hay alta que hacer, así que no se manda a
+      nadie a hacerla. Se le deja la cuenta de cobro armada y habilitada, y se
+      contesta `simulated: true` con `onboardingUrl: null`: el front ve que no
+      hay adónde ir y no dibuja ningún botón (ver cobros-simulados.ts).
+
+      Antes acá se llamaba a Stripe igual, Stripe contestaba que la plataforma
+      no tiene Connect habilitado, y el dueño recibía un error por apretar un
+      botón que nunca podía funcionar.
+    */
+    if (this.cobrosSimulados) {
+      const accountId = await this.ensureOwnerAccount(owner);
+      return { accountId, onboardingUrl: null, simulated: true };
+    }
+
     const frontend =
       this.config.get<string>("FRONTEND_URL") ?? "http://localhost:3000";
     const result = await this.provider.createConnectedAccount({
@@ -2719,6 +2778,16 @@ export class PaymentsService {
       select: { stripeAccountId: true, stripeAccountStatus: true },
     });
     assertFound(owner, "User not found");
+
+    /*
+      Cobros simulados: se contesta sin preguntarle nada a Stripe y SIN tocar
+      la base. Esto es una consulta —la hace el panel cada vez que se abre— y
+      escribir en una consulta es la clase de cosa que después nadie entiende.
+      La cuenta se crea recién cuando hace falta de verdad, al liquidar.
+    */
+    if (this.cobrosSimulados) {
+      return estadoSimulado(cuentaSimuladaDe(ownerId));
+    }
 
     /*
       Una cuenta que quedó de la simulación se trata como "todavía no tiene".
@@ -2915,6 +2984,13 @@ export class PaymentsService {
    */
   private esDelProveedorActual(id: string | null | undefined): boolean {
     if (!id) return false;
+    /*
+      Una cuenta de cobro simulada vale mientras se sigan simulando los cobros.
+      El día que se habilite Connect de verdad deja de valer, y el dueño recibe
+      una cuenta nueva: mandarle a Stripe una `acct_sim_…` daría "No such
+      account" justo al liquidar un alquiler terminado.
+    */
+    if (esIdentificadorSimulado(id)) return this.cobrosSimulados;
     const deSimulacion = id.includes("_mock_");
     return deSimulacion === (this.provider.name === "mock");
   }
@@ -2936,6 +3012,30 @@ export class PaymentsService {
   }
 
   private async ensureOwnerAccount(owner: User): Promise<string> {
+    /*
+      Cobros simulados: la cuenta se arma acá mismo, sin pedirle nada a Stripe,
+      y queda ENABLED. El ENABLED acá sí es cierto: con los cobros simulados la
+      transferencia no depende de ningún trámite, así que no hay nada que
+      pueda faltar. (En el camino real se guarda PENDING a propósito, porque
+      ahí sí hay un alta que la persona tiene que completar.)
+    */
+    if (this.cobrosSimulados) {
+      const cuenta = cuentaSimuladaDe(owner.id);
+      if (
+        owner.stripeAccountId !== cuenta ||
+        owner.stripeAccountStatus !== StripeAccountStatus.ENABLED
+      ) {
+        await this.prisma.user.update({
+          where: { id: owner.id },
+          data: {
+            stripeAccountId: cuenta,
+            stripeAccountStatus: StripeAccountStatus.ENABLED,
+          },
+        });
+      }
+      return cuenta;
+    }
+
     // Mismo caso que en ensureRenterCustomer: una `acct_mock_…` guardada
     // cuando corría la simulación hace fallar la transferencia al dueño al
     // final del alquiler, que es el peor momento para enterarse.

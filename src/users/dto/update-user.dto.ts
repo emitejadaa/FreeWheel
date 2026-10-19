@@ -107,6 +107,33 @@ export class UpdateUserDto {
   profilePhotoVisibility?: PhotoVisibility;
 
   /**
+   * LA PORTADA DEL PERFIL: el dibujo y el color.
+   *
+   * El catálogo de dibujos vive en el front (src/services/portada.js), que es
+   * quien los dibuja; acá se valida la FORMA del texto y nada más. Es
+   * deliberado: el servidor no renderiza ninguna portada, así que no tiene por
+   * qué saber cuántas hay, y si lo supiera habría que tocar las dos puntas —y
+   * publicar las dos— cada vez que se agrega una. Un dibujo que el front no
+   * conozca cae en el de siempre, que es degradarse bien.
+   *
+   * Lo que sí se valida es que no entre cualquier cosa: solo letras minúsculas,
+   * números y guiones. Sin eso, este campo sería un lugar donde guardar texto
+   * arbitrario que después se imprime en una pantalla.
+   */
+  @IsOptional()
+  @Matches(/^[a-z0-9-]{1,32}$/, {
+    message: "profileCoverDesign solo admite minúsculas, números y guiones",
+  })
+  profileCoverDesign?: string;
+
+  /** El color de la portada, en hexadecimal de seis dígitos (#1d4ed8). */
+  @IsOptional()
+  @Matches(/^#[0-9a-fA-F]{6}$/, {
+    message: "profileCoverColor debe ser un color hexadecimal (#1d4ed8)",
+  })
+  profileCoverColor?: string;
+
+  /**
    * Si esta persona quiere recibir avisos por mail: reservas pedidas,
    * aceptadas, pagos, entregas y devoluciones, y el aviso de mensajes sin leer.
    *

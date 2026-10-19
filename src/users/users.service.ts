@@ -12,6 +12,7 @@ import {
 } from "../verification/identity/driving-eligibility";
 import { dniMatchesCuil, normalizeCuil } from "../common/utils/cuil.util";
 import { normalizeEmail } from "../common/utils/email.util";
+import { nombreProlijoOpcional } from "../common/utils/name.util";
 import {
   identityConflict,
   identityConflictFromPrisma,
@@ -92,6 +93,13 @@ export class UsersService {
         // Lo lee PhotoVisibilityInterceptor para decidir si la foto se muestra;
         // no llega al front (el interceptor saca el campo de la respuesta).
         profilePhotoVisibility: true,
+        // La portada que eligió. Va en el perfil PÚBLICO a propósito: es lo
+        // que ve el otro en la ficha que se abre desde la publicación, y una
+        // portada que solo se viera en el perfil propio no sería una portada.
+        // No dice nada de la persona que no haya elegido mostrar: es un color
+        // y un dibujo.
+        profileCoverDesign: true,
+        profileCoverColor: true,
         ratingAverage: true,
         ratingCount: true,
         verificationStatus: true,
@@ -183,6 +191,14 @@ export class UsersService {
     const { address: _domicilioIgnorado, ...aceptado } = data;
     void _domicilioIgnorado;
     const updateData: Prisma.UserUpdateInput = { ...aceptado };
+    // El nombre y el apellido, con la mayúscula puesta. Acá llegan recién
+    // cuando la cuenta TODAVÍA no está verificada (arriba se rechaza el cambio
+    // si ya lo está), así que es el único momento en que se pueden acomodar.
+    // Ver common/utils/name.util.ts.
+    const nombre = nombreProlijoOpcional(data.firstName);
+    if (nombre) updateData.firstName = nombre;
+    const apellido = nombreProlijoOpcional(data.lastName);
+    if (apellido) updateData.lastName = apellido;
     if (data.cuil !== undefined) {
       // El validador del DTO ya garantizó un CUIL de persona válido.
       updateData.cuil = normalizeCuil(data.cuil) ?? data.cuil;

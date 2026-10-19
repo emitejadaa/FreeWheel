@@ -37,6 +37,7 @@ import { AuditLogService } from "../common/services/audit-log.service";
 import { RateLimitService } from "../common/rate-limit/rate-limit.service";
 import { assertFound } from "../common/utils/entity.util";
 import { normalizeEmail } from "../common/utils/email.util";
+import { nombreProlijo } from "../common/utils/name.util";
 import {
   consumeVerificationCode,
   generateNumericCode,
@@ -213,8 +214,11 @@ export class AuthService {
           data: {
             email,
             password,
-            firstName: dto.firstName,
-            lastName: dto.lastName,
+            // Con la mayúscula puesta. Nadie escribe su nombre con mayúscula
+            // en el teclado de un celular, y ese texto después aparece en el
+            // perfil, en el chat y en los mails. Ver common/utils/name.util.ts.
+            firstName: nombreProlijo(dto.firstName),
+            lastName: nombreProlijo(dto.lastName),
             displayName: dto.displayName,
             phone: dto.phone,
             dateOfBirth: parseBirthDate(dto.dateOfBirth),
@@ -605,8 +609,8 @@ export class AuthService {
             email,
             password: randomPassword,
             passwordChangedAt: new Date(),
-            firstName: googleUser.firstName,
-            lastName: googleUser.lastName,
+            firstName: nombreProlijo(googleUser.firstName),
+            lastName: nombreProlijo(googleUser.lastName),
             googleId: googleUser.googleId,
             profilePhotoUrl: googleUser.profilePhotoUrl ?? null,
             verificationStatus: VerificationStatus.EMAIL_VERIFIED,

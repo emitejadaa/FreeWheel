@@ -270,6 +270,26 @@ async function main() {
     `db execute --url "${process.env.DATABASE_URL}" --file prisma/backfill/vehicle-category.sql`,
   );
 
+  // El nombre y el apellido de las cuentas que quedaron escritos en minúscula.
+  run(
+    "Acomodando los nombres escritos en minúscula...",
+    `db execute --url "${process.env.DATABASE_URL}" --file prisma/backfill/nombres-con-mayuscula.sql`,
+  );
+
+  /*
+    El historial de la cuenta que se presenta.
+
+    Va acá y no en una migración a propósito. Una migración que falla queda
+    marcada como fallida y traba TODAS las que vengan después; este archivo, en
+    cambio, se puede correr cien veces, sale solo si ya está hecho, y si algo
+    sale mal lo único que pasa es que el historial no se carga. Para un dato de
+    demostración, ese es el único lugar donde corresponde que viva.
+  */
+  run(
+    "Cargando el historial de demostración...",
+    `db execute --url "${process.env.DATABASE_URL}" --file prisma/backfill/historial-demostracion.sql`,
+  );
+
   process.exit(0);
 }
 

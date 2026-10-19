@@ -397,6 +397,28 @@ model User {
   /// subir una foto es para que se vea, y quien prefiera lo contrario lo cambia
   /// en dos toques.
   profilePhotoVisibility  PhotoVisibility     @default(EVERYONE)
+  /// LA PORTADA DEL PERFIL: el rectángulo que va arriba de la foto.
+  ///
+  /// Era un degradado azul escrito a mano en el código, igual para todas las
+  /// cuentas. Ahora cada persona elige el dibujo y el color, y lo que elige se
+  /// ve en LOS DOS LADOS: en su perfil y en la ficha que se abre desde una
+  /// publicación o desde el chat, que es la que mira el otro antes de decidir
+  /// si le presta el auto. Una portada que solo se viera en el perfil propio
+  /// sería una decoración privada, que es justo lo que no es.
+  ///
+  /// Son DOS datos y no uno porque son dos decisiones distintas: el dibujo (las
+  /// rayas, las ondas, los puntos) y el color con el que se dibuja. Guardar
+  /// "rayas-azules" obligaría a una combinación cerrada y a migrar la base cada
+  /// vez que se agrega un color.
+  ///
+  /// El catálogo de dibujos vive en el FRONT (src/services/portada.js), que es
+  /// quien los dibuja. Acá solo se valida la forma del texto: el servidor no
+  /// tiene por qué saber cuántos dibujos hay, y si lo supiera habría que tocar
+  /// las dos puntas para agregar uno. Un dibujo que el front no conozca cae en
+  /// el de siempre.
+  profileCoverDesign      String?
+  /// El color de la portada, en hexadecimal (#1d4ed8). Ver profileCoverDesign.
+  profileCoverColor       String?
   /// Si esta persona quiere recibir avisos por mail: reservas pedidas,
   /// aceptadas, pagos, entregas y devoluciones, y el aviso de que tiene
   /// mensajes sin leer en el chat.
