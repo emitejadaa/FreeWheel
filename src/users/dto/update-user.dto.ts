@@ -134,6 +134,19 @@ export class UpdateUserDto {
   profileCoverColor?: string;
 
   /**
+   * La foto de portada. `null` la quita y deja a la vista el dibujo elegido.
+   *
+   * `@IsOptional()` saltea la validación tanto con `undefined` como con `null`,
+   * que es justo lo que hace falta: sin eso, quitar la foto sería imposible
+   * —un null no es una URL— y habría que inventar otra ruta para borrarla.
+   * Es el mismo mecanismo con el que se quita la foto de perfil.
+   */
+  @IsOptional()
+  @IsUrl({ require_protocol: true })
+  @MaxLength(2048)
+  profileCoverPhotoUrl?: string | null;
+
+  /**
    * Si esta persona quiere recibir avisos por mail: reservas pedidas,
    * aceptadas, pagos, entregas y devoluciones, y el aviso de mensajes sin leer.
    *

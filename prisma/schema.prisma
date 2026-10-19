@@ -419,6 +419,19 @@ model User {
   profileCoverDesign      String?
   /// El color de la portada, en hexadecimal (#1d4ed8). Ver profileCoverDesign.
   profileCoverColor       String?
+  /// UNA FOTO DE PORTADA, en lugar del dibujo.
+  ///
+  /// Cuando está cargada GANA sobre el dibujo y el color, que quedan guardados
+  /// igual: sacar la foto devuelve la portada que la persona tenía elegida en
+  /// vez de dejarla en el azul de fábrica, que sería perderle una decisión que
+  /// ya había tomado.
+  ///
+  /// Es la misma foto para todo el mundo: va en el perfil propio y en la ficha
+  /// que se abre desde una publicación o desde el chat. NO tiene el ajuste de
+  /// "quién la ve" que sí tiene la foto de perfil, y es a propósito: una foto
+  /// de perfil es la cara de alguien y una portada es un fondo. Si alguna vez
+  /// hiciera falta esa distinción, el ajuste va acá y no en el front.
+  profileCoverPhotoUrl    String?
   /// Si esta persona quiere recibir avisos por mail: reservas pedidas,
   /// aceptadas, pagos, entregas y devoluciones, y el aviso de que tiene
   /// mensajes sin leer en el chat.

@@ -100,6 +100,7 @@ export class UsersService {
         // y un dibujo.
         profileCoverDesign: true,
         profileCoverColor: true,
+        profileCoverPhotoUrl: true,
         ratingAverage: true,
         ratingCount: true,
         verificationStatus: true,
