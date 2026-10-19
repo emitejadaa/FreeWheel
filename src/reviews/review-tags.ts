@@ -80,3 +80,13 @@ export function tagAppliesTo(
   if (!def) return false;
   return def.audience === "BOTH" || def.audience === target;
 }
+
+/**
+ * Cuántas fotos puede llevar una reseña.
+ *
+ * Dos. Una reseña no es un álbum: con diez fotos cada una, la lista de reseñas
+ * de una publicación deja de poder leerse. Y es, además, lo que encarece
+ * inflar un perfil: escribir "todo bien" es gratis; sacar y subir dos fotos
+ * distintas en cada reseña falsa, bastante menos.
+ */
+export const MAX_REVIEW_PHOTOS = 2;

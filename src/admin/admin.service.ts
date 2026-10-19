@@ -606,6 +606,74 @@ export class AdminService {
     return { resolvedFor: aFavorDe, ...resultado };
   }
 
+  /**
+   * LA BANDEJA DE CUENTAS SOSPECHOSAS DE INFLAR SU REPUTACIÓN.
+   *
+   * Cada fila es un patrón que el sistema detectó, con los números que lo
+   * encendieron GUARDADOS tal como estaban: cuando alguien la mire, dentro de
+   * una semana, los datos de esa cuenta van a ser otros.
+   *
+   * Viene con el estado actual de la cuenta porque es lo primero que hace falta
+   * saber: una señal sobre una cuenta ya suspendida —por el anillo de reseñas,
+   * que suspende solo— se lee distinto que una sobre una cuenta activa, y la
+   * acción que corresponde es la opuesta.
+   *
+   * Solo las sin resolver: esto es una bandeja de pendientes. Lo ya revisado
+   * queda en la base, no en la pantalla.
+   */
+  async listFraudSignals() {
+    const senales = await this.prisma.fraudSignal.findMany({
+      where: { resolvedAt: null },
+      include: { user: { select: USER_SAFE_SELECT } },
+      orderBy: [{ autoSuspended: "desc" }, { createdAt: "desc" }],
+      take: 200,
+    });
+    return senales;
+  }
+
+  /**
+   * Marca una señal como revisada.
+   *
+   * NO toca la cuenta. Es deliberado: decidir qué hacer con la persona
+   * —suspenderla, levantarle la suspensión, dejarla como está— ya tiene su
+   * ruta (PATCH /admin/users/:id/status), y mezclar las dos cosas acá haría que
+   * "revisé esto" y "castigué a alguien" fueran el mismo botón. No lo son: la
+   * mayoría de las señales se revisan y se descartan.
+   */
+  async resolveFraudSignal(adminId: string, signalId: string, note: string) {
+    const senal = await this.prisma.fraudSignal.findUnique({
+      where: { id: signalId },
+    });
+    assertFound(senal, "Fraud signal not found");
+    if (senal.resolvedAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "FRAUD_SIGNAL_ALREADY_RESOLVED",
+        message: "Esta señal ya la revisó alguien.",
+      });
+    }
+
+    const actualizada = await this.prisma.fraudSignal.update({
+      where: { id: signalId },
+      data: {
+        resolvedAt: new Date(),
+        resolvedById: adminId,
+        resolutionNote: note,
+      },
+    });
+
+    await this.auditLog.create({
+      actorId: adminId,
+      targetUserId: senal.userId,
+      action: "admin.fraud_signal_resolved",
+      entityType: "FraudSignal",
+      entityId: signalId,
+      metadata: { kind: senal.kind, note },
+    });
+
+    return actualizada;
+  }
+
   async getBooking(id: string) {
     const booking = await this.prisma.booking.findUnique({
       where: { id },

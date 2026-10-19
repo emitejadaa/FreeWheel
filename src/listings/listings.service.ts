@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { VehicleVerificationService } from "../vehicle-verification/vehicle-verification.service";
+import { AntifraudeService } from "../antifraude/antifraude.service";
 import {
   occupiedBookingWhere,
   overlappingRangeWhere,
@@ -75,6 +76,7 @@ export class ListingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly vehicleVerification: VehicleVerificationService,
+    private readonly antifraude: AntifraudeService,
   ) {}
 
   /**
@@ -108,10 +110,29 @@ export class ListingsService {
 
     await this.assertPublishable(data.vehicleId, data.status);
 
-    return this.prisma.listing.create({
+    /*
+      EL TOPE DE PUBLICACIONES.
+
+      Publicar diez autos en un día es raro, no es fraude: puede ser una agencia
+      chica cargando su flota. Lo que corresponde en el mundo real es pedirle
+      que demuestre que los autos son suyos, y eso no lo decide un `if`.
+
+      Así que acá SOLO SE LIMITA LA VELOCIDAD. Nunca suspende una cuenta, por
+      más autos que sean; lo que sí hace es dejarle un aviso al panel para que
+      alguien lo mire. Ver src/antifraude/limites.ts.
+    */
+    await this.antifraude.assertPuedePublicar(ownerId);
+
+    const listing = await this.prisma.listing.create({
       data: { ...data, ownerId },
       include: { vehicle: true },
     });
+
+    // Después de crearla, por lo mismo que en las reseñas: el patrón incluye la
+    // publicación que se acaba de hacer. No puede fallar la creación.
+    await this.antifraude.revisarDespuesDe(ownerId);
+
+    return listing;
   }
 
   async findActive(query: ListListingsQueryDto = {}) {

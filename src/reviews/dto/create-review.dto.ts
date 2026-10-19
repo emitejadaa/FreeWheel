@@ -7,11 +7,16 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
   Max,
   MaxLength,
   Min,
 } from "class-validator";
-import { MAX_REVIEW_TAGS, REVIEW_TAG_CODES } from "../review-tags";
+import {
+  MAX_REVIEW_PHOTOS,
+  MAX_REVIEW_TAGS,
+  REVIEW_TAG_CODES,
+} from "../review-tags";
 
 export class CreateReviewDto {
   /** Puntuación de 1 a 5 estrellas. */
@@ -47,4 +52,27 @@ export class CreateReviewDto {
   @ArrayMaxSize(MAX_REVIEW_TAGS)
   @IsIn(REVIEW_TAG_CODES, { each: true })
   tags?: string[];
+
+  /**
+   * HASTA DOS FOTOS de quien reseña (URLs de Cloudinary).
+   *
+   * Una foto del auto como quedó, o del estado en que se entregó, vale mucho
+   * más que cinco estrellas: le da a quien la lee algo que mirar en vez de una
+   * opinión. Y encarece inflar un perfil, que es el otro motivo por el que
+   * están: escribir "todo bien" es gratis; sacar y subir fotos distintas en
+   * cada reseña falsa, bastante menos.
+   *
+   * DOS Y NO DIEZ. Una reseña no es un álbum: con diez fotos cada una, la lista
+   * de reseñas de una publicación deja de poder leerse. Y el tope es también lo
+   * que mantiene la cuenta de almacenamiento bajo control.
+   *
+   * `ArrayUnique` porque la misma foto dos veces ocupa lugar y no agrega nada.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @ArrayMaxSize(MAX_REVIEW_PHOTOS)
+  @IsUrl({ require_protocol: true }, { each: true })
+  @MaxLength(2048, { each: true })
+  photos?: string[];
 }

@@ -10,6 +10,7 @@ import { assertFound } from "../common/utils/entity.util";
 import { USER_PUBLIC_SELECT } from "../common/constants/prisma-select";
 import { CreateReviewDto } from "./dto/create-review.dto";
 import { tagAppliesTo } from "./review-tags";
+import { AntifraudeService } from "../antifraude/antifraude.service";
 
 /**
  * Estados de pago que cuentan como "el dinero se movió". Reseñar exige que la
@@ -26,7 +27,10 @@ const PAID_STATUSES: PaymentStatus[] = [
 export class ReviewsService {
   private readonly logger = new Logger(ReviewsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly antifraude: AntifraudeService,
+  ) {}
 
   /**
    * Escribe la reseña de una reserva terminada.
@@ -70,6 +74,20 @@ export class ReviewsService {
       throw new BadRequestException("Ya dejaste tu reseña de esta reserva");
     }
 
+    /*
+      EL TOPE, ANTES DE ESCRIBIR NADA.
+
+      Todo lo de arriba ya hace que una reseña cueste una reserva entera:
+      completada, paga, con dos personas distintas, una sola por reserva. Lo que
+      faltaba es que ese costo no se pudiera pagar EN SERIE, que es la forma de
+      la estafa: tres cuentas que se alquilan entre ellas, se dejan cinco
+      estrellas, y en un fin de semana hay un perfil Platino para estafar a
+      alguien de verdad.
+
+      Ver src/antifraude/limites.ts, que explica cada número.
+    */
+    await this.antifraude.assertPuedeResenar(authorId);
+
     // El dueño reseña a quien alquiló y viceversa.
     const targetUserId = isRenter ? booking.ownerId : booking.renterId;
 
@@ -101,6 +119,8 @@ export class ReviewsService {
         listingId: isRenter ? booking.listingId : null,
         rating: data.rating,
         comment: data.comment,
+        // Hasta dos. El DTO ya rechazó una lista más larga.
+        photos: data.photos ?? [],
         tags,
       },
       include: { author: { select: USER_PUBLIC_SELECT } },
@@ -111,6 +131,19 @@ export class ReviewsService {
     // el auto.
     await this.recalculateUser(targetUserId);
     if (isRenter) await this.recalculateListing(booking.listingId);
+
+    /*
+      Y RECIÉN AHORA SE MIRA EL PATRÓN.
+
+      Después y no antes: el patrón incluye la reseña que se acaba de escribir,
+      y mirarlo antes le dejaría siempre una de ventaja al que infla.
+
+      Esto no puede hacer fallar la reseña —ya está guardada— así que el
+      servicio de antifraude se traga sus propios errores y los grita en el
+      log. Si de acá sale una suspensión, es porque el patrón no tiene
+      explicación inocente: ver src/antifraude/limites.ts.
+    */
+    await this.antifraude.revisarDespuesDe(authorId);
 
     this.logger.log(
       `Reseña ${review.id} de la reserva ${bookingId} (${data.rating}/5)`,

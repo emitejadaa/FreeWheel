@@ -20,6 +20,7 @@ import { AccountDeletionPolicy } from "./account-deletion.policy";
 import { ReviewVerificationDto } from "./dto/review-verification.dto";
 import { CancelBookingAdminDto } from "./dto/cancel-booking-admin.dto";
 import { ResolveNoShowDto } from "./dto/resolve-no-show.dto";
+import { ResolveFraudSignalDto } from "./dto/resolve-fraud-signal.dto";
 import { UpdateListingStatusDto } from "./dto/update-listing-status.dto";
 import { UpdateUserRoleDto } from "./dto/update-user-role.dto";
 import { UpdateUserStatusDto } from "./dto/update-user-status.dto";
@@ -133,6 +134,36 @@ export class AdminController {
     @Param("id") id: string,
   ) {
     return this.adminService.deleteListingPermanently(user.id, id);
+  }
+
+  /**
+   * Las cuentas que podrían estar inflando su reputación.
+   *
+   * La reputación es lo único que hace que un desconocido le preste su auto a
+   * otro: si se puede fabricar, todo lo demás da igual. Acá llega cada patrón
+   * detectado con los números que lo encendieron.
+   *
+   * Las que dicen `autoSuspended` ya tienen la cuenta cerrada: el anillo de
+   * reseñas suspende solo, sin esperar a nadie. Las demás son avisos y la
+   * cuenta sigue funcionando; publicar en ráfaga NUNCA suspende.
+   */
+  @Get("fraud-signals")
+  listFraudSignals() {
+    return this.adminService.listFraudSignals();
+  }
+
+  /**
+   * Marca una señal como revisada. NO toca la cuenta: para eso está
+   * PATCH /admin/users/:id/status, que es también por donde se LEVANTA una
+   * suspensión automática que resultó ser un falso positivo.
+   */
+  @Post("fraud-signals/:id/resolve")
+  resolveFraudSignal(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: ResolveFraudSignalDto,
+  ) {
+    return this.adminService.resolveFraudSignal(user.id, id, dto.note);
   }
 
   @Get("bookings")

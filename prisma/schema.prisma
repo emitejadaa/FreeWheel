@@ -527,6 +527,8 @@ model User {
   reportsMade               Report[]                   @relation("Reporter")
   reportsReceived           Report[]                   @relation("ReportedUser")
   reportsResolved           Report[]                   @relation("ReportResolver")
+  fraudSignals              FraudSignal[]              @relation("FraudSignalUser")
+  fraudSignalsResolved      FraudSignal[]              @relation("FraudSignalResolver")
 
   @@index([email])
   @@index([status])
@@ -1390,6 +1392,17 @@ model Review {
   /// Puntuación de 1 a 5.
   rating       Int
   comment      String?
+  /// HASTA DOS FOTOS de la persona que reseña (URLs de Cloudinary).
+  ///
+  /// Una reseña con una foto del auto como quedó, o del estado en que se
+  /// entregó, vale muchísimo más que cinco estrellas: le da a quien la lee algo
+  /// que mirar en vez de una opinión. Y de paso encarece inflar un perfil, que
+  /// es el otro motivo por el que están: escribir "todo bien" es gratis, sacar
+  /// y subir fotos distintas cada vez no tanto.
+  ///
+  /// Dos y no diez: una reseña no es un álbum, y el límite mantiene la lista de
+  /// reseñas legible y la cuenta de Cloudinary bajo control. Lo valida el DTO.
+  photos       String[] @default([])
   /// Características elegidas al reseñar: RESPONDE_RAPIDO, AUTO_SUCIO, etc.
   /// (ver src/reviews/review-tags.ts). Se guarda el CÓDIGO y no la frase por dos
   /// motivos: la misma reseña se lee en los cinco idiomas del front, y sobre
@@ -1454,4 +1467,48 @@ model Report {
   @@index([status, createdAt])
   @@index([listingId])
   @@index([reporterId])
+}
+
+/// UNA SEÑAL DE QUE UNA CUENTA ESTÁ INFLANDO SU REPUTACIÓN.
+///
+/// La reputación es lo único que hace que un desconocido le preste su auto a
+/// otro. Si se puede fabricar —tres cuentas que se alquilan entre ellas y se
+/// dejan cinco estrellas— todo lo demás da igual. Acá queda anotado cada patrón
+/// que el sistema detectó, con los números que lo encendieron.
+///
+/// ── POR QUÉ ES UNA TABLA Y NO UN CÁLCULO AL VUELO ─────────────────────────
+/// Porque el panel tiene que poder RESOLVERLAS: marcar una como revisada y que
+/// no vuelva a aparecer. Calculado en el momento, el mismo patrón se mostraría
+/// todos los días aunque alguien ya lo haya mirado y decidido que está bien, y
+/// una bandeja que repite lo ya resuelto se deja de leer en una semana.
+///
+/// Guarda además el número que la disparó: cuando alguien la mire, dentro de
+/// un mes, los datos de la cuenta van a ser otros.
+model FraudSignal {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation("FraudSignalUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Cuál de los patrones. Ver src/antifraude/limites.ts, que es donde se
+  /// decide cada uno y por qué.
+  kind String
+  /// Los números que la encendieron, tal como estaban en ese momento.
+  detail Json
+
+  /// Si el sistema cerró la cuenta solo, sin esperar a nadie. Solo lo hace el
+  /// anillo de reseñas: el único patrón sin explicación inocente razonable.
+  /// Publicar en ráfaga NUNCA suspende, por más autos que sean.
+  autoSuspended Boolean @default(false)
+
+  /// La resolución de quien administra.
+  resolvedById   String?
+  resolver       User?     @relation("FraudSignalResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt     DateTime?
+  resolutionNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([resolvedAt])
 }

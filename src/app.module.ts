@@ -17,6 +17,7 @@ import { UsersModule } from "./users/users.module";
 import { PrismaModule } from "./prisma/prisma.module";
 import { VehiclesModule } from "./vehicles/vehicles.module";
 import { ListingsModule } from "./listings/listings.module";
+import { AntifraudeModule } from "./antifraude/antifraude.module";
 import { FavoritesModule } from "./favorites/favorites.module";
 import { VerificationModule } from "./verification/verification.module";
 import { AdminModule } from "./admin/admin.module";
@@ -48,6 +49,7 @@ import { ReportsModule } from "./reports/reports.module";
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
     CommonModule,
+    AntifraudeModule,
     RateLimitModule,
     HealthModule,
     AuthModule,
