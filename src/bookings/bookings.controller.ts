@@ -136,6 +136,27 @@ export class BookingsController {
     return this.bookingsService.reportRenterNoShow(user.id, id);
   }
 
+  /**
+   * "Vine, esperé y el auto no apareció."
+   *
+   * El espejo exacto de la de arriba, y la que faltaba. La pide QUIEN ALQUILÓ,
+   * con la misma ventana y los mismos candados: ninguna de las dos partes tiene
+   * un plazo más cómodo que la otra.
+   *
+   * Por sí sola no cambia la plata —pasada la hora sin entrega confirmada ya
+   * volvía todo—; lo que agrega es el nombre. Y si el dueño reportó lo
+   * contrario, es esta la que convierte su versión en una entre dos: ahí la
+   * cancelación se traba y la plata no se mueve hasta que el caso se resuelva.
+   */
+  @Post(":id/owner-no-show")
+  @RequireVerifiedAccount()
+  reportOwnerNoShow(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+  ) {
+    return this.bookingsService.reportOwnerNoShow(user.id, id);
+  }
+
   @Get(":id/tokens")
   getTokens(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
     return this.bookingsService.getTokens(user.id, id);

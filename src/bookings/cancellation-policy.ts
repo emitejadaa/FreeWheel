@@ -78,11 +78,39 @@ import { BookingStatus } from "@prisma/client";
  * Es exactamente lo que pide Turo: el dueño reporta el no-show dentro de un
  * plazo y recién entonces se le reconoce.
  *
- * LO QUE ESTO NO RESUELVE, Y HAY QUE DECIRLO: un dueño que va, no entrega el
- * auto y reporta que la persona no apareció. Eso es mentir sobre algo que pasó
- * en la calle, y ningún programa lo puede ver. Lo que sí hace este diseño es
- * que mentir sea un acto registrado, con su nombre, su hora y su reserva, en
- * vez de un silencio que paga solo.
+ * ── Y SI EL DUEÑO MIENTE? LAS DOS CONSTANCIAS ────────────────────────────
+ *
+ * Queda un caso que lo de arriba no cubre: el dueño que va, NO entrega el auto,
+ * y igual reporta que la persona no apareció. Con una sola constancia posible,
+ * ese reporte no tenía contra qué contrastarse: era la única versión escrita
+ * que existía, y se quedaba con la seña.
+ *
+ * Por eso ahora LAS DOS PARTES pueden dejar constancia, con la misma ventana y
+ * las mismas reglas. Cuatro combinaciones, y TRES se resuelven solas:
+ *
+ *   · ninguno       → vuelve todo. El silencio no paga.
+ *   · solo el dueño → se retiene la seña. Fue, esperó, lo asentó.
+ *   · solo quien    → vuelve todo, y queda registrado que el dueño faltó. El
+ *     alquiló         dinero es el mismo que si nadie hubiera hablado, pero
+ *                     con un nombre al lado: sin eso, faltar y callarse se
+ *                     parecen demasiado.
+ *   · LOS DOS       → NO SE MUEVE NADA. La cancelación se traba, la plata
+ *                     queda donde está, y el caso queda abierto con las dos
+ *                     versiones y sus horas.
+ *
+ * POR QUÉ TRABARLA Y NO ELEGIR UNA. Porque el servidor no vio la vereda y
+ * cualquier regla automática para este caso sería una moneda al aire con cara
+ * de justicia. Lo que sí se puede hacer —y es lo que se hace— es que el caso
+ * llegue ARMADO a quien lo tenga que resolver: las dos versiones, firmadas, con
+ * hora, sobre una reserva con fechas e importes. Hoy eso lo mira una cuenta
+ * administradora; mañana puede mirarlo una aseguradora o algo automático con
+ * más datos de los que este archivo tiene. La forma no cambia.
+ *
+ * Y el efecto sobre el que quiera estafar es el que importa: mentir dejó de ser
+ * gratis y silencioso. Antes alcanzaba con reportar para cobrar; ahora reportar
+ * en falso traba la plata, deja la mentira firmada al lado de la otra versión,
+ * y la decisión queda guardada —sin borrar la constancia que pierde—, así que
+ * un dueño al que se le caen los reclamos una y otra vez se ve.
  *
  * ── POR QUÉ ESTÁ SOLO EN UN ARCHIVO ───────────────────────────────────────
  * Porque la decisión tiene que poder probarse con fechas elegidas a mano, sin
@@ -127,6 +155,24 @@ export const MINUTOS_DE_GRACIA_EN_EL_RETIRO = 30;
  */
 export const HORAS_PARA_RECLAMAR_NO_SHOW = 24;
 
+/** Quién tenía razón en un caso trabado. */
+export type LadoDelNoShow = "OWNER" | "RENTER";
+
+/**
+ * Lee el lado guardado en la base, que es una columna de texto libre.
+ *
+ * Es texto y no un enum de la base a propósito: un enum nuevo en Postgres se
+ * crea y se migra, y este valor lo escribe un solo lugar del servidor. Pero
+ * "texto libre" significa que cualquier cosa puede llegar hasta acá, así que
+ * entra por esta puerta: lo que no sea uno de los dos lados vale lo mismo que
+ * no haber decidido nada, que es el lado seguro —el caso sigue trabado—.
+ */
+export function ladoDelNoShow(
+  valor: string | null | undefined,
+): LadoDelNoShow | null {
+  return valor === "OWNER" || valor === "RENTER" ? valor : null;
+}
+
 export type CancellationTier =
   /** Con tiempo: vuelve todo. */
   | "libre"
@@ -136,6 +182,8 @@ export type CancellationTier =
   | "delDueno"
   /** Pasó la hora y nadie confirmó la entrega: vuelve todo. */
   | "nadieAparecio"
+  /** Los dos dicen que el otro no fue: no se mueve nada hasta que se decida. */
+  | "disputa"
   /** No se puede cancelar. */
   | "cerrada";
 
@@ -165,6 +213,8 @@ export function decidirCancelacion({
   laCancelaElDueno,
   entregaConfirmada = false,
   noAparecioElInquilino = false,
+  noAparecioElDueno = false,
+  resueltoAFavorDe = null,
 }: {
   status: BookingStatus;
   startDate: Date;
@@ -174,9 +224,31 @@ export function decidirCancelacion({
   entregaConfirmada?: boolean;
   /** Si el dueño dejó constancia de que la persona no apareció. */
   noAparecioElInquilino?: boolean;
+  /** Si quien alquiló dejó constancia de que el dueño no apareció. */
+  noAparecioElDueno?: boolean;
+  /** Con las dos constancias: a favor de quién se decidió, si ya se decidió. */
+  resueltoAFavorDe?: LadoDelNoShow | null;
 }): CancellationDecision {
   const horasParaElInicio =
     (startDate.getTime() - ahora.getTime()) / MS_POR_HORA;
+
+  /*
+    LAS DOS CONSTANCIAS, Y LA DECISIÓN SI YA SE TOMÓ.
+
+    Cuando los dos dicen que el otro no fue, el caso está trabado hasta que
+    alguien lo resuelva. Una vez resuelto, la constancia que perdió deja de
+    pesar —pero NO se borra: queda guardada, porque un reclamo que se cae una y
+    otra vez es un dato sobre quien lo hizo—.
+  */
+  const hayDisputa =
+    noAparecioElInquilino && noAparecioElDueno && !resueltoAFavorDe;
+  // Tras la decisión, vale la versión de quien ganó y solo esa.
+  const valeElReporteDelDueno = resueltoAFavorDe
+    ? resueltoAFavorDe === "OWNER"
+    : noAparecioElInquilino;
+  const valeElReporteDelInquilino = resueltoAFavorDe
+    ? resueltoAFavorDe === "RENTER"
+    : noAparecioElDueno;
 
   if (!cancellableStatuses.includes(status)) {
     /*
@@ -194,6 +266,28 @@ export function decidirCancelacion({
       puede: false,
       motivo: enCurso ? "BOOKING_IN_PROGRESS" : "BOOKING_NOT_CANCELLABLE",
       tier: "cerrada",
+      retieneSena: false,
+      horasParaElInicio,
+    };
+  }
+
+  /*
+    CASO TRABADO: NO SE MUEVE NADA.
+
+    Va ANTES que todo lo demás, incluida la cancelación del dueño. Si quedara
+    después, al dueño acusado le alcanzaría con cancelar él para salir del
+    trabado por la puerta de "cancela el dueño, vuelve todo" —que suena a favor
+    de la otra parte, pero le serviría igual: cierra el caso y borra la
+    discusión sobre la seña sin que nadie la mire—.
+
+    La plata se queda exactamente donde está. Esto no es una negativa a
+    devolver: es una pausa mientras el caso espera a quien lo resuelva.
+  */
+  if (hayDisputa) {
+    return {
+      puede: false,
+      motivo: "NO_SHOW_DISPUTED",
+      tier: "disputa",
       retieneSena: false,
       horasParaElInicio,
     };
@@ -234,12 +328,18 @@ export function decidirCancelacion({
 
     La excepción es el dueño que dejó su propia constancia de que la persona no
     fue. Ahí sí fue él el que cumplió, y la regla tardía vuelve a aplicar.
+
+    Y al revés: la constancia de quien alquiló —"el dueño no vino"— entra por
+    esta misma puerta aunque el reloj no la hubiera abierto todavía. En los
+    hechos siempre la abre, porque reportar no se puede antes de la gracia;
+    está escrito igual para que la regla se lea sola y no dependa de que el
+    lector vaya a buscar la ventana a la otra función.
   */
   const graciaEnHoras = MINUTOS_DE_GRACIA_EN_EL_RETIRO / 60;
   if (
     !entregaConfirmada &&
-    !noAparecioElInquilino &&
-    horasParaElInicio <= -graciaEnHoras
+    !valeElReporteDelDueno &&
+    (valeElReporteDelInquilino || horasParaElInicio <= -graciaEnHoras)
   ) {
     return {
       puede: true,
@@ -260,24 +360,47 @@ export function decidirCancelacion({
 }
 
 /**
- * SI EL DUEÑO PUEDE DEJAR CONSTANCIA DE QUE LA PERSONA NO APARECIÓ.
+ * SI SE PUEDE DEJAR CONSTANCIA DE QUE EL OTRO NO APARECIÓ.
  *
- * Solo dentro de la ventana, y solo si no hay entrega confirmada. Los dos
- * extremos importan: antes de la gracia sería reportar a alguien que todavía
- * está llegando, y pasada la ventana sería decidir con la billetera en la mano
- * si conviene reclamar.
+ * LA MISMA REGLA PARA LOS DOS LADOS, y es deliberado: el dueño reporta que no
+ * fue quien alquiló, quien alquiló reporta que no fue el dueño, y ninguno de
+ * los dos tiene una ventana más cómoda que el otro. Una regla asimétrica acá
+ * sería ponerle el pulgar a la balanza antes de que empiece la discusión.
+ *
+ * Tres condiciones, y cada una tapa una forma distinta de usarlo mal:
+ *
+ *  · La reserva tiene que seguir viva. Sobre una ya cancelada el reporte no
+ *    cambia nada —la plata ya se repartió— y lo único que haría es ensuciar el
+ *    registro con una acusación que llega cuando no hay nada que decidir.
+ *  · No puede haber entrega confirmada. Si alguien escaneó el código, el auto
+ *    se entregó y no hay nada que reportar.
+ *  · Solo dentro de la ventana. Antes de la gracia sería reportar a alguien que
+ *    todavía está llegando; pasada la ventana sería decidir con la billetera en
+ *    la mano si conviene reclamar.
  */
 export function puedeReportarNoShow({
+  status,
   startDate,
   ahora,
   entregaConfirmada,
 }: {
+  /** Opcional por compatibilidad: sin dato no se bloquea por estado. */
+  status?: BookingStatus;
   startDate: Date;
   ahora: Date;
   entregaConfirmada: boolean;
 }): { puede: boolean; motivo: string | null } {
+  /*
+    La entrega se mira ANTES que el estado. Una reserva ya entregada tampoco
+    está entre las cancelables, así que las dos condiciones darían false; pero
+    no explican lo mismo. "El auto ya se entregó" dice qué pasó; "la reserva
+    está cerrada" deja a alguien preguntándose por qué.
+  */
   if (entregaConfirmada) {
     return { puede: false, motivo: "PICKUP_ALREADY_CONFIRMED" };
+  }
+  if (status !== undefined && !cancellableStatuses.includes(status)) {
+    return { puede: false, motivo: "BOOKING_NOT_CANCELLABLE" };
   }
   const minutosDesdeElInicio =
     (ahora.getTime() - startDate.getTime()) / (60 * 1000);

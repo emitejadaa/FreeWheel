@@ -34,6 +34,7 @@ import { generateOpaqueToken } from "../common/utils/verification-code.util";
 import { BOOKING_PARTICIPANT_INCLUDE } from "../common/constants/prisma-select";
 import {
   decidirCancelacion,
+  ladoDelNoShow,
   puedeReportarNoShow,
   HORAS_PARA_RECLAMAR_NO_SHOW,
   MINUTOS_DE_GRACIA_EN_EL_RETIRO,
@@ -363,20 +364,37 @@ export class BookingsService {
       startDate: booking.startDate,
       ahora: new Date(),
       laCancelaElDueno,
-      // Las dos constancias que existen: el escaneo del código y el reporte
-      // del dueño. Sin ninguna de las dos, pasada la hora, vuelve todo.
+      // Todo lo que se sabe del retiro: el escaneo del código, y las dos
+      // constancias. Sin ninguna, pasada la hora, vuelve todo; con las dos,
+      // no se mueve nada hasta que el caso se resuelva.
       entregaConfirmada: booking.pickupConfirmedAt != null,
       noAparecioElInquilino: booking.renterNoShowAt != null,
+      noAparecioElDueno: booking.ownerNoShowAt != null,
+      resueltoAFavorDe: ladoDelNoShow(booking.noShowResolvedFor),
     });
     if (!decision.puede) {
+      const mensajes: Record<string, string> = {
+        BOOKING_IN_PROGRESS:
+          "El auto ya está entregado: esta reserva no se cancela, se " +
+          "devuelve el auto. Devolverlo antes libera las fechas que sobran.",
+        /*
+          No dice "no se puede". Dice qué pasó, qué pasa con la plata y qué
+          sigue. Es la diferencia entre una pared y una espera: acá hay dos
+          versiones firmadas de lo mismo y la plata está quieta justamente
+          para que nadie se quede con ella mientras se decide.
+        */
+        NO_SHOW_DISPUTED:
+          "Las dos partes dejaron constancia de que la otra no apareció al " +
+          "retiro. Mientras eso no se resuelva, la reserva no se cancela y la " +
+          "plata no se mueve: queda donde está. El caso ya está abierto con " +
+          "las dos versiones y sus horarios.",
+      };
       throw new BadRequestException({
         statusCode: 400,
         code: decision.motivo,
         message:
-          decision.motivo === "BOOKING_IN_PROGRESS"
-            ? "El auto ya está entregado: esta reserva no se cancela, se " +
-              "devuelve el auto. Devolverlo antes libera las fechas que sobran."
-            : "Esta reserva ya no se puede cancelar.",
+          (decision.motivo && mensajes[decision.motivo]) ||
+          "Esta reserva ya no se puede cancelar.",
       });
     }
 
@@ -690,18 +708,63 @@ export class BookingsService {
   async reportRenterNoShow(ownerId: string, id: string) {
     const booking = await this.findById(id);
     this.assertBookingOwner(booking, ownerId);
+    return this.dejarConstanciaDeNoShow(booking, ownerId, "OWNER");
+  }
 
-    if (booking.renterNoShowAt) {
-      return publicBooking(booking);
-    }
+  /**
+   * QUIEN ALQUILÓ DEJA CONSTANCIA DE QUE EL DUEÑO NO APARECIÓ.
+   *
+   * El espejo exacto del de arriba, y la pieza que faltaba. Sin esto, la única
+   * versión escrita que podía existir de un retiro que no pasó era la del
+   * dueño: quien alquilaba se quedaba con cancelar, y una cancelación no
+   * distingue entre "me arrepentí" y "estuve media hora esperando en la
+   * esquina".
+   *
+   * En plata no cambia nada por sí sola —pasada la hora sin entrega confirmada
+   * ya volvía todo—, y eso es a propósito: lo que agrega es EL NOMBRE. Un
+   * dueño que falta y nadie lo dice se parece demasiado a un dueño que no
+   * falta. Y cuando el dueño además reporta lo contrario, es esta constancia la
+   * que convierte su reporte en una versión entre dos en vez de la única que
+   * hay.
+   */
+  async reportOwnerNoShow(renterId: string, id: string) {
+    const booking = await this.findById(id);
+    this.assertBookingRenter(booking, renterId);
+    return this.dejarConstanciaDeNoShow(booking, renterId, "RENTER");
+  }
+
+  /**
+   * La parte común de las dos constancias.
+   *
+   * Está compartida y no copiada porque las reglas TIENEN que ser las mismas
+   * para los dos lados: misma ventana, mismos candados, mismo registro. Dos
+   * copias se separan, y el día que se separen una de las dos partes va a
+   * tener una ventana más cómoda que la otra sin que nadie lo haya decidido.
+   */
+  private async dejarConstanciaDeNoShow(
+    booking: Booking,
+    actorId: string,
+    quienReporta: "OWNER" | "RENTER",
+  ) {
+    const esElDueno = quienReporta === "OWNER";
+    const yaReporto = esElDueno
+      ? booking.renterNoShowAt
+      : booking.ownerNoShowAt;
+    // Reportar dos veces no es un error: es el mismo hecho. Se contesta la
+    // reserva como está, con la hora del primer reporte, que es la que vale.
+    if (yaReporto) return publicBooking(booking);
 
     const permiso = puedeReportarNoShow({
+      status: booking.status,
       startDate: booking.startDate,
       ahora: new Date(),
       entregaConfirmada: booking.pickupConfirmedAt != null,
     });
     if (!permiso.puede) {
       const mensajes: Record<string, string> = {
+        BOOKING_NOT_CANCELLABLE:
+          "Esta reserva ya está cerrada: no hay nada que reportar sobre un " +
+          "retiro que ya no va a pasar.",
         PICKUP_ALREADY_CONFIRMED:
           "La entrega de este auto ya está confirmada: no hay nada que reportar.",
         TOO_EARLY_FOR_NO_SHOW:
@@ -720,22 +783,60 @@ export class BookingsService {
       });
     }
 
+    const ahora = new Date();
     const updated = await this.prisma.booking.update({
-      where: { id },
-      data: { renterNoShowAt: new Date() },
+      where: { id: booking.id },
+      data: esElDueno ? { renterNoShowAt: ahora } : { ownerNoShowAt: ahora },
       include: BOOKING_PARTICIPANT_INCLUDE,
     });
 
+    /*
+      QUEDA ANOTADO QUE AHORA HAY DOS VERSIONES.
+
+      El registro de auditoría guarda cada constancia por separado, pero el
+      momento en que se traba el caso es un hecho distinto de cada reporte: es
+      el único en que la plata deja de moverse sola. Se anota aparte para que
+      quien busque casos trabados no tenga que deducirlos cruzando dos líneas.
+    */
+    const quedaTrabado =
+      updated.renterNoShowAt != null && updated.ownerNoShowAt != null;
+
     await this.auditLog.create({
-      actorId: ownerId,
-      targetUserId: booking.renterId,
-      action: "booking.renter_no_show_reported",
+      actorId,
+      targetUserId: esElDueno ? booking.renterId : booking.ownerId,
+      action: esElDueno
+        ? "booking.renter_no_show_reported"
+        : "booking.owner_no_show_reported",
       entityType: "Booking",
-      entityId: id,
-      metadata: { startDate: booking.startDate.toISOString() },
+      entityId: booking.id,
+      metadata: {
+        startDate: booking.startDate.toISOString(),
+        reportadoA: ahora.toISOString(),
+        quedaTrabado,
+      },
     });
 
-    this.logger.log(`Booking ${id}: owner ${ownerId} reported renter no-show`);
+    if (quedaTrabado) {
+      await this.auditLog.create({
+        actorId,
+        targetUserId: esElDueno ? booking.renterId : booking.ownerId,
+        action: "booking.no_show_disputed",
+        entityType: "Booking",
+        entityId: booking.id,
+        metadata: {
+          elDuenoReportoA: updated.renterNoShowAt?.toISOString() ?? null,
+          quienAlquiloReportoA: updated.ownerNoShowAt?.toISOString() ?? null,
+        },
+      });
+      this.logger.warn(
+        `Booking ${booking.id}: las dos partes reportaron no-show. ` +
+          "La cancelación queda trabada y la plata no se mueve hasta que se resuelva.",
+      );
+    }
+
+    this.logger.log(
+      `Booking ${booking.id}: ${actorId} reportó no-show (${quienReporta})`,
+    );
     return publicBooking(updated);
   }
 
@@ -768,6 +869,24 @@ export class BookingsService {
         status: BookingStatus.READY_FOR_PICKUP,
         pickupConfirmedAt: null,
         startDate: { lt: limite },
+        /*
+          LOS CASOS TRABADOS NO LOS CIERRA LA TAREA.
+
+          Cuando las dos partes dejaron constancia, la cancelación está trabada
+          a propósito hasta que alguien decida. Sin este filtro la tarea
+          intentaría cerrarlos igual todas las noches, el servicio contestaría
+          NO_SHOW_DISPUTED, y cada caso abierto escribiría un error por día en
+          el log: ruido que tapa los errores de verdad, sobre algo que está
+          funcionando como tiene que funcionar.
+
+          Los ya resueltos SÍ entran: ahí la decisión está tomada y cerrarlos
+          es justamente lo que falta.
+        */
+        NOT: {
+          renterNoShowAt: { not: null },
+          ownerNoShowAt: { not: null },
+          noShowResolvedFor: null,
+        },
       },
       select: { id: true, renterId: true },
       take: 100,
@@ -1034,6 +1153,19 @@ export class BookingsService {
       booking.ownerId,
       userId,
       "Only the owner can perform this action",
+    );
+  }
+
+  /**
+   * Solo quien alquiló. Existe por la constancia de que el dueño no apareció:
+   * cada constancia dice algo sobre QUIEN LA FIRMA, así que no alcanza con ser
+   * parte de la reserva, hay que ser el lado que corresponde.
+   */
+  private assertBookingRenter(booking: Booking, userId: string) {
+    assertOwner(
+      booking.renterId,
+      userId,
+      "Only the renter can perform this action",
     );
   }
 

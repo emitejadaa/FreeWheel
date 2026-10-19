@@ -1,6 +1,7 @@
 import { BookingStatus } from "@prisma/client";
 import {
   decidirCancelacion,
+  ladoDelNoShow,
   puedeReportarNoShow,
   HORAS_DE_GRACIA,
   HORAS_PARA_RECLAMAR_NO_SHOW,
@@ -258,5 +259,185 @@ describe("la ventana para reportar que la persona no aparecio", () => {
         entregaConfirmada: true,
       }),
     ).toEqual({ puede: false, motivo: "PICKUP_ALREADY_CONFIRMED" });
+  });
+});
+
+/*
+  ── LAS DOS CONSTANCIAS ────────────────────────────────────────────────────
+
+  El retiro es el único momento del alquiler que pasa en la vereda y que el
+  servidor no puede ver. Si nadie escaneó el código, lo único que hay son dos
+  personas diciendo cada una que la otra no fue.
+
+  Hasta acá solo el dueño podía dejar constancia, así que su versión era la
+  única escrita que existía: alcanzaba con reportar para quedarse con la seña,
+  sin nada que la contradijera. Ahora las dos partes pueden, y de las CUATRO
+  combinaciones TRES se resuelven solas.
+
+  Esta es la tabla entera. Es la prueba que importa de todo el archivo: cada
+  fila es una forma distinta en que puede terminar un retiro que no pasó, y
+  ninguna puede quedar sin decidir ni decidida de dos maneras.
+*/
+describe("las cuatro combinaciones del retiro que no paso", () => {
+  const CINCO_HORAS_DESPUES = new Date(INICIO.getTime() + 5 * 60 * 60 * 1000);
+
+  const conConstancias = (opciones: {
+    elDuenoReporto?: boolean;
+    quienAlquiloReporto?: boolean;
+    laCancelaElDueno?: boolean;
+    resueltoAFavorDe?: "OWNER" | "RENTER" | null;
+  }) =>
+    decidirCancelacion({
+      status: BookingStatus.READY_FOR_PICKUP,
+      startDate: INICIO,
+      ahora: CINCO_HORAS_DESPUES,
+      laCancelaElDueno: opciones.laCancelaElDueno ?? false,
+      entregaConfirmada: false,
+      noAparecioElInquilino: opciones.elDuenoReporto ?? false,
+      noAparecioElDueno: opciones.quienAlquiloReporto ?? false,
+      resueltoAFavorDe: opciones.resueltoAFavorDe ?? null,
+    });
+
+  it("NINGUNO DE LOS DOS: vuelve todo, el silencio no paga", () => {
+    const d = conConstancias({});
+    expect(d.puede).toBe(true);
+    expect(d.tier).toBe("nadieAparecio");
+    expect(d.retieneSena).toBe(false);
+  });
+
+  it("SOLO EL DUEÑO: la seña queda para el, fue y lo asento", () => {
+    const d = conConstancias({ elDuenoReporto: true });
+    expect(d.puede).toBe(true);
+    expect(d.tier).toBe("tardia");
+    expect(d.retieneSena).toBe(true);
+  });
+
+  it("SOLO QUIEN ALQUILO: vuelve todo, y queda con nombre que el dueño falto", () => {
+    /*
+      En plata es lo mismo que si nadie hubiera hablado, y es a propósito: lo
+      que agrega esta constancia es el NOMBRE. Un dueño que falta y nadie lo
+      dice se parece demasiado a un dueño que no falta.
+    */
+    const d = conConstancias({ quienAlquiloReporto: true });
+    expect(d.puede).toBe(true);
+    expect(d.tier).toBe("nadieAparecio");
+    expect(d.retieneSena).toBe(false);
+  });
+
+  it("LOS DOS: NO SE MUEVE NADA hasta que alguien lo resuelva", () => {
+    const d = conConstancias({
+      elDuenoReporto: true,
+      quienAlquiloReporto: true,
+    });
+    expect(d.puede).toBe(false);
+    expect(d.motivo).toBe("NO_SHOW_DISPUTED");
+    expect(d.tier).toBe("disputa");
+    // No retiene la seña NI la devuelve: la plata se queda donde está.
+    expect(d.retieneSena).toBe(false);
+  });
+
+  it("Y EL DUEÑO ACUSADO NO SE DESTRABA CANCELANDO EL", () => {
+    /*
+      EL AGUJERO QUE ESTO TAPA, Y QUE NO ES OBVIO.
+
+      "Si cancela el dueño vuelve todo" suena a que siempre juega en contra del
+      dueño, así que parece inofensivo dejarlo ganar sobre la disputa. No lo
+      es: al dueño que reportó en falso le alcanzaría con cancelar él para
+      cerrar el caso y hacer desaparecer la discusión sobre la seña sin que
+      nadie la mire. La plata que resigna es la que de todos modos no le
+      correspondía; lo que se lleva gratis es el expediente.
+
+      Por eso el caso trabado se decide ANTES que cualquier otra cosa.
+    */
+    const d = conConstancias({
+      elDuenoReporto: true,
+      quienAlquiloReporto: true,
+      laCancelaElDueno: true,
+    });
+    expect(d.puede).toBe(false);
+    expect(d.motivo).toBe("NO_SHOW_DISPUTED");
+  });
+
+  it("resuelto a favor del dueño: la seña queda para el", () => {
+    const d = conConstancias({
+      elDuenoReporto: true,
+      quienAlquiloReporto: true,
+      resueltoAFavorDe: "OWNER",
+    });
+    expect(d.puede).toBe(true);
+    expect(d.tier).toBe("tardia");
+    expect(d.retieneSena).toBe(true);
+  });
+
+  it("resuelto a favor de quien alquilo: vuelve todo", () => {
+    const d = conConstancias({
+      elDuenoReporto: true,
+      quienAlquiloReporto: true,
+      resueltoAFavorDe: "RENTER",
+    });
+    expect(d.puede).toBe(true);
+    expect(d.tier).toBe("nadieAparecio");
+    expect(d.retieneSena).toBe(false);
+  });
+
+  it("UN VALOR RARO EN LA DECISION DEJA EL CASO TRABADO, no lo resuelve solo", () => {
+    /*
+      La decisión se guarda en una columna de texto. Si alguna vez llega ahí
+      algo que no es ninguno de los dos lados —un dato tocado a mano, un typo
+      en código nuevo— lo que NO puede pasar es que el caso se destrabe solo y
+      la plata se mueva. Se trata como "todavía no se decidió", que es el lado
+      seguro. Ver ladoDelNoShow.
+    */
+    expect(ladoDelNoShow("OWNER")).toBe("OWNER");
+    expect(ladoDelNoShow("RENTER")).toBe("RENTER");
+    for (const basura of ["owner", "AMBOS", "", null, undefined]) {
+      expect(ladoDelNoShow(basura)).toBeNull();
+    }
+    const d = conConstancias({
+      elDuenoReporto: true,
+      quienAlquiloReporto: true,
+      resueltoAFavorDe: ladoDelNoShow("cualquier cosa"),
+    });
+    expect(d.motivo).toBe("NO_SHOW_DISPUTED");
+  });
+});
+
+describe("la ventana es LA MISMA para los dos lados", () => {
+  /*
+    No hay una función para el dueño y otra para quien alquiló: es la misma, y
+    eso es lo que garantiza que ninguno de los dos tenga un plazo más cómodo.
+    Una regla asimétrica acá sería ponerle el pulgar a la balanza antes de que
+    empiece la discusión.
+  */
+  it("sobre una reserva ya cerrada no se reporta nada", () => {
+    /*
+      Llegando tarde, el reporte no cambia plata —ya se repartió— y lo único
+      que haría es dejar una acusación en el registro cuando no hay nada que
+      decidir.
+    */
+    const r = puedeReportarNoShow({
+      status: BookingStatus.CANCELLED_BY_RENTER,
+      startDate: INICIO,
+      ahora: new Date(INICIO.getTime() + 60 * 60 * 1000),
+      entregaConfirmada: false,
+    });
+    expect(r).toEqual({ puede: false, motivo: "BOOKING_NOT_CANCELLABLE" });
+  });
+
+  it("y sobre una viva, con los mismos plazos de siempre", () => {
+    const enMinutos = (m: number) =>
+      puedeReportarNoShow({
+        status: BookingStatus.READY_FOR_PICKUP,
+        startDate: INICIO,
+        ahora: new Date(INICIO.getTime() + m * 60 * 1000),
+        entregaConfirmada: false,
+      });
+    expect(enMinutos(MINUTOS_DE_GRACIA_EN_EL_RETIRO - 1).motivo).toBe(
+      "TOO_EARLY_FOR_NO_SHOW",
+    );
+    expect(enMinutos(MINUTOS_DE_GRACIA_EN_EL_RETIRO).puede).toBe(true);
+    expect(enMinutos(HORAS_PARA_RECLAMAR_NO_SHOW * 60 + 1).motivo).toBe(
+      "NO_SHOW_WINDOW_CLOSED",
+    );
   });
 });

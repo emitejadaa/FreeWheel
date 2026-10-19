@@ -8,6 +8,7 @@ import * as nodemailer from "nodemailer";
 import * as QRCode from "qrcode";
 import { getFrontendUrl } from "../config/public-urls";
 import { PrismaService } from "../prisma/prisma.service";
+import type { CancellationTier } from "../bookings/cancellation-policy";
 
 @Injectable()
 export class EmailService {
@@ -599,8 +600,14 @@ export class EmailService {
       reason?: string | null;
       cancelaste: boolean;
       refunded?: boolean;
-      /** Qué tramo de la política se aplicó (bookings/cancellation-policy.ts). */
-      tier?: "libre" | "tardia" | "delDueno" | "nadieAparecio" | "cerrada";
+      /**
+       * Qué tramo de la política se aplicó.
+       *
+       * El tipo se IMPORTA de bookings/cancellation-policy en vez de copiar la
+       * lista acá. La copia ya se desincronizó una vez: se agregó un tramo
+       * nuevo a la política y esta lista se quedó con los cinco de antes.
+       */
+      tier?: CancellationTier;
       /** Lo que NO se devuelve, cuando se canceló sobre la fecha. */
       senaRetenida?: number | null;
       currency?: string;

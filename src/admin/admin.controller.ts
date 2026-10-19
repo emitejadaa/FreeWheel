@@ -19,6 +19,7 @@ import { AdminService } from "./admin.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
 import { ReviewVerificationDto } from "./dto/review-verification.dto";
 import { CancelBookingAdminDto } from "./dto/cancel-booking-admin.dto";
+import { ResolveNoShowDto } from "./dto/resolve-no-show.dto";
 import { UpdateListingStatusDto } from "./dto/update-listing-status.dto";
 import { UpdateUserRoleDto } from "./dto/update-user-role.dto";
 import { UpdateUserStatusDto } from "./dto/update-user-status.dto";
@@ -156,6 +157,41 @@ export class AdminController {
     return this.adminService.cancelBookingWithFullRefund(
       user.id,
       id,
+      dto.reason,
+    );
+  }
+
+  /**
+   * La bandeja de retiros trabados: los dos dijeron que el otro no fue.
+   *
+   * Va ANTES de `bookings/:id` a propósito. Nest resuelve las rutas en el
+   * orden en que están escritas, así que declarada después, "no-show-disputes"
+   * entraría como el :id de la de arriba y esta nunca se llamaría.
+   */
+  @Get("bookings/no-show-disputes")
+  listNoShowDisputes() {
+    return this.adminService.listNoShowDisputes();
+  }
+
+  /**
+   * Decide un caso trabado y cierra la reserva.
+   *
+   * Lo único que se elige acá es QUIÉN FUE. El reparto sale después de la
+   * misma política escrita que en cualquier otra cancelación: a favor del
+   * dueño, la seña queda para él; a favor de quien alquiló, vuelve todo. Un
+   * panel que además eligiera los importes sería una tercera política, sin
+   * pruebas y sin nada escrito que la explique.
+   */
+  @Post("bookings/:id/resolve-no-show")
+  resolveNoShow(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("id") id: string,
+    @Body() dto: ResolveNoShowDto,
+  ) {
+    return this.adminService.resolveNoShowDispute(
+      user.id,
+      id,
+      dto.aFavorDe,
       dto.reason,
     );
   }

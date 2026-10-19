@@ -13,6 +13,7 @@ import { USER_SAFE_SELECT } from "../common/constants/prisma-select";
 import { CloudinaryService } from "../media/cloudinary.service";
 import { MediaCleanupService } from "../media/media-cleanup.service";
 import { BookingsService } from "../bookings/bookings.service";
+import type { LadoDelNoShow } from "../bookings/cancellation-policy";
 import { IdentityDocumentsService } from "../verification/identity/identity-documents.service";
 import { DocumentVerificationService } from "../verification/identity/document-verification.service";
 import { AccountDeletionPolicy } from "./account-deletion.policy";
@@ -427,6 +428,182 @@ export class AdminService {
     });
 
     return resultado;
+  }
+
+  /**
+   * LOS RETIROS QUE NO PASARON Y QUEDARON TRABADOS.
+   *
+   * Las dos partes dejaron constancia de que la otra no apareció. La plata está
+   * quieta y la cancelación no corre hasta que alguien decida cuál versión
+   * vale. Esto es esa bandeja.
+   *
+   * ── LO QUE VIENE CON CADA CASO, Y POR QUÉ ────────────────────────────────
+   * Las dos versiones con su hora, la reserva con sus fechas e importes, y —lo
+   * que de verdad ayuda a decidir— EL HISTORIAL DE CADA UNO: cuántas veces esa
+   * persona reclamó un no-show y cuántas veces se lo reclamaron.
+   *
+   * Un caso aislado es la palabra de uno contra la del otro y no hay con qué
+   * resolverlo. Un dueño con ocho reclamos en dos meses no es un caso aislado,
+   * y ese patrón solo se ve mirando TODAS sus reservas, que es algo que la
+   * persona que decide no puede hacer a mano. Es también lo que hace que esto
+   * sirva igual el día que quien mire no sea una persona: el caso ya llega con
+   * las dos versiones y con la señal de reincidencia calculada.
+   *
+   * Los casos ya resueltos no aparecen: esto es una bandeja de pendientes.
+   */
+  async listNoShowDisputes() {
+    const trabadas = await this.prisma.booking.findMany({
+      where: {
+        renterNoShowAt: { not: null },
+        ownerNoShowAt: { not: null },
+        noShowResolvedFor: null,
+      },
+      include: {
+        vehicle: true,
+        owner: { select: USER_SAFE_SELECT },
+        renter: { select: USER_SAFE_SELECT },
+      },
+      orderBy: { startDate: "asc" },
+    });
+
+    /*
+      El historial se cuenta de una sola vez para todas las personas de la
+      bandeja, no de a una por caso: con veinte casos abiertos serían ochenta
+      consultas para mostrar una pantalla.
+    */
+    const personas = [
+      ...new Set(trabadas.flatMap((b) => [b.ownerId, b.renterId])),
+    ];
+    const [reclamosDeDuenos, reclamosDeInquilinos] = await Promise.all([
+      this.prisma.booking.groupBy({
+        by: ["ownerId"],
+        where: { ownerId: { in: personas }, renterNoShowAt: { not: null } },
+        _count: { _all: true },
+      }),
+      this.prisma.booking.groupBy({
+        by: ["renterId"],
+        where: { renterId: { in: personas }, ownerNoShowAt: { not: null } },
+        _count: { _all: true },
+      }),
+    ]);
+    const comoDueno = new Map(
+      reclamosDeDuenos.map((r) => [r.ownerId, r._count._all]),
+    );
+    const comoInquilino = new Map(
+      reclamosDeInquilinos.map((r) => [r.renterId, r._count._all]),
+    );
+
+    return trabadas.map((booking) => ({
+      booking,
+      /** Las dos versiones, con su hora. */
+      elDuenoReportoA: booking.renterNoShowAt,
+      quienAlquiloReportoA: booking.ownerNoShowAt,
+      /** Quién habló primero. No decide nada, pero es un dato del caso. */
+      reportoPrimero:
+        booking.renterNoShowAt && booking.ownerNoShowAt
+          ? booking.renterNoShowAt <= booking.ownerNoShowAt
+            ? "OWNER"
+            : "RENTER"
+          : null,
+      historial: {
+        /** Cuántas veces este dueño reclamó que no le fueron a retirar. */
+        reclamosDelDueno: comoDueno.get(booking.ownerId) ?? 0,
+        /** Cuántas veces a este dueño le reclamaron no haber entregado. */
+        reclamosContraElDueno: comoInquilino.get(booking.ownerId) ?? 0,
+        /** Lo mismo del otro lado. */
+        reclamosDeQuienAlquilo: comoInquilino.get(booking.renterId) ?? 0,
+        reclamosContraQuienAlquilo: comoDueno.get(booking.renterId) ?? 0,
+      },
+    }));
+  }
+
+  /**
+   * RESUELVE UN CASO TRABADO Y CIERRA LA RESERVA.
+   *
+   * Dos cosas pasan acá, en este orden:
+   *
+   *  1. Se guarda a favor de quién se decidió. NO se borra la constancia que
+   *     pierde: sigue siendo un dato sobre quien la hizo, y un reclamo que se
+   *     cae una y otra vez es exactamente el patrón que hay que poder ver.
+   *  2. Se cancela. Con el caso resuelto la política vuelve a decidir sola: a
+   *     favor del dueño, la seña queda para él (fue y esperó); a favor de quien
+   *     alquiló, vuelve todo.
+   *
+   * Lo que NO hace es inventar un reparto propio. La decisión humana es sobre
+   * UN hecho —quién fue— y de ahí en adelante manda la misma regla escrita que
+   * en cualquier otra reserva. Un admin que además pudiera elegir los importes
+   * sería una tercera política sin pruebas y sin texto que la explique.
+   */
+  async resolveNoShowDispute(
+    adminId: string,
+    bookingId: string,
+    aFavorDe: LadoDelNoShow,
+    reason: string,
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        id: true,
+        renterId: true,
+        ownerId: true,
+        renterNoShowAt: true,
+        ownerNoShowAt: true,
+        noShowResolvedFor: true,
+      },
+    });
+    assertFound(booking, "Booking not found");
+
+    if (!booking.renterNoShowAt || !booking.ownerNoShowAt) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "NO_SHOW_NOT_DISPUTED",
+        message:
+          "Esta reserva no tiene dos versiones enfrentadas: no hay nada que " +
+          "resolver. Si hay que cancelarla igual, es la cancelación con " +
+          "devolución total.",
+      });
+    }
+    if (booking.noShowResolvedFor) {
+      throw new BadRequestException({
+        statusCode: 400,
+        code: "NO_SHOW_ALREADY_RESOLVED",
+        message: "Este caso ya lo resolvió alguien.",
+      });
+    }
+
+    await this.prisma.booking.update({
+      where: { id: bookingId },
+      data: { noShowResolvedFor: aFavorDe },
+    });
+
+    await this.auditLog.create({
+      actorId: adminId,
+      targetUserId: aFavorDe === "OWNER" ? booking.ownerId : booking.renterId,
+      action: "admin.no_show_dispute_resolved",
+      entityType: "Booking",
+      entityId: bookingId,
+      metadata: {
+        aFavorDe,
+        reason,
+        elDuenoReportoA: booking.renterNoShowAt.toISOString(),
+        quienAlquiloReportoA: booking.ownerNoShowAt.toISOString(),
+      },
+    });
+
+    /*
+      La cancelación va EN NOMBRE DE QUIEN ALQUILÓ, igual que la cancelación
+      administrativa con devolución total, y por el mismo motivo: así el
+      registro no dice que canceló el dueño cuando no lo hizo. Lo que decide el
+      reparto no es quién apretó el botón sino las constancias, que ya están
+      resueltas una línea más arriba.
+    */
+    const resultado = await this.bookings.cancel(booking.renterId, bookingId, {
+      reason:
+        `Retiro en disputa, resuelto a favor de ` +
+        `${aFavorDe === "OWNER" ? "el dueño" : "quien alquiló"}: ${reason}`,
+    });
+
+    return { resolvedFor: aFavorDe, ...resultado };
   }
 
   async getBooking(id: string) {
