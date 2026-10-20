@@ -101,6 +101,8 @@ export class UsersService {
         profileCoverDesign: true,
         profileCoverColor: true,
         profileCoverPhotoUrl: true,
+        profileCoverX: true,
+        profileCoverY: true,
         ratingAverage: true,
         ratingCount: true,
         verificationStatus: true,

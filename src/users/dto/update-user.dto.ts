@@ -1,7 +1,10 @@
 import { PhotoVisibility } from "@prisma/client";
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
+  IsInt,
+  Max,
+  Min,
   IsEnum,
   IsOptional,
   IsString,
@@ -145,6 +148,30 @@ export class UpdateUserDto {
   @IsUrl({ require_protocol: true })
   @MaxLength(2048)
   profileCoverPhotoUrl?: string | null;
+
+  /**
+   * DÓNDE SE RECORTA LA FOTO DE PORTADA: el punto que queda a la vista, en
+   * porcentaje de cada eje. 0 es el borde de arriba (o el izquierdo), 100 el
+   * de abajo (o el derecho), 50 el medio.
+   *
+   * Dos enteros y no un texto con la posición de CSS ya armada. Un texto
+   * terminaría metido adentro de una propiedad de estilo y habría que validar
+   * con cuidado que nadie escriba CSS por esta puerta; dos números acotados no
+   * tienen esa pregunta.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  profileCoverX?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  profileCoverY?: number;
 
   /**
    * Si esta persona quiere recibir avisos por mail: reservas pedidas,

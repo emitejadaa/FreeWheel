@@ -432,6 +432,24 @@ model User {
   /// de perfil es la cara de alguien y una portada es un fondo. Si alguna vez
   /// hiciera falta esa distinción, el ajuste va acá y no en el front.
   profileCoverPhotoUrl    String?
+  /// DÓNDE SE RECORTA LA FOTO DE PORTADA, en porcentaje de cada eje.
+  ///
+  /// La portada es una franja ancha y baja, y la foto se achica hasta
+  /// llenarla: siempre sobra imagen por algún lado y el navegador, por su
+  /// cuenta, recorta por el centro. Con una foto en la que el motivo está
+  /// arriba —una persona, un cartel, el techo de un auto— el centro es
+  /// justamente lo que no hay que mostrar, y la portada queda cortada sin que
+  /// su dueño pueda hacer nada.
+  ///
+  /// Son DOS ENTEROS de 0 a 100 y no un texto con la posición de CSS ya
+  /// armada. El texto se guardaría tal cual y terminaría metido adentro de una
+  /// propiedad de estilo, o sea que habría que validarlo con cuidado para que
+  /// nadie escriba CSS por esta puerta. Dos números no tienen esa pregunta: lo
+  /// que no sea un número entre 0 y 100 no entra, y la pantalla arma el texto.
+  ///
+  /// En NULL van al medio (50 y 50), que es exactamente como se veía antes.
+  profileCoverX           Int?
+  profileCoverY           Int?
   /// Si esta persona quiere recibir avisos por mail: reservas pedidas,
   /// aceptadas, pagos, entregas y devoluciones, y el aviso de que tiene
   /// mensajes sin leer en el chat.
