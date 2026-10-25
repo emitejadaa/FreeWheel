@@ -68,6 +68,7 @@ describe("AiService.vision", () => {
       tipo: "SUV",
       color: "gris",
       marcaModelo: "Toyota Corolla Cross",
+      patente: null,
     });
   });
 
@@ -81,7 +82,35 @@ describe("AiService.vision", () => {
       tipo: "hatchback",
       color: "blanco",
       marcaModelo: null,
+      patente: null,
     });
+  });
+
+  it("devuelve la patente cuando se lee, que es el rasgo que identifica a UN auto", async () => {
+    /*
+      Los otros tres rasgos describen un TIPO de auto: dos Clios blancos los
+      comparten. La patente no la comparte nadie, y por eso el front la usa como
+      prueba suficiente de que una foto es de otro auto. Para poder hacer eso
+      tiene que llegar hasta acá.
+    */
+    const service = conRespuesta(
+      '{"es_vehiculo": true, "es_real": true, "que_es": "hatchback blanco", ' +
+        '"tipo": "hatchback", "color": "blanco", "marca_modelo": "Renault Clio", ' +
+        '"patente": "AB123CD"}',
+    );
+
+    expect((await service.vision(IMAGEN)).rasgos?.patente).toBe("AB123CD");
+  });
+
+  it("y se le pide que NO la adivine", async () => {
+    // Una patente inventada no es un dato de más: acusa a alguien de publicar
+    // un auto que no es suyo. Null es la respuesta correcta casi siempre.
+    const service = conRespuesta('{"es_vehiculo": true, "es_real": true}');
+    await service.vision(IMAGEN);
+
+    const enviado = promptEnviado();
+    expect(enviado).toContain("patente");
+    expect(enviado).toContain("null");
   });
 
   it("asks for the traits in Spanish even when the answer is in another language", async () => {

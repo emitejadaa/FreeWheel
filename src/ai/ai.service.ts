@@ -838,6 +838,21 @@ export class AiService {
       tipo: string | null;
       color: string | null;
       marcaModelo: string | null;
+      /**
+       * LA PATENTE, si se lee entera y sin dudar.
+       *
+       * Es el único rasgo que identifica a UN auto y no a un tipo de auto: dos
+       * Clios blancos comparten los otros tres, y la patente no. Por eso el
+       * front la trata distinto —una patente distinta alcanza sola para decir
+       * que es otro auto, mientras que un color distinto puede ser la luz— y
+       * por eso acá se pide con tanto cuidado: una patente inventada acusa a
+       * alguien que no hizo nada.
+       *
+       * Null es la respuesta correcta casi siempre: de perfil no se ve, de
+       * noche no se lee, y mucha gente la tapa a propósito antes de subir la
+       * foto. Null no frena nada.
+       */
+      patente: string | null;
     };
     code?: AiUnavailableCode;
   }> {
@@ -862,13 +877,19 @@ export class AiService {
         '"tipo": "la carrocería en UNA palabra (hatchback, sedan, suv, pickup, van, coupe, familiar, moto) o null", ' +
         '"color": "el color principal en UNA palabra o null", ' +
         '"marca_modelo": "la marca y el modelo si se leen con seguridad, o null", ' +
+        '"patente": "la patente del vehículo PRINCIPAL de la foto, solo si se lee ' +
+        "entera y sin dudar; si está tapada, borrosa, cortada, de costado, o es de " +
+        'otro auto del fondo, poné null", ' +
         '"motivo": "una frase corta explicando la decisión"}\n' +
         // Los tres rasgos nuevos se piden EN CASTELLANO siempre, y por eso
         // quedan afuera de la lista de campos que se traducen: no son texto para
         // mostrar, son las etiquetas con las que el front compara una foto
         // contra otra. Traducidas, la misma SUV sería "suv" en una foto y "SUV"
         // en otra según el idioma de quien publica, y no coincidirían nunca.
-        "Si no estás seguro de alguno de esos tres, poné null en vez de adivinar.\n" +
+        "Si no estás seguro de alguno de esos cuatro, poné null en vez de adivinar. " +
+        "Con la patente sé especialmente estricto: es un dato con el que se puede " +
+        "acusar a alguien de publicar un auto que no es el suyo, así que si hay la " +
+        "más mínima duda sobre una sola letra o un solo número, poné null.\n" +
         answerInLanguage(lang, ["motivo", "que_es"]),
       // Mismo motivo que en la revisión de documentos: con un modelo de
       // razonamiento, 220 tokens se van enteros en el análisis y la respuesta
@@ -904,6 +925,7 @@ export class AiService {
       tipo: asText(parsed.tipo),
       color: asText(parsed.color),
       marcaModelo: asText(parsed.marca_modelo),
+      patente: asText(parsed.patente),
     };
 
     if (esVehiculo && esReal) {
