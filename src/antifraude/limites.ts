@@ -72,9 +72,21 @@ export const RESENAS_POR_SEMANA = 6;
  */
 export const RESENAS_POR_DIA = 3;
 
-/** Publicaciones por día y por semana. Ver la nota de arriba: tope, no castigo. */
-export const PUBLICACIONES_POR_DIA = 4;
-export const PUBLICACIONES_POR_SEMANA = 10;
+/**
+ * Publicaciones por día y por semana. Ver la nota de arriba: tope, no castigo.
+ *
+ * SEIS EN UN DÍA es más de lo que publica cualquier persona de verdad. Quien
+ * alquila su auto tiene uno, y a veces dos; una familia con cuatro autos los
+ * carga el primer día y después no vuelve a publicar en semanas. El tope no
+ * está puesto en lo que hace una persona normal sino bastante por encima, que
+ * es lo que lo vuelve inofensivo para ella y sigue sirviendo contra un guion
+ * que quiere llenar el catálogo de avisos falsos en una tarde.
+ *
+ * Quince en la semana, y no cuarenta y dos, por el mismo motivo que las
+ * reseñas: el tope diario solo no alcanza si se puede repetir todos los días.
+ */
+export const PUBLICACIONES_POR_DIA = 6;
+export const PUBLICACIONES_POR_SEMANA = 15;
 
 /* ── Las señales ─────────────────────────────────────────────────────────── */
 

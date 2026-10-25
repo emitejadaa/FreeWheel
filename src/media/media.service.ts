@@ -5,7 +5,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { RegisterMediaAssetDto } from "./dto/register-media-asset.dto";
 
@@ -32,7 +32,32 @@ export class MediaService {
    * (POST /verification/identity/upload-signature) que fuerza la carpeta del
    * usuario y sube como authenticated.
    */
-  signUpload(folder = "freewheel") {
+  /**
+   * ── POR QUÉ LA FIRMA LLEVA UN `public_id` QUE ELIGE EL SERVIDOR ──────────
+   *
+   * Antes se firmaba `folder=freewheel&timestamp=...` y nada más. Esa firma
+   * sirve para subir CUALQUIER cantidad de archivos a esa carpeta mientras
+   * Cloudinary la siga aceptando, y cada archivo es uno nuevo. O sea: pedir
+   * una firma y repetir la subida desde la consola del navegador llenaba la
+   * cuenta de Cloudinary sin volver a pasar por el servidor ni una vez. Poner
+   * un tope a los pedidos de firma no arreglaba nada, porque UNA firma ya
+   * alcanzaba.
+   *
+   * Con el `public_id` adentro de lo firmado, Cloudinary solo acepta subir a
+   * ESE nombre. Repetir la subida sobrescribe el mismo archivo en vez de
+   * agregar otro, así que una firma es, como mucho, una foto guardada. Y eso
+   * es lo que convierte el tope de firmas por día en un tope de FOTOS por día,
+   * que es lo que se quería tener.
+   *
+   * El nombre lo arma el servidor con el id de la cuenta adentro —nunca el
+   * cliente— por el mismo motivo que en los documentos de identidad: si el
+   * navegador pudiera elegirlo, podría pisar el archivo de otra persona.
+   *
+   * El `folder` sigue viniendo en la respuesta para que el front viejo —el que
+   * todavía manda `folder` y no `params`— siga funcionando mientras se
+   * publican las dos puntas.
+   */
+  signUpload(userId: string, folder = "freewheel") {
     // La comparación va SIN distinguir mayúsculas. Hoy Cloudinary trata
     // "Identity/" y "identity/" como carpetas distintas, así que escribir la
     // palabra con mayúscula no da acceso a los documentos de nadie — pero eso
@@ -72,12 +97,35 @@ export class MediaService {
     }
 
     const timestamp = Math.round(Date.now() / 1000);
-    const toSign = `folder=${folder}&timestamp=${timestamp}`;
+    // El nombre del archivo: la carpeta pedida, la cuenta que sube, y un azar
+    // que hace que dos fotos del mismo segundo no se pisen entre ellas.
+    const limpia = folder.trim().replace(/^\/+|\/+$/g, "") || "freewheel";
+    const publicId = `${limpia}/${userId}/${Date.now()}_${randomBytes(4).toString("hex")}`;
+
+    // Se firma el public_id y NO el folder: el public_id ya trae la carpeta
+    // adentro, y mandar los dos hace que Cloudinary anteponga la carpeta otra
+    // vez y el archivo termine en freewheel/freewheel/<id>/...
+    const toSign = `public_id=${publicId}&timestamp=${timestamp}`;
     const signature = createHash("sha1")
       .update(toSign + apiSecret)
       .digest("hex");
 
-    return { cloudName, apiKey, timestamp, signature, folder };
+    return {
+      cloudName,
+      apiKey,
+      timestamp,
+      signature,
+      folder: limpia,
+      publicId,
+      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+      /** Copiar tal cual al FormData, más `file`. Nada más, nada menos. */
+      params: {
+        public_id: publicId,
+        timestamp: String(timestamp),
+        api_key: apiKey,
+        signature,
+      },
+    };
   }
 
   /**

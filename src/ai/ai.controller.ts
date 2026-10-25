@@ -17,6 +17,7 @@ import { AiChatDto } from "./dto/ai-chat.dto";
 import { AiQuestionAskedDto } from "./dto/ai-question-asked.dto";
 import { AiTranscribeDto } from "./dto/ai-transcribe.dto";
 import { AiVisionDto } from "./dto/ai-vision.dto";
+import { SensitiveRateLimit } from "../common/rate-limit/sensitive-rate-limit.decorator";
 import { AiService } from "./ai.service";
 import { QuestionsService } from "./questions.service";
 
@@ -69,8 +70,41 @@ export class AiController {
     return this.ai.health(probar, user?.role === UserRole.ADMIN);
   }
 
+  /*
+    EL CUPO DIARIO DE WILI.
+
+    El tope por minuto de arriba frena una ráfaga, pero no frena a alguien que
+    deja un guion preguntando toda la noche a un ritmo tranquilo: veinte por
+    minuto son veintiocho mil por día, y cada una gasta cuota de NUESTRA clave.
+    El cupo diario es el que pone el techo de la factura.
+
+    ── POR QUÉ ESTE TOPE Y NO UNO DEL LADO DEL NAVEGADOR ────────────────────
+    Porque un tope en el navegador es una sugerencia. Cualquiera abre las
+    herramientas de desarrollo (F12) y llama al endpoint directamente, o lo
+    llama con curl sin abrir la página. Lo único que de verdad limita es lo que
+    cuenta EL SERVIDOR, y acá el contador vive en la base: lo ven todas las
+    instancias a la vez y no se reinicia cuando Vercel levanta una nueva.
+
+    ── POR QUÉ `ip+user` ────────────────────────────────────────────────────
+    El asistente contesta también a visitantes sin cuenta, así que la IP es la
+    única identidad que hay en la mitad de los casos. Y contra alguien que SÍ
+    tiene cuenta, la IP sola no alcanza: cambiar de red es gratis. Contando las
+    dos, hay que pasar los dos cupos.
+
+    Ochenta preguntas por día es mucho más de lo que pregunta una persona —son
+    cuatro o cinco en una visita— y a la vez es un techo.
+  */
+  @SensitiveRateLimit({
+    name: "ai.chat",
+    limit: 80,
+    windowSec: 24 * 60 * 60,
+    by: "ip+user",
+  })
   // Pública: el chatbot de ayuda funciona también para visitantes sin cuenta.
+  // El guard opcional está para que, cuando HAY sesión, el cupo se cuente
+  // además contra la cuenta y no solo contra la IP.
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @UseGuards(OptionalJwtAuthGuard)
   @Post("chat")
   chat(@Body() dto: AiChatDto) {
     return this.ai.chat(dto.messages, dto.temperature);
@@ -82,6 +116,21 @@ export class AiController {
    * que cerrarla no le saca nada a nadie y saca de encima que un anónimo gaste
    * llamadas de visión, que son las más caras de todas.
    */
+  /*
+    El cupo diario de revisiones. Es la llamada MÁS CARA de las tres —una foto
+    pesa mucho más que una pregunta— así que es la que más conviene acotar.
+
+    Ciento veinte por día contra lo que hace una persona: un aviso lleva hasta
+    seis fotos y se pueden publicar seis autos por día (ver
+    antifraude/limites.ts), o sea treinta y seis revisiones, más las que se
+    repitan porque una foto salió mal. Entra holgado y aun así pone un techo.
+  */
+  @SensitiveRateLimit({
+    name: "ai.vision",
+    limit: 120,
+    windowSec: 24 * 60 * 60,
+    by: "user",
+  })
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(JwtAuthGuard)
   @Post("vision")
@@ -129,6 +178,16 @@ export class AiController {
 
   // Transcribir consume más que una respuesta de texto: solo usuarios logueados
   // (se usa en las notas de voz del chat, que ya requieren sesión).
+  //
+  // Cuarenta por día: transcribir es una comodidad de una conversación, no algo
+  // que se haga en serie. Quien mande cuarenta notas de voz en un día ya tuvo
+  // una conversación muy larga.
+  @SensitiveRateLimit({
+    name: "ai.transcribe",
+    limit: 40,
+    windowSec: 24 * 60 * 60,
+    by: "user",
+  })
   @Post("transcribe")
   @UseGuards(JwtAuthGuard)
   transcribe(@Body() dto: AiTranscribeDto) {
