@@ -418,7 +418,16 @@ inmutables una vez verificada.
 
 En [`docverify-api/`](docverify-api/): un servicio de Python
 independiente, con su propio deploy y **sin ninguna conexión con este
-backend** — no comparten base, ni configuración, ni llamadas. Encuadra el
+backend** — no comparten base, ni configuración, ni llamadas.
+
+Corre en HosTICer (app `freewheel/api`, receta `fastapi-ocr`) en
+`https://proyectos-tic.ort.edu.ar/freewheel/api`. El backend la apunta con
+`DOCVERIFY_URL="https://proyectos-tic.ort.edu.ar/freewheel/api"` (sin barra
+final) y el mismo `DOCVERIFY_TOKEN` que tiene configurado el servicio. Se sube
+sólo la carpeta, con `git subtree push --prefix=docverify-api tic main`; los
+detalles del deploy están en `backend.md`.
+
+Encuadra el
 documento, lo endereza y lo lee por todos los medios que tenga, con un endpoint
 por cara:
 

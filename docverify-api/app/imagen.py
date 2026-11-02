@@ -1,7 +1,6 @@
-import functools
 import io
 import math
-import operator
+import os
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -276,11 +275,25 @@ _motor: RapidOCR | None = None
 _candado = threading.Lock()
 
 
+def _hilos_ocr() -> int:
+    try:
+        return max(1, int(os.environ.get("OMP_NUM_THREADS", "").strip() or 1))
+    except ValueError:
+        return 1
+
+
 def motor() -> RapidOCR:
+    # Sin fijar los hilos, onnxruntime arranca uno por núcleo del host (no del
+    # contenedor) y cada llamada tarda decenas de veces más.
     global _motor
     with _candado:
         if _motor is None:
-            _motor = RapidOCR()
+            _motor = RapidOCR(
+                params={
+                    "EngineConfig.onnxruntime.intra_op_num_threads": _hilos_ocr(),
+                    "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                }
+            )
     return _motor
 
 
@@ -344,7 +357,7 @@ class Codigo:
 
 def leer_codigos(imagenes: tuple[np.ndarray, ...], formatos: tuple[str, ...], zonas: tuple[Zona, ...]) -> list[Codigo]:
     concretos = {f for nombre in formatos for f in (FORMATOS_1D if nombre == "1D" else {nombre})}
-    mascara = functools.reduce(operator.or_, (getattr(zxingcpp.BarcodeFormat, f) for f in concretos))
+    mascara = tuple(getattr(zxingcpp.BarcodeFormat, f) for f in sorted(concretos))
     con_barras = not concretos.isdisjoint({"PDF417", *FORMATOS_1D})
     for imagen in imagenes:
         gris = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)

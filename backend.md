@@ -435,8 +435,8 @@ Archivos:
 - `src/verification/errors/verification-reasons.ts` (catalogo de motivos)
 
 Este modulo NO lee las fotos: eso lo hace `docverify-api/`, un servicio de
-Python que se deploya aparte (no entra en una funcion serverless: son ~300 MB
-de dependencias nativas). Este backend le manda las dos caras, recibe lo que
+Python que se deploya aparte en HosTICer (no entra en una funcion serverless:
+son ~300 MB de dependencias nativas). Este backend le manda las dos caras, recibe lo que
 leyo, lo CRUZA contra los datos de la cuenta y decide.
 
 Sin `DOCVERIFY_URL` configurada todo sigue funcionando: las fotos se guardan y
@@ -1374,25 +1374,54 @@ mismo dato coinciden entre si. **No sabe quien es el usuario y no decide si una
 verificacion se aprueba**: eso lo hace este backend, que es el unico lado que
 conoce la cuenta.
 
-HOY CORRE EN LOCAL, junto con el backend: `DOCVERIFY_URL="http://127.0.0.1:8000"`.
-Un analisis completo tarda ~10 segundos las dos caras en una maquina comun.
+CORRE EN HOSTICER, app `freewheel/api`, receta `fastapi-ocr` (Python 3.13,
+2 CPU, 1 GB, `OMP_NUM_THREADS=2`, FS de solo lectura salvo `/tmp` y `data/`):
 
-Hostearlo salio mal dos veces y por motivos distintos, los dos medidos: en los
-planes chicos de Render (512 MB) el proceso muere a mitad del analisis, y la
-cuenta de Hugging Face tiene cupo cero para Spaces de CPU. Se hostea como un
-proceso de Python comun en un servidor propio.
+```
+DOCVERIFY_URL="https://proyectos-tic.ort.edu.ar/freewheel/api"
+DOCVERIFY_TOKEN="<el mismo valor que DOCVERIFY_TOKEN en el servicio>"
+```
 
-CUIDADO con una cosa: un backend en Vercel NO puede alcanzar una API en
-127.0.0.1 ni en 192.168.x.y. Son direcciones privadas y no hay ruta desde
-internet. O el backend corre local tambien, o hace falta un tunel, o hay que dar
-vuelta el flujo (que la API pregunte por trabajo en vez de esperar a que la
-llamen).
+`DOCVERIFY_URL` va SIN barra final (el cliente la recorta igual) y con el
+prefijo `/freewheel/api`: las rutas se arman concatenando, no se pierde.
+`DOCVERIFY_TOKEN` tiene que ser identico en el servicio y en el backend.
+`DOCVERIFY_PLATFORM_TOKEN` no hace falta en HosTICer.
+
+tic construye desde la raiz del repo que recibe, asi que se le sube SOLO la
+carpeta `docverify-api/` con `git subtree`, y ejecuta `uvicorn main:app`
+(`docverify-api/main.py` reexporta `app.main:app`):
+
+```bash
+git remote add tic ssh://<DNI>@belgrano.ort.arg@vm-tic.ort.edu.ar:2222/freewheel/api.git
+git subtree push --prefix=docverify-api tic main
+```
+
+Las dependencias se instalan solo desde wheels (`pip --only-binary=:all:`),
+asi que `requirements.txt` esta todo pineado con `==` y elegido para tener
+wheel en 3.13: `zxing-cpp==3.1.1` (la 2.x no tiene) y `omegaconf==2.4.0` (la
+2.3.0 depende de `antlr4-python3-runtime==4.9.*`, que solo existe como sdist).
+
+Dos cosas que hace el servicio para entrar en esa receta:
+
+- El OCR se crea con `intra_op_num_threads=OMP_NUM_THREADS` (minimo 1) e
+  `inter_op_num_threads=1`. Sin eso onnxruntime abre un hilo por nucleo del
+  host y cada llamada tarda decenas de veces mas.
+- `main.py` pone `ORT_DISABLE_TELEMETRY=1` por defecto: onnxruntime 1.30
+  escribe telemetria en `$HOME/.cache` y, si no puede, un `:memory:.ses` en el
+  directorio actual. Con eso no escribe nada fuera de `/tmp`.
+
+Medido en local con `OMP_NUM_THREADS=2`: `/health` y `/contrato` ~2 ms (`/health`
+contesta aunque el OCR siga cargando, con `ocr_cargado: false`), un
+`POST /analizar/documento` de dos caras ~10-12 s, y un pico de ~760 MB de RSS
+con `DOCVERIFY_CONCURRENCIA=1`. Entra en 1 GB, pero no subas la concurrencia.
 
 No puede ir en Vercel: entre opencv, numpy y onnxruntime son ~300 MB de wheels y
-el tope de una funcion serverless son 250 MB. Y NECESITA 2 GB de RAM: esta
-medido que en 512 MB un analisis de dos caras no termina —el proceso muere a los
-2-3 minutos, sin traceback—, asi que los planes chicos de Render quedaron
-descartados.
+el tope de una funcion serverless son 250 MB. Antes se probo Render (en 512 MB
+el proceso muere a mitad del analisis) y Hugging Face Spaces (cupo cero para
+CPU); los dos quedaron descartados.
+
+Para desarrollo sigue andando local: `DOCVERIFY_URL="http://127.0.0.1:8000"`.
+Un backend en Vercel NO alcanza 127.0.0.1 ni 192.168.x.y.
 
 El endpoint que usa este backend:
 
@@ -1694,13 +1723,13 @@ SMS_PROVIDER="mock"
 ONBOARDING_JWT_EXPIRES_IN="30m"
 # CORS: por defecto la API contesta a cualquier origen. "true" activa la lista.
 CORS_STRICT=""
-# Lectura automatica de documentos (docverify-api/, en Hugging Face Spaces).
+# Lectura automatica de documentos (docverify-api/, en HosTICer).
 # Sin esto todo sigue funcionando: las fotos se guardan y las revisa un admin.
-DOCVERIFY_URL=""
+# SIN barra final. El token tiene que ser el mismo que en el servicio.
+DOCVERIFY_URL="https://proyectos-tic.ort.edu.ar/freewheel/api"
 DOCVERIFY_TOKEN=""
-# Solo si el Space es PRIVADO: el token de Hugging Face. Un Space privado ocupa
-# el header Authorization con SU token, asi que el nuestro viaja en
-# X-Docverify-Token y los dos conviven.
+# Solo si la plataforma pide su propio token en Authorization (en HosTICer no):
+# el nuestro viaja entonces en X-Docverify-Token y los dos conviven.
 DOCVERIFY_PLATFORM_TOKEN=""
 # A donde le avisa la API de lectura cuando termina. En Vercel no hace falta
 # (se arma con VERCEL_URL); fuera de Vercel, sin esto el analisis ni se pide.
