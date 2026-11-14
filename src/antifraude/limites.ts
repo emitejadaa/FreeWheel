@@ -85,6 +85,7 @@ export const RESENAS_POR_DIA = 3;
  * Quince en la semana, y no cuarenta y dos, por el mismo motivo que las
  * reseñas: el tope diario solo no alcanza si se puede repetir todos los días.
  */
+// - [Limites] 6 autos por día y 15 por semana
 export const PUBLICACIONES_POR_DIA = 6;
 export const PUBLICACIONES_POR_SEMANA = 15;
 

@@ -46,7 +46,9 @@ export class SensitiveRateLimitGuard implements CanActivate {
     private readonly rateLimit: RateLimitService,
   ) {}
 
+  // - [Limites 1] Corre antes de cada ruta con cupo. true deja pasar, un error corta
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    // - [Limites 2] Lee el cupo que se le puso a la ruta con @SensitiveRateLimit
     const opciones = this.reflector.getAllAndOverride<
       SensitiveRateLimitOptions | undefined
     >(SENSITIVE_RATE_LIMIT_KEY, [context.getHandler(), context.getClass()]);
@@ -54,6 +56,7 @@ export class SensitiveRateLimitGuard implements CanActivate {
 
     const http = context.switchToHttp();
     const pedido = http.getRequest<PedidoConUsuario>();
+    // - [Limites 3] Arma la clave con la que se cuenta
     const claves = sensitiveRateLimitKeys(opciones, pedido);
 
     // Con "ip+user" se cuentan las dos, aunque la primera ya esté bloqueada:
@@ -61,6 +64,7 @@ export class SensitiveRateLimitGuard implements CanActivate {
     // y cambiar de IP le devolvería el crédito entero.
     const resultados: RateLimitResult[] = await Promise.all(
       claves.map((clave) =>
+        // - [Limites 4] Suma el pedido en la base y dice si sigue dentro del cupo
         this.rateLimit.hit(
           clave,
           opciones.limit,
@@ -70,16 +74,19 @@ export class SensitiveRateLimitGuard implements CanActivate {
       ),
     );
 
+    // - [Limites 5] Si nadie se pasó, deja pasar
     const frenados = resultados.filter((r) => !r.allowed);
     if (frenados.length === 0) return true;
 
     const retryAfterSec = Math.max(1, ...frenados.map((r) => r.retryAfterSec));
     http
       .getResponse<RespuestaConCabeceras>()
+      // - [Limites 6] Avisa cuántos segundos hay que esperar
       .setHeader?.("Retry-After", String(retryAfterSec));
 
     throw new HttpException(
       {
+        // - [Limites 7] Corta el pedido con 429, demasiados pedidos
         statusCode: HttpStatus.TOO_MANY_REQUESTS,
         code: "RATE_LIMITED",
         message: mensajeDeEspera(retryAfterSec),
@@ -98,6 +105,7 @@ export class SensitiveRateLimitGuard implements CanActivate {
  * puso; pero la alternativa —dejar la ruta sin límite en silencio— es
  * justamente la que nadie nota hasta que la usan para probar códigos.
  */
+// - [Limites 8] La clave queda tipo ai.chat:user:<id>, un contador por persona y por cosa
 export function sensitiveRateLimitKeys(
   opciones: SensitiveRateLimitOptions,
   pedido: PedidoConUsuario,
@@ -107,6 +115,7 @@ export function sensitiveRateLimitKeys(
   const userId = pedido.user?.id;
   const usuario = userId ? `${opciones.name}:user:${userId}` : null;
 
+  // - [Limites 9] Cuenta por usuario, por IP o por las dos
   if (por === "user") return [usuario ?? ip];
   if (por === "ip+user") return usuario ? [ip, usuario] : [ip];
   return [ip];

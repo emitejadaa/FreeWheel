@@ -37,6 +37,7 @@ import { ReportsModule } from "./reports/reports.module";
     AppService,
     // El limitador general cuenta por la IP REAL del cliente (ver
     // ClientIpThrottlerGuard): detrás de Vercel, req.ip es la del proxy.
+    // - [Limites] Se aplica a todas las rutas de la API
     { provide: APP_GUARD, useClass: ClientIpThrottlerGuard },
     // El ajuste "quién ve mi foto" se hace valer acá, sobre TODAS las respuestas,
     // en vez de en cada consulta que devuelve una persona. Ver el comentario del
@@ -46,6 +47,7 @@ import { ReportsModule } from "./reports/reports.module";
   ],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // - [Limites] Límite general: 120 pedidos por minuto por IP
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
     CommonModule,

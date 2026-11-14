@@ -121,6 +121,7 @@ export class ListingsService {
       más autos que sean; lo que sí hace es dejarle un aviso al panel para que
       alguien lo mire. Ver src/antifraude/limites.ts.
     */
+    // - [Limites] Acá se llama antes de crear una publicación
     await this.antifraude.assertPuedePublicar(ownerId);
 
     const listing = await this.prisma.listing.create({

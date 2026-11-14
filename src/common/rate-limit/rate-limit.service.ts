@@ -95,6 +95,7 @@ export class RateLimitService {
     await this.prisma.rateLimitBucket.deleteMany();
   }
 
+  // - [Limites] Cuenta en la tabla RateLimitBucket con una sola consulta
   async hit(
     key: string,
     limit: number,

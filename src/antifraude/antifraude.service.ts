@@ -97,6 +97,7 @@ export class AntifraudeService {
   }
 
   /** Lo mismo al publicar un auto. Publicar nunca suspende, solo se frena. */
+  // - [Limites] Revisa cuántos autos publicó hoy antes de dejar publicar otro
   async assertPuedePublicar(userId: string): Promise<void> {
     if (await this.exenta(userId)) return;
     const actividad = await this.actividadDe(userId);

@@ -25,6 +25,7 @@ export interface SensitiveRateLimitOptions {
   by?: "ip" | "user" | "ip+user";
 }
 
+// - [Limites] El decorador que se pone en cada ruta con cupo
 export const SensitiveRateLimit = (options: SensitiveRateLimitOptions) =>
   applyDecorators(
     SetMetadata(SENSITIVE_RATE_LIMIT_KEY, options),

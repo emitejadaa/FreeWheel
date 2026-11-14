@@ -19,6 +19,7 @@ export class EmailService {
     private readonly prisma: PrismaService,
   ) {}
 
+  // - [Mails 1] Conexión con Gmail usando Nodemailer
   private createTransporter() {
     const user = this.configService.get<string>("GMAIL_USER");
     const pass = this.configService.get<string>("GMAIL_APP_PASSWORD");
@@ -58,6 +59,7 @@ export class EmailService {
    * (una reserva pedida, una aceptada) siguen usando send() y se pierden en
    * silencio, que para eso está bien.
    */
+  // - [Mails 2] Para códigos y recuperar contraseña: si no sale, tira error
   private async sendOrThrow(to: string, subject: string, html: string) {
     if (!this.configured) {
       this.logger.error(
@@ -92,6 +94,7 @@ export class EmailService {
    * Y si la consulta a la base falla, también se manda. Un problema de base de
    * datos no puede terminar en "nadie recibe más avisos y nadie se dio cuenta".
    */
+  // - [Mails 3] Mira si la persona apagó los avisos por mail en Ajustes
   private async quiereAvisos(to: string): Promise<boolean> {
     try {
       const persona = await this.prisma.user.findUnique({
@@ -116,6 +119,7 @@ export class EmailService {
    * y no pasan por acá: apagar los avisos no puede dejar a nadie afuera de su
    * propia cuenta.
    */
+  // - [Mails 4] Para los avisos: respeta si la persona los apagó
   private async send(
     to: string,
     subject: string,
@@ -155,6 +159,7 @@ export class EmailService {
    *
    * Adentro del mail, la imagen viaja con el mail y no se pide a nadie.
    */
+  // - [Mails 5] El único lugar que habla con el servidor de correo
   private async entregar(
     to: string,
     subject: string,
@@ -202,6 +207,7 @@ export class EmailService {
    * Si fallara, devuelve null: el mail sale igual con el código escrito, que es
    * lo que de verdad no puede faltar.
    */
+  // - [Mails 6] Genera la imagen del QR de retiro que va adentro del mail
   private async qrDelRetiro(token: string): Promise<Buffer | null> {
     try {
       return await QRCode.toBuffer(token, {
@@ -234,6 +240,7 @@ export class EmailService {
    * avisos distintos eso son nueve lugares donde cambiar un color, y el noveno
    * siempre queda distinto.
    */
+  // - [Mails 7] El diseño común de todos los mails
   private layout(titulo: string, cuerpo: string): string {
     return `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
@@ -297,6 +304,7 @@ export class EmailService {
     return nombre ? `Hola ${nombre},` : "Hola,";
   }
 
+  // - [Mails] Código: el de seis dígitos para verificar el email al registrarse
   async sendVerificationCode(email: string, code: string) {
     const html = `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
@@ -327,6 +335,7 @@ export class EmailService {
    * queda igual de registrado en la base: lo único distinto es el canal por el
    * que viaja, así la verificación del teléfono funciona sin costo.
    */
+  // - [Mails] Código: el que verifica el teléfono, que va por mail porque mandar un SMS es pago
   async sendPhoneVerificationCode(email: string, phone: string, code: string) {
     const html = `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
@@ -362,6 +371,7 @@ export class EmailService {
    * tener acceso al mail, no solo a la sesión abierta. El mail muestra el precio
    * viejo y el nuevo para que se pueda frenar un cambio que no se pidió.
    */
+  // - [Mails] Código: confirma un cambio de precio de una publicación
   async sendPriceChangeCode(
     email: string,
     listingTitle: string,
@@ -403,6 +413,7 @@ export class EmailService {
     );
   }
 
+  // - [Mails] Código: el link para restablecer la contraseña
   async sendPasswordReset(
     email: string,
     firstName: string,
@@ -448,6 +459,7 @@ export class EmailService {
   // sigue su curso igual. Un aviso que no salió es un problema; una reserva que
   // se cae porque el aviso no salió es un problema peor.
 
+  // - [Mails] Aviso: al dueño, que alguien quiere reservar su auto
   async sendBookingRequestedToOwner(
     email: string,
     params: {
@@ -490,6 +502,7 @@ export class EmailService {
    * mandaba el pedido y no le llegaba nada. No tenía por escrito ni qué auto pidió,
    * ni para qué fechas, ni cuánto va a pagar, ni qué tiene que pasar después.
    */
+  // - [Mails] Aviso: al que alquila, que su pedido quedó registrado
   async sendBookingRequestedToRenter(
     email: string,
     params: {
@@ -532,6 +545,7 @@ export class EmailService {
     );
   }
 
+  // - [Mails] Aviso: el dueño aceptó, ya se puede pagar
   async sendBookingAcceptedToRenter(
     email: string,
     params: {
@@ -558,6 +572,7 @@ export class EmailService {
     await this.send(email, "Tu reserva fue aceptada - Freewheel", html);
   }
 
+  // - [Mails] Aviso: el dueño rechazó la reserva
   async sendBookingRejectedToRenter(
     email: string,
     params: {
@@ -589,6 +604,7 @@ export class EmailService {
    * El motivo va entero: es lo único que explica por qué se cayó el alquiler, y
    * esconderlo obliga a preguntar por chat algo que ya está escrito.
    */
+  // - [Mails] Aviso: la reserva se canceló, con lo que se devuelve
   async sendBookingCancelled(
     email: string,
     params: {
@@ -696,6 +712,7 @@ export class EmailService {
    * `concepto` es lo que se pagó escrito en castellano ("Seña", "Saldo",
    * "Depósito en garantía"), no el código interno: el mail lo lee una persona.
    */
+  // - [Mails] Aviso: comprobante de un pago hecho
   async sendPaymentReceipt(
     email: string,
     params: {
@@ -781,6 +798,7 @@ export class EmailService {
    * y verlo escrito, con la palabra "retenido" al lado y la aclaración de que
    * no es un cobro, es la diferencia entre una duda y un reclamo.
    */
+  // - [Mails 8] Ejemplo completo: comprobante de la reserva con el QR adentro
   async sendBookingReceipt(
     email: string,
     params: {
@@ -906,6 +924,7 @@ export class EmailService {
   }
 
   /** Aviso al DUEÑO de que el inquilino pagó. */
+  // - [Mails] Aviso: al dueño, que entró la plata de su alquiler
   async sendPaymentReceivedToOwner(
     email: string,
     params: {
@@ -947,6 +966,7 @@ export class EmailService {
    * es el momento en que empieza a correr el alquiler y las dos necesitan la
    * misma constancia, con la misma hora.
    */
+  // - [Mails] Aviso: se confirmó la entrega del auto
   async sendPickupConfirmed(
     email: string,
     params: {
@@ -987,6 +1007,7 @@ export class EmailService {
   }
 
   /** Devolución confirmada: la reserva se cerró. También a las dos partes. */
+  // - [Mails] Aviso: se confirmó la devolución del auto
   async sendReturnConfirmed(
     email: string,
     params: {
@@ -1056,6 +1077,7 @@ export class EmailService {
    * la casilla información sobre el ataque, y no cambia lo que la persona
    * tiene que hacer.
    */
+  // - [Mails] Aviso: actividad inusual, la cuenta se bloqueó un rato por intentos fallidos
   async sendSecurityAlert(
     email: string,
     params: {
@@ -1106,6 +1128,7 @@ export class EmailService {
    * banco, no de nosotros: pueden ser horas o pueden ser varios días hábiles.
    * Decirlo de antemano evita el reclamo de mañana.
    */
+  // - [Mails] Aviso: se liberó el depósito en garantía
   async sendDepositReleased(
     email: string,
     params: {
@@ -1175,6 +1198,7 @@ export class EmailService {
    *
    * Al dueño le llega la otra mitad: qué se cobró y que le va a llegar.
    */
+  // - [Mails] Aviso: se cobró parte del depósito por un daño
   async sendDepositCaptured(
     email: string,
     params: {
@@ -1308,6 +1332,7 @@ export class EmailService {
    * Solo se informa de qué publicación es la charla, que es lo mínimo para saber
    * si hace falta abrirla ahora o después.
    */
+  // - [Mails] Aviso: tenés mensajes sin leer en el chat
   async sendUnreadMessages(
     email: string,
     params: { recipientName?: string; listingLabel?: string },

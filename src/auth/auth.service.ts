@@ -275,6 +275,7 @@ export class AuthService {
       throw credencialesInvalidas();
     }
 
+    // - [Sesiones] Compara la contraseña con el hash guardado
     const ok = await bcrypt.compare(loginDto.password, user.password);
     if (!ok) {
       await this.registrarLoginFallido(user);
@@ -910,6 +911,7 @@ export class AuthService {
     }
   }
 
+  // - [Sesiones] Acá se crea y se firma el token
   private signToken(userId: string, email: string) {
     return this.jwtService.sign({ email }, { subject: userId });
   }

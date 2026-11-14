@@ -21,6 +21,7 @@ export function normalizeCuil(value: string): string | null {
  * exige dígito 10 no existe como CUIL real (en la asignación se cambia el
  * prefijo a 23), así que se rechaza.
  */
+// - [Pruebas] La función que se prueba: valida el dígito verificador del CUIL
 export function cuilChecksumValid(cuil: string): boolean {
   if (!/^\d{11}$/.test(cuil)) return false;
 

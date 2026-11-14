@@ -9,6 +9,7 @@ export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
+    // - [Sesiones] Lee los roles que pide la ruta
     const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(
       ROLES_KEY,
       [context.getHandler(), context.getClass()],
@@ -34,6 +35,7 @@ export class RolesGuard implements CanActivate {
       return false;
     }
 
+    // - [Sesiones] Pasa solo si el rol del usuario es uno de los pedidos
     return requiredRoles.includes(user.role);
   }
 }

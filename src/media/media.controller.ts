@@ -27,6 +27,7 @@ export class MediaController {
     deploy.
   */
   @SensitiveRateLimit({
+    // - [Limites] 100 fotos subidas por día
     name: "media.sign",
     limit: 100,
     windowSec: 24 * 60 * 60,

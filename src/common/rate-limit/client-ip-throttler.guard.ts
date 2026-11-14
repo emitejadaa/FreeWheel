@@ -10,6 +10,7 @@ import { clientIp } from "../utils/client-ip.util";
  */
 @Injectable()
 export class ClientIpThrottlerGuard extends ThrottlerGuard {
+  // - [Limites] Cuenta por la IP real, no la del proxy de Vercel
   protected getTracker(req: Record<string, unknown>): Promise<string> {
     return Promise.resolve(clientIp(req) ?? "unknown");
   }

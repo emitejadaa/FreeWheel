@@ -26,6 +26,7 @@ import { UpdateUserRoleDto } from "./dto/update-user-role.dto";
 import { UpdateUserStatusDto } from "./dto/update-user-status.dto";
 
 @Controller("admin")
+// - [Sesiones] Todo el panel admin pide sesión y rol ADMIN
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminController {

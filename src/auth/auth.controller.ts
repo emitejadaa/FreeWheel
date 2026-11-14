@@ -109,6 +109,7 @@ export class AuthController {
     blockSec: 900,
     by: "ip",
   })
+  // - [Sesiones] La ruta del login
   @Post("login")
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);

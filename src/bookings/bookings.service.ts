@@ -289,6 +289,7 @@ export class BookingsService {
 
     await this.safeNotify(() => {
       if (!updated.renter?.email) return;
+      // - [Mails] Ejemplo de quién llama: al aceptar se avisa por mail
       return this.email.sendBookingAcceptedToRenter(updated.renter.email, {
         renterName: this.personName(updated.renter),
         vehicleLabel: this.vehicleLabel(updated),
@@ -1169,6 +1170,7 @@ export class BookingsService {
     );
   }
 
+  // - [Mails] Si un mail falla, la reserva sigue igual
   private async safeNotify(fn: () => Promise<unknown> | void): Promise<void> {
     try {
       await fn();

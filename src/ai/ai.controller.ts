@@ -95,6 +95,7 @@ export class AiController {
     cuatro o cinco en una visita— y a la vez es un techo.
   */
   @SensitiveRateLimit({
+    // - [Limites] Ejemplo: 80 preguntas a Wili por día
     name: "ai.chat",
     limit: 80,
     windowSec: 24 * 60 * 60,

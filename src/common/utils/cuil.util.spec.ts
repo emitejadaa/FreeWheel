@@ -9,14 +9,19 @@ import {
 
 // CUILs sintéticos con checksum real: 20-12345678-6, 27-12345678-0,
 // 20-87654321-5 (verificados a mano con los pesos 5,4,3,2,7,6,5,4,3,2).
+// - [Pruebas 1] describe agrupa las pruebas de una función
 describe("normalizeCuil", () => {
+  // - [Pruebas 2] Cada it es un caso, escrito como una frase
   it("acepta con y sin guiones/espacios", () => {
+    // - [Pruebas 3] Lo que tiene que devolver. Si devuelve otra cosa, falla
     expect(normalizeCuil("20-12345678-6")).toBe("20123456786");
     expect(normalizeCuil("20 12345678 6")).toBe("20123456786");
     expect(normalizeCuil("20123456786")).toBe("20123456786");
   });
 
+  // - [Pruebas 4] También se prueban los casos de error
   it("rechaza largos incorrectos y no-dígitos", () => {
+    // - [Pruebas 5] Un CUIL mal formado tiene que devolver null
     expect(normalizeCuil("20-1234567-6")).toBeNull();
     expect(normalizeCuil("20-12345678-66")).toBeNull();
     expect(normalizeCuil("20-1234567A-6")).toBeNull();
