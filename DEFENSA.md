@@ -1,8 +1,9 @@
 # Defensa — Sprints 5 y 6
 
-Para cada renglón de la presentación: **el archivo que hay que abrir**, las
-líneas que hay que mostrar, y **qué otros archivos están enganchados con ese**,
-diciendo en cada caso qué línea los une y por qué.
+Para cada renglón de la presentación: **el archivo que hay que abrir** y las
+líneas que hay que mostrar. Y abajo, **solo si el profesor pregunta**, el otro
+archivo que conviene nombrar, con su ruta completa, la línea que hay que ver y
+qué hace con el archivo principal.
 
 Buscar `// -` en VS Code (Ctrl + Shift + F) muestra los 133 comentarios juntos.
 Adentro del CSS son `/* - ...`, en JSX `{/* - ...` y en el HTML `<!-- - ...`.
@@ -23,24 +24,16 @@ el tema sin número (`[Sesiones]`).
 Es lo que corre en **cada** pedido a una ruta protegida: saca el token del
 header, verifica la firma, busca al usuario y devuelve su rol.
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/pages/Auth/Login.jsx` | 81 | `await loginWithCredentials(...)` — el formulario arranca toda la cadena |
-| Fw / `src/context/AuthContext.jsx` | 140 | esa función: le pide el token al back |
-| Fw / `src/context/AuthContext.jsx` | 75 | `localStorage.setItem(STORAGE_KEY, ...)` — el token queda guardado acá |
-| Fw / `src/services/api.js` | 76 | **la línea que une el front con el back**: manda ese mismo token como `Authorization: Bearer`, que es exactamente de donde lo saca la línea 30 de la estrategia |
-| Fw / `src/services/api.js` | 128 | `if (res.status === 401 ...)` — cuando la estrategia rechaza el token, acá se borra la sesión y se va al login |
-| Fw / `src/App.jsx` | 54 | `const priv = ...` envuelve con `PrivateRoute` las pantallas privadas |
-| Fw / `src/components/PrivateRoute.jsx` | 19 | sin sesión redirige al login. Solo esconde pantallas: la seguridad real es la del back |
-| FreeWheel / `src/auth/auth.controller.ts` | 113 | `@Post("login")` — la ruta que entrega el token |
-| FreeWheel / `src/auth/auth.service.ts` | 279 | `bcrypt.compare(...)` — compara la contraseña contra el hash |
-| FreeWheel / `src/auth/auth.service.ts` | 915 | `signToken` — **acá se firma** con la misma clave que verifica la línea 33 de la estrategia |
-| FreeWheel / `src/common/decorators/roles.decorator.ts` | 7 | `@Roles(...)` marca qué roles puede usar una ruta |
-| FreeWheel / `src/common/guards/roles.guard.ts` | 13 | lee esos roles |
-| FreeWheel / `src/common/guards/roles.guard.ts` | 39 | `requiredRoles.includes(user.role)` — **ese `user.role` es el que devuelve la línea 72 de la estrategia**. Ahí se cierra el circuito |
-| FreeWheel / `src/admin/admin.controller.ts` | 30 | `@UseGuards(JwtAuthGuard, RolesGuard)` — los dos juntos: primero quién sos, después si podés |
+- **¿Dónde se crea el token?** → `FreeWheel / src/auth/auth.service.ts`, línea
+  **915**: la función `signToken` lo firma con la misma clave con la que lo
+  verifica la línea 33 de este archivo. Se llama recién después de comparar la
+  contraseña con bcrypt (línea 279 del mismo archivo).
+- **¿Y si entro a /admin escribiendo la URL?** → `FreeWheel / src/common/guards/roles.guard.ts`,
+  línea **39**: `requiredRoles.includes(user.role)`. Ese `user.role` es el que
+  devuelve la línea 72 de acá. El front no muestra el panel, pero aunque lo
+  saltees el pedido pasa igual por los dos y el back contesta 401 o 403.
 
 ---
 
@@ -75,12 +68,14 @@ persona los apagó) son dos caminos distintos: líneas 63 y 123.
 | Aviso | 1202 | se cobró parte del depósito por un daño |
 | Aviso | 1336 | tenés mensajes sin leer |
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| FreeWheel / `src/bookings/bookings.service.ts` | 293 | `this.email.sendBookingAcceptedToRenter(...)` — **llama a la función de la línea 549**. Es el ejemplo de quién dispara un mail |
-| FreeWheel / `src/bookings/bookings.service.ts` | 1174 | `safeNotify` — envuelve esas llamadas para que, si el mail falla, la reserva siga igual |
+- **¿Quién llama a estas funciones?** → `FreeWheel / src/bookings/bookings.service.ts`,
+  línea **293**: `sendBookingAcceptedToRenter(...)`, que es la función de la
+  línea 549 de acá. Es el ejemplo de quién dispara un mail.
+- **¿Qué pasa si Gmail falla en medio de una reserva?** → mismo archivo, línea
+  **1174**: `safeNotify` envuelve esas llamadas y atrapa el error, así la
+  reserva se guarda igual.
 
 ---
 
@@ -89,13 +84,14 @@ persona los apagó) son dos caminos distintos: líneas 63 y 123.
 **Abrir:** `Fw / src/i18n/core.js`
 **Mostrar:** pasos 1 a 8 — líneas **21, 29, 38, 40, 52, 54, 64 y 76**
 
-### Enganchados con este archivo
+Si falta una traducción sale en español: eso lo hace la línea 54.
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/i18n/index.jsx` | 37 | `useState(idiomaInicial)` — **llama a `idiomaInicial()` de la línea 64**: el idioma guardado entra al estado de React |
-| Fw / `src/i18n/index.jsx` | 47 | `setLang` — antes de cambiar comprueba contra `DICTIONARIES` (línea 38), así un idioma que no existe no rompe nada |
-| Fw / `src/components/LangPicker.jsx` | 103 | `setLang(l.code)` — el botón usa ese mismo `setLang` del proveedor |
+### Si te pregunta
+
+- **¿Cómo cambia toda la app al tocar un idioma?** → `Fw / src/i18n/index.jsx`,
+  línea **37**: `useState(idiomaInicial)` llama a `idiomaInicial()` de la línea
+  64 de acá y deja el idioma en un contexto de React. Al cambiarlo React vuelve
+  a dibujar y cada `t("clave")` devuelve el texto nuevo, sin recargar la página.
 
 ---
 
@@ -104,13 +100,16 @@ persona los apagó) son dos caminos distintos: líneas 63 y 123.
 **Abrir:** `Fw / src/services/moneda.js`
 **Mostrar:** pasos 1 a 9 — líneas **47, 90, 109, 115, 127, 132, 137, 164 y 171**
 
-### Enganchados con este archivo
+La moneda elegida se guarda con `guardarMoneda`, línea **84**.
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/context/CurrencyContext.jsx` | 41 | `traerTasas()` — **llama a la línea 109**, una sola vez al abrir la app |
-| Fw / `src/context/CurrencyContext.jsx` | 54 | `precio: (pesos) => formatearPrecio(...)` — **envuelve la línea 164** y es lo que usan todas las pantallas |
-| Fw / `src/components/CurrencyPicker.jsx` | 88 | `setMoneda(m.code)` — el botón cambia la moneda del contexto, y todo lo que use `precio()` se redibuja |
+### Si te pregunta
+
+- **¿Quién llama a esto?** → `Fw / src/context/CurrencyContext.jsx`, línea
+  **41**: llama a `traerTasas()` de la línea 109 una sola vez al abrir la app. Y
+  en la línea **54** envuelve a `formatearPrecio` de la línea 164 en la función
+  `precio()`, que es la que usan todas las pantallas.
+- **¿Se cobra en esa moneda?** → No. Se cobra en la moneda de la operación; la
+  conversión es solo para que alguien de afuera entienda cuánto sale.
 
 ---
 
@@ -122,13 +121,19 @@ persona los apagó) son dos caminos distintos: líneas 63 y 123.
 La idea en una frase: los colores son **variables de CSS**, y el botón solo
 pone o saca la clase `fw-dark` del `<html>`.
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/pages/Settings/Settings.jsx` | 93 | `applyDarkMode(v)` — **llama a la línea 625**. Antes guarda la preferencia en `fw_prefs` |
-| Fw / `src/App.jsx` | 78 | `initTheme()` — **llama a la línea 639** al abrir la app, para que el tema guardado se aplique solo |
-| Fw / `src/components/Layout.jsx` | 749 | `background: "var(--fw-surface)"` — **usa la variable que definen las líneas 50 y 123**. Ningún componente escribe un color fijo: por eso cambia todo de una |
+- **¿Dónde está el botón?** → `Fw / src/pages/Settings/Settings.jsx`, línea
+  **93**: guarda la preferencia en `fw_prefs` y llama a `applyDarkMode`, que es
+  la línea 625 de acá.
+- **¿Cómo sabe cada componente qué color usar?** → No lo sabe. Ejemplo en
+  `Fw / src/components/Layout.jsx`, línea **749**: escribe
+  `background: "var(--fw-surface)"` y el navegador usa el valor que
+  corresponda, el de la línea 50 o el de la 123. Hay más de 160 usos de esa
+  variable en las pantallas.
+- **¿Por qué no invertir los colores con un filtro?** → Antes era así y el azul
+  de la marca salía celeste. Lo explica el comentario del principio de este
+  mismo archivo.
 
 ---
 
@@ -137,13 +142,17 @@ pone o saca la clase `fw-dark` del `<html>`.
 **Abrir:** `Fw / src/hooks/useIsMobile.js`
 **Mostrar:** pasos 1 a 7 — líneas **13, 15, 17, 24, 29, 32 y 36**
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/components/Layout.jsx` | 526 | `{isMobile ? (` — **usa el valor que devuelve la línea 36**: en celular la barra lateral pasa a ser un menú |
-| Fw / `src/styles/theme.css` | 442 | `@media (max-width: 767px)` — **el mismo corte de 768 de la línea 15**, pero del lado del CSS |
-| Fw / `index.html` | 8 | la etiqueta `viewport`: sin ella el teléfono miente el ancho y no funcionaría ninguno de los dos |
+- **¿Dónde se usa?** → En unos 30 archivos. El más claro es
+  `Fw / src/components/Layout.jsx`, línea **526**: `{isMobile ? (` usa el valor
+  que devuelve la línea 36 de acá, y en celular la barra lateral pasa a ser un
+  menú que se abre con un botón.
+- **¿Y el CSS?** → `Fw / src/styles/theme.css`, línea **442**:
+  `@media (max-width: 767px)`, el mismo corte de 768 de la línea 15 pero del
+  lado del CSS. Y la etiqueta `viewport` en `Fw / index.html`, línea **8**, que
+  hace que el teléfono use su ancho real. El hook hace falta porque algunas
+  cosas cambian la estructura, como el menú, y eso con CSS solo no se puede.
 
 ---
 
@@ -155,13 +164,7 @@ pone o saca la clase `fw-dark` del `<html>`.
 **Mostrar:** pasos 1 a 6 — líneas **616, 528, 534, 553, 581 y 334**
 
 Mismo mecanismo que el modo oscuro: una clase en el `<html>`, acá `fw-lectura`.
-
-### Enganchados con este archivo
-
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/pages/Settings/Settings.jsx` | 95 | `applyReadableFont(v)` — **llama a la línea 616** |
-| `public/fuentes/` | — | ahí vive el archivo de OpenDyslexic que carga el `@font-face` de la línea 534. Viene con la app: no se baja de ningún lado |
+El botón está en `Fw / src/pages/Settings/Settings.jsx`, línea **95**.
 
 ---
 
@@ -172,14 +175,17 @@ Mismo mecanismo que el modo oscuro: una clase en el `<html>`, acá `fw-lectura`.
 
 Lo que conviene remarcar: **no cambia todos los colores, solo los que se
 confunden**, y las líneas 431 y 433 son las que hacen que funcione también con
-el modo oscuro prendido al mismo tiempo.
+el modo oscuro prendido al mismo tiempo. El botón está en
+`Fw / src/pages/Settings/Settings.jsx`, línea **97**.
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| Fw / `src/pages/Settings/Settings.jsx` | 97 | `applyColorBlindMode(v)` — **llama a la línea 607** |
-| Fw / `src/services/theme.js` | 50 y 123 | las variables que se pisan son las mismas del modo claro y del oscuro: por eso los tres modos se combinan sin estorbarse |
+- **¿Por qué no un filtro sobre toda la página?** → Un `filter` rompe lo que
+  está fijo en pantalla, como la barra lateral y los modales, que se irían con
+  el scroll. Cambiar las variables no rompe nada.
+- **¿Y si alguien no distingue los colores igual?** → Los estados siempre llevan
+  el texto al lado, como "verificado" o "cancelada", así el color nunca es lo
+  único que informa.
 
 ---
 
@@ -191,20 +197,17 @@ el modo oscuro prendido al mismo tiempo.
 La frase para arrancar: **un tope en el navegador no es un tope** — se saltea
 con F12. Por eso el contador vive en la base de datos del servidor.
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| FreeWheel / `src/common/rate-limit/sensitive-rate-limit.decorator.ts` | 29 | `@SensitiveRateLimit({...})` — **deja la metadata que lee la línea 52** del guard |
-| FreeWheel / `src/common/rate-limit/rate-limit.service.ts` | 99 | `hit(...)` — **es lo que llama la línea 68**: suma el pedido en la tabla `RateLimitBucket` con una sola consulta |
-| FreeWheel / `src/ai/ai.controller.ts` | 99 | ejemplo de ruta con cupo: `ai.chat`, 80 preguntas a Wili por día |
-| FreeWheel / `src/media/media.controller.ts` | 31 | otro: `media.sign`, 100 fotos por día |
-| FreeWheel / `src/app.module.ts` | 51 | el límite general, 120 pedidos por minuto por IP |
-| FreeWheel / `src/app.module.ts` | 41 | `APP_GUARD` — lo aplica a **todas** las rutas |
-| FreeWheel / `src/common/rate-limit/client-ip-throttler.guard.ts` | 14 | cuenta por la IP real y no por la del proxy de Vercel, que sería una sola para todos |
-| FreeWheel / `src/antifraude/limites.ts` | 89 | otro tipo de tope: 6 autos por día, 15 por semana |
-| FreeWheel / `src/antifraude/antifraude.service.ts` | 101 | `assertPuedePublicar` — cuenta cuántos publicó hoy |
-| FreeWheel / `src/listings/listings.service.ts` | 125 | **la línea que lo engancha**: se llama antes de crear la publicación, no después |
+- **¿Y el límite general?** → `FreeWheel / src/app.module.ts`, línea **51**: 120
+  pedidos por minuto por IP para toda la API. Es el primer nivel; este guard es
+  el segundo.
+- **¿Y los autos por día?** → `FreeWheel / src/antifraude/limites.ts`, línea
+  **89**: `PUBLICACIONES_POR_DIA = 6`, que se revisa antes de crear cada
+  publicación.
+- **¿Por qué se cuenta en la base y no en memoria?** → En Vercel cada instancia
+  del servidor arranca de cero, así que un contador en memoria se reiniciaría
+  solo. En la base lo ven todas.
 
 ---
 
@@ -216,17 +219,16 @@ con F12. Por eso el contador vive en la base de datos del servidor.
 `describe` agrupa, cada `it` es un caso escrito como una frase, y `expect` dice
 qué tiene que devolver. Se prueban los casos buenos **y** los de error.
 
-### Enganchados con este archivo
+### Si te pregunta
 
-| Archivo | Línea | Qué los une |
-|---|---|---|
-| FreeWheel / `src/common/utils/cuil.util.ts` | 25 | `cuilChecksumValid` — **es la función que esas pruebas ejercitan** |
-
-### El error corregido
-
-| Archivo | Línea | Qué pasaba |
-|---|---|---|
-| Fw / `src/pages/Admin/Admin.jsx` | 184 | la pantalla quedaba en blanco si el rol cambiaba con el panel abierto. El comentario largo de abajo explica por qué la comprobación tiene que ir después de todos los hooks y no antes |
+- **¿Qué función prueban?** → `FreeWheel / src/common/utils/cuil.util.ts`, línea
+  **25**: `cuilChecksumValid`. Cada archivo de prueba está al lado del que
+  prueba: `cuil.util.ts` y `cuil.util.spec.ts`.
+- **¿Qué errores corrigieron?** → Uno para contar está en
+  `Fw / src/pages/Admin/Admin.jsx`, línea **184**: el panel quedaba en blanco
+  si el rol cambiaba con la pantalla abierta, porque React cambiaba la cantidad
+  de hooks entre un dibujo y otro. El comentario largo de abajo explica por qué
+  la comprobación tiene que ir después de todos los hooks y no antes.
 
 ---
 
@@ -235,5 +237,6 @@ qué tiene que devolver. Se prueban los casos buenos **y** los de error.
 | | Front (Fw) | Back (FreeWheel) |
 |---|---|---|
 | Pruebas automáticas | 510 | 578 en 47 suites |
+| Archivos de prueba | 26 | 47 |
 | Idiomas | 1626 claves × 5 | — |
 | Comentarios de esta guía | 67 | 66 |
