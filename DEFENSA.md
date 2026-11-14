@@ -12,6 +12,10 @@ Cada número apunta a la línea del **código**; el comentario está justo arrib
 Los del archivo principal llevan número de paso (`[Sesiones 3]`) y los demás
 el tema sin número (`[Sesiones]`).
 
+El bloque **"Lo básico"** de cada tema es para la pregunta más simple de todas:
+cómo eso que mostraste termina en la pantalla. Las líneas que cita ese bloque
+son código común, sin comentario arriba.
+
 ---
 
 # Sprint 5
@@ -34,6 +38,15 @@ header, verifica la firma, busca al usuario y devuelve su rol.
   línea **39**: `requiredRoles.includes(user.role)`. Ese `user.role` es el que
   devuelve la línea 72 de acá. El front no muestra el panel, pero aunque lo
   saltees el pedido pasa igual por los dos y el back contesta 401 o 403.
+
+### Lo básico: cómo llega a la pantalla
+
+La pantalla no decide nada de seguridad, solo dibuja lo que el back le
+contestó. En `Fw / src/components/Layout.jsx`, línea **362**, saca el usuario
+del contexto con `const { user, logout } = useAuth();`, y en la línea **447**
+`const isAdmin = user?.role === "ADMIN"` esconde el link del panel. Ese
+`user.role` es el que devolvió la línea 72 del back. Si alguien lo cambia a
+mano con F12 le aparece el link, pero el pedido se frena igual en el guard.
 
 ---
 
@@ -77,6 +90,13 @@ persona los apagó) son dos caminos distintos: líneas 63 y 123.
   **1174**: `safeNotify` envuelve esas llamadas y atrapa el error, así la
   reserva se guarda igual.
 
+### Lo básico: cómo le llega a la persona
+
+El mail no se dibuja en la app, lo manda el servidor. La app solo le avisa al
+back "el dueño aceptó"; el back llama a la función del mail y Nodemailer lo
+entrega a Gmail. Por eso un mail que falla no se ve en pantalla, y por eso la
+reserva se guarda igual aunque el mail no salga.
+
 ---
 
 ## 3. La app en cinco idiomas
@@ -92,6 +112,15 @@ Si falta una traducción sale en español: eso lo hace la línea 54.
   línea **37**: `useState(idiomaInicial)` llama a `idiomaInicial()` de la línea
   64 de acá y deja el idioma en un contexto de React. Al cambiarlo React vuelve
   a dibujar y cada `t("clave")` devuelve el texto nuevo, sin recargar la página.
+
+### Lo básico: cómo cambia un texto de la pantalla
+
+La tarjeta de un auto en la Home no tiene ni un texto escrito. En
+`Fw / src/components/TarjetaDeAutoHome.jsx`, línea **35**, pide el traductor
+con `const { t: tr } = useI18n();`, y en la línea **117** escribe
+`{tr("common.perDay")}`. Esa clave vale `/día` en `src/i18n/es.js` y `/day` en
+`en.js`. Al tocar otro idioma cambia el valor del contexto, React vuelve a
+dibujar la tarjeta y la misma línea devuelve el texto en el idioma nuevo.
 
 ---
 
@@ -110,6 +139,24 @@ La moneda elegida se guarda con `guardarMoneda`, línea **84**.
   `precio()`, que es la que usan todas las pantallas.
 - **¿Se cobra en esa moneda?** → No. Se cobra en la moneda de la operación; la
   conversión es solo para que alguien de afuera entienda cuánto sale.
+
+### Lo básico: cómo se actualiza el precio de un auto en la Home
+
+Lo más claro es seguir una sola tarjeta. En
+`Fw / src/components/TarjetaDeAutoHome.jsx`, línea **36**, pide la función del
+contexto con `const { precio } = useCurrency();`, y en la línea **117** la usa:
+`{precio(priceOf(car))}`.
+
+- `priceOf(car)` está en `Fw / src/services/listings.js`, línea **243**:
+  devuelve `car.price_per_day`, los pesos tal como los guardó el back. Ese
+  número no cambia nunca.
+- `precio(...)` es la de la línea 54 de `CurrencyContext.jsx`, que por dentro
+  llama a `formatearPrecio` (línea 164 de acá): divide por la cotización y le
+  pone el símbolo.
+
+Cuando tocás otra moneda cambia el valor del contexto, React vuelve a dibujar
+todas las tarjetas y cada una llama de nuevo a `precio()` con los mismos pesos.
+No se le pide nada al servidor ni se vuelven a buscar los autos.
 
 ---
 
@@ -135,6 +182,14 @@ pone o saca la clase `fw-dark` del `<html>`.
   de la marca salía celeste. Lo explica el comentario del principio de este
   mismo archivo.
 
+### Lo básico: cómo se repinta una tarjeta
+
+En esa misma línea **117** de `TarjetaDeAutoHome.jsx` el precio se escribe con
+`color: "var(--fw-text)"`. La tarjeta no sabe de qué color es: pide "el color
+del texto". Cuando aparece la clase `fw-dark` en el `<html>`, esa variable pasa
+a valer el color oscuro y el navegador repinta. Por eso para hacer el modo
+oscuro no hubo que tocar ni una pantalla.
+
 ---
 
 ## 6. Diseño adaptado al celular
@@ -154,6 +209,12 @@ pone o saca la clase `fw-dark` del `<html>`.
   hace que el teléfono use su ancho real. El hook hace falta porque algunas
   cosas cambian la estructura, como el menú, y eso con CSS solo no se puede.
 
+### Lo básico: qué cambia en la pantalla
+
+La tarjeta del auto es la misma en celular y en compu. Lo que cambia es el
+marco: la línea 526 de `Layout.jsx` pasa la barra lateral a un menú, y el
+`@media` de `theme.css` acomoda tamaños y márgenes.
+
 ---
 
 # Sprint 6
@@ -165,6 +226,11 @@ pone o saca la clase `fw-dark` del `<html>`.
 
 Mismo mecanismo que el modo oscuro: una clase en el `<html>`, acá `fw-lectura`.
 El botón está en `Fw / src/pages/Settings/Settings.jsx`, línea **95**.
+
+### Lo básico
+
+No hay ninguna pantalla tocada. La clase `fw-lectura` en el `<html>` cambia la
+tipografía de toda la página de una sola vez, tarjetas y contrato incluidos.
 
 ---
 
@@ -186,6 +252,12 @@ el modo oscuro prendido al mismo tiempo. El botón está en
 - **¿Y si alguien no distingue los colores igual?** → Los estados siempre llevan
   el texto al lado, como "verificado" o "cancelada", así el color nunca es lo
   único que informa.
+
+### Lo básico
+
+Igual que el oscuro: las pantallas piden `var(--fw-green)` o `var(--fw-red)`
+(hay 39 usos en los componentes) y la clase `fw-daltonico` cambia qué color
+vale cada una. Ninguna pantalla se toca.
 
 ---
 
@@ -209,6 +281,15 @@ con F12. Por eso el contador vive en la base de datos del servidor.
   del servidor arranca de cero, así que un contador en memoria se reiniciaría
   solo. En la base lo ven todas.
 
+### Lo básico: qué ve la persona cuando se pasa del cupo
+
+El back contesta 429 y la app lo traduce a una frase. En
+`Fw / src/components/ChatBot.jsx`, línea **430**, si el error viene con
+`cupoDiario` elige la clave `chat.quotaDay`, y la línea **433** la muestra como
+un mensaje de Wili. Se separa del otro 429, el de la ráfaga de un minuto,
+porque "esperá un momento" ahí sería mentira: el cupo del día no se arregla
+esperando.
+
 ---
 
 ## 10. Pruebas automáticas y corrección de errores
@@ -229,6 +310,12 @@ qué tiene que devolver. Se prueban los casos buenos **y** los de error.
   si el rol cambiaba con la pantalla abierta, porque React cambiaba la cantidad
   de hooks entre un dibujo y otro. El comentario largo de abajo explica por qué
   la comprobación tiene que ir después de todos los hooks y no antes.
+
+### Lo básico: cómo se corren
+
+`npm test` en la carpeta del repo. No hace falta abrir la app ni el navegador:
+las pruebas llaman a las funciones directamente y la consola dice cuáles
+pasaron y cuáles no.
 
 ---
 
