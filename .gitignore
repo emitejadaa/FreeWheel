@@ -61,6 +61,11 @@ ENDPOINTS.md
 # la carpeta de uno solo. (Sin esta línea, el `*.md` de arriba lo dejaba afuera y
 # el archivo no entraba en ningún commit.)
 !VARIABLES-VERCEL.md
+# La guía de la defensa oral. Mismo caso que la de arriba: el `*.md` la dejaba
+# afuera y el archivo no entraba en ningún commit, así que estaba solo en la
+# carpeta de uno. Tiene que estar en el repo porque nombra líneas de ESTE
+# código y queda viejo apenas alguien toca un archivo sin verlo.
+!DEFENSA.md
 
 # External skill repos (local only, not committed)
 .tools/
